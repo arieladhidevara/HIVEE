@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Hivee</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css?v=20260222t"/>
+</head>
+<body>
+  <div class="bg-noise"></div>
+  <div class="bg-halo halo-a"></div>
+  <div class="bg-halo halo-b"></div>
+
+  <main class="app-shell">
+    <section id="view_auth" class="view active">
+      <div class="auth-shell">
+        <div class="card auth-modern">
+          <aside class="auth-brand">
+            <img src="/static/logo.png" alt="Hivee logo" class="brand-logo"/>
+            <p class="pill neutral">AI Agents Collaboration Space</p>
+            <h1>Sign in to Hivee</h1>
+            <p class="brand-copy">Simple control center for projects, routing, and OpenClaw agent operations.</p>
+            <div class="brand-grid">
+              <span>
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V8a5 5 0 1 1 10 0v3"/><rect x="5" y="11" width="14" height="10" rx="2"/></svg>
+                Secure authentication
+              </span>
+              <span>
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v10H4z"/><path d="M8 17v2m8-2v2"/><path d="M9 11h6"/></svg>
+                Gateway connection
+              </span>
+              <span>
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7v5H3z"/><path d="M14 13h7v5h-7z"/><path d="M10 8h4v8h-4z"/></svg>
+                Project and agent routing
+              </span>
+            </div>
+          </aside>
+
+          <div class="auth-panel">
+            <div class="method-row">
+              <button id="method_hooman" class="method-card active" type="button">
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg>
+                <span>Hooman</span>
+              </button>
+              <button id="method_agent" class="method-card" type="button">
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="12" rx="2"/><path d="M9 12h6M12 3v4"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
+                <span>AI Agent</span>
+              </button>
+            </div>
+
+            <div id="hooman_auth" class="auth-method-panel">
+              <form id="form_login" class="stack">
+                <label>Email</label>
+                <input id="li_email" type="email" placeholder="you@company.com" required>
+                <label>Password</label>
+                <input id="li_pass" type="password" placeholder="Your password" required>
+                <button id="btn_login" type="submit">Continue</button>
+              </form>
+
+              <form id="form_signup" class="stack hidden">
+                <label>Email</label>
+                <input id="su_email" type="email" placeholder="you@company.com" required>
+                <label>Password</label>
+                <input id="su_pass" type="password" placeholder="Min 4 characters" minlength="4" required>
+                <button id="btn_signup" type="submit">Create Account</button>
+              </form>
+
+              <div class="auth-switch-row">
+                <button id="tab_login" class="tab-link active" type="button">Login</button>
+                <span class="separator-dot"></span>
+                <button id="tab_signup" class="tab-link" type="button">Sign up</button>
+              </div>
+            </div>
+
+            <div id="agent_auth" class="auth-method-panel hidden">
+              <div class="agent-guide">
+                <h3>AI Agent Sign in</h3>
+                <p class="helper">Use this flow if a bot will control Hivee directly.</p>
+                <label>Agent Auth URL (placeholder)</label>
+                <code id="agent_login_url">https://hivee.local/agent-auth</code>
+                <p class="helper">1. Open URL above in your Agent runner.</p>
+                <p class="helper">2. Let the Agent read and continue auth instructions by itself.</p>
+                <button id="btn_copy_agent_url" class="secondary" type="button">Copy URL</button>
+              </div>
+            </div>
+
+            <p id="auth_msg" class="helper"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view_setup" class="view">
+      <div class="setup-wrap">
+        <div class="card setup-card">
+          <div class="setup-head">
+            <img src="/static/logo.png" alt="Hivee logo" class="setup-logo"/>
+            <div>
+              <h2>Connect OpenClaw</h2>
+              <p class="helper">Add gateway endpoint and token.</p>
+            </div>
+          </div>
+
+          <form id="form_connect" class="stack">
+            <label>Connection Name (optional)</label>
+            <input id="oc_name" placeholder="Ariel VPS">
+            <label>Base URL</label>
+            <input id="oc_base" placeholder="http://187.xx.xx.xx:47054" required>
+            <label>API Key / Bearer Token</label>
+            <input id="oc_key" placeholder="Paste gateway token" required>
+            <button id="btn_connect" type="submit">Save and Continue</button>
+          </form>
+          <p id="setup_msg" class="helper"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="view_home" class="view">
+      <header class="workspace-topbar">
+        <div class="workspace-brand">
+          <img src="/static/logo.png" alt="Hivee logo" class="workspace-logo"/>
+          <div>
+            <h2>Hivee</h2>
+            <p class="subtitle">AI Agents Collaboration Space</p>
+          </div>
+        </div>
+        <div class="top-status">
+          <span id="top_status_dot" class="status-dot disconnected"></span>
+          <span id="top_status_text">Disconnected</span>
+        </div>
+      </header>
+
+      <section class="workspace-layout">
+        <aside class="primary-nav">
+          <div class="nav-section">
+            <button type="button" class="nav-toggle active" data-nav-tab="projects">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h8l2 2h8v10H3z"/></svg>
+              <span>Projects</span>
+            </button>
+            <div id="nav_content_projects" class="nav-content">
+              <button id="btn_new_project" type="button">
+                <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                <span>New Project</span>
+              </button>
+              <div id="projects_list" class="project-list"></div>
+            </div>
+          </div>
+
+          <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="files">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v8H3z"/><path d="M3 11h18"/></svg>
+              <span>Files</span>
+            </button>
+            <div id="nav_content_files" class="nav-content hidden">
+              <p class="helper">Workspace file explorer.</p>
+            </div>
+          </div>
+
+          <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="overview">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M8 19v-6M12 19V9M16 19v-3M20 19V7"/></svg>
+              <span>Overview</span>
+            </button>
+            <div id="nav_content_overview" class="nav-content hidden">
+              <p class="helper">Overview workspace.</p>
+            </div>
+          </div>
+
+          <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="usage">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13a8 8 0 1 1 16 0"/><path d="M12 13l4-4"/></svg>
+              <span>Usage</span>
+            </button>
+            <div id="nav_content_usage" class="nav-content hidden">
+              <p class="helper">Usage workspace.</p>
+            </div>
+          </div>
+
+          <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="summary">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
+              <span>Summary</span>
+            </button>
+            <div id="nav_content_summary" class="nav-content hidden">
+              <p class="helper">Summary workspace.</p>
+            </div>
+          </div>
+
+          <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="config">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.3.8a7 7 0 0 0-1.8-1l-.3-2.4h-4l-.3 2.4a7 7 0 0 0-1.8 1L6 6l-2 3.5L6 11a7 7 0 0 0 0 2l-2 1.5L6 18l2.3-.8a7 7 0 0 0 1.8 1l.3 2.4h4l.3-2.4a7 7 0 0 0 1.8-1L18 18l2-3.5L18 13a7 7 0 0 0 .1-1z"/></svg>
+              <span>Config</span>
+            </button>
+            <div id="nav_content_config" class="nav-content hidden">
+              <p class="helper">Gateway configuration.</p>
+            </div>
+          </div>
+
+          <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="account">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg>
+              <span>Account</span>
+            </button>
+            <div id="nav_content_account" class="nav-content hidden">
+              <p class="helper">Account settings.</p>
+            </div>
+          </div>
+        </aside>
+
+        <section class="workspace-section-title">
+          <h2 id="workspace_section_title">Projects</h2>
+        </section>
+
+        <aside id="context_sidebar" class="context-sidebar">
+          <h3>Project</h3>
+          <button type="button" class="context-link context-live-link" data-project-pane="live">
+            <span>Live</span>
+            <span id="live_status_dot" class="live-status-dot idle" aria-hidden="true"></span>
+          </button>
+          <button type="button" class="context-link active" data-project-pane="info">Overview</button>
+          <button type="button" class="context-link" data-project-pane="folder">Files</button>
+          <button type="button" class="context-link" data-project-pane="usage">Usage</button>
+          <button type="button" class="context-link" data-project-pane="tracker">Tracker</button>
+        </aside>
+
+        <section class="center-stage">
+          <section id="project_headbar" class="project-headbar hidden">
+            <div class="project-headmeta">
+              <h2 id="detail_title"></h2>
+              <p id="detail_subline" class="project-subline"></p>
+            </div>
+            <div class="project-head-actions">
+              <button id="btn_run" type="button" class="hidden">Run</button>
+              <button id="btn_delete_project" type="button" class="secondary danger hidden">Delete</button>
+            </div>
+          </section>
+
+          <div id="center_projects" class="center-pane active" data-center-tab="projects">
+            <div id="project_empty" class="empty-state">
+              <h3>Select a project</h3>
+              <p class="helper">Pick project from the left sidebar.</p>
+            </div>
+
+            <div id="project_details" class="hidden">
+              <div id="project_panel_live" class="project-panel hidden">
+                <div class="live-head">
+                  <h4>Live</h4>
+                  <span id="live_status_text" class="pill neutral">Idle</span>
+                </div>
+                <p id="live_preview_meta" class="helper">Latest artifact preview from invited agents.</p>
+                <div id="live_preview_stage" class="live-preview-stage">
+                  <p id="live_preview_empty" class="helper">No output file rendered yet.</p>
+                  <div id="live_preview_mount" class="live-preview-mount"></div>
+                </div>
+              </div>
+
+              <div id="project_panel_info" class="project-panel">
+                <div class="detail-panels">
+                  <p id="detail_brief" class="text-block"></p>
+                  <p id="detail_goal" class="text-block"></p>
+                </div>
+                <div class="agent-summary">
+                  <h4>Project Plan</h4>
+                  <p id="detail_plan_status" class="helper"></p>
+                  <p id="detail_plan_updated" class="helper"></p>
+                  <pre id="detail_plan_text" class="text-block"></pre>
+                  <div class="progress-card">
+                    <div class="progress-meta">
+                      <strong id="detail_progress_label">0%</strong>
+                      <span id="detail_execution_status" class="helper">Status: idle</span>
+                    </div>
+                    <div class="progress-track">
+                      <div id="detail_progress_fill" class="progress-fill"></div>
+                    </div>
+                    <div class="action-row">
+                      <button id="btn_pause_project" class="secondary" type="button">Pause</button>
+                      <button id="btn_stop_project" class="secondary" type="button">Stop</button>
+                    </div>
+                  </div>
+                  <div class="action-row">
+                    <button id="btn_refresh_plan" class="secondary" type="button">Refresh Plan</button>
+                    <button id="btn_regenerate_plan" class="secondary" type="button">Regenerate Plan</button>
+                    <button id="btn_approve_plan" type="button">Approve Plan</button>
+                  </div>
+                </div>
+                <div class="agent-summary">
+                  <h4>Assigned Agents</h4>
+                  <div id="detail_agents" class="chip-row"></div>
+                </div>
+                <div class="agent-summary">
+                  <h4>Live Updates</h4>
+                  <div id="overview_live_updates" class="events live-updates"></div>
+                </div>
+                <div class="action-row">
+                  <button id="btn_manage_agents" class="secondary" type="button">Manage Agents</button>
+                </div>
+              </div>
+
+              <div id="project_panel_folder" class="project-panel hidden">
+                <h4>Files</h4>
+                <div id="project_files_breadcrumbs" class="file-breadcrumbs"></div>
+                <div id="project_files_list" class="folder-browser file-list"></div>
+                <div id="project_file_preview" class="text-block file-preview"><p class="helper">Select a file to preview.</p></div>
+              </div>
+
+              <div id="project_panel_usage" class="project-panel hidden">
+                <h4>Usage</h4>
+                <div id="project_usage_box" class="usage-shell">No usage stats yet.</div>
+              </div>
+
+              <div id="project_panel_tracker" class="project-panel hidden">
+                <div class="action-row">
+                  <button id="btn_subscribe" class="secondary" type="button">Subscribe Events</button>
+                  <button id="btn_clear_events" class="secondary" type="button">Clear Events</button>
+                </div>
+                <div id="events" class="events"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="center_files" class="center-pane hidden" data-center-tab="files">
+            <h3>Files</h3>
+            <p id="workspace_files_hint" class="helper">Browse owner workspace folder (account-scoped).</p>
+            <div id="workspace_files_breadcrumbs" class="file-breadcrumbs"></div>
+            <div id="workspace_files_list" class="folder-browser file-list"></div>
+            <div id="workspace_file_preview" class="text-block file-preview"><p class="helper">Select a file to preview.</p></div>
+          </div>
+
+          <div id="center_overview" class="center-pane hidden" data-center-tab="overview">
+            <h3>Overview</h3>
+            <p class="helper">Coming soon.</p>
+          </div>
+
+          <div id="center_usage" class="center-pane hidden" data-center-tab="usage">
+            <h3>Usage</h3>
+            <p class="helper">Coming soon.</p>
+          </div>
+
+          <div id="center_summary" class="center-pane hidden" data-center-tab="summary">
+            <h3>Summary</h3>
+            <p class="helper">Coming soon.</p>
+          </div>
+
+          <div id="center_config" class="center-pane hidden" data-center-tab="config">
+            <h3>Configuration</h3>
+            <p class="helper">OpenClaw connection and status.</p>
+            <div class="config-grid">
+              <label>OpenClaw Connection</label>
+              <select id="home_connections"></select>
+              <div class="action-row">
+                <button id="btn_refresh_home" class="secondary" type="button">Refresh</button>
+                <button id="btn_open_connect" class="secondary" type="button">Add OpenClaw</button>
+              </div>
+              <div class="config-card">
+                <div class="config-row"><span>Name</span><strong id="config_conn_name">-</strong></div>
+                <div class="config-row"><span>Base URL</span><code id="config_conn_url">-</code></div>
+                <div class="config-row"><span>Status</span><span id="config_conn_status" class="status-pill disconnected">Disconnected</span></div>
+              </div>
+              <p id="config_msg" class="helper"></p>
+            </div>
+          </div>
+
+          <div id="center_account" class="center-pane hidden" data-center-tab="account">
+            <h3>Account</h3>
+            <p class="helper">Profile and security settings.</p>
+            <div class="account-grid">
+              <section class="account-card">
+                <div class="account-card-head">
+                  <h4>Profile</h4>
+                  <button id="btn_refresh_account" type="button" class="secondary">Refresh</button>
+                </div>
+                <p class="account-sub">Identity and workspace ownership information for this account.</p>
+                <div class="account-stat-grid">
+                  <article class="account-stat">
+                    <span class="label">Projects</span>
+                    <strong id="acct_projects_count">0</strong>
+                  </article>
+                  <article class="account-stat">
+                    <span class="label">Connections</span>
+                    <strong id="acct_connections_count">0</strong>
+                  </article>
+                </div>
+                <dl class="account-detail-list">
+                  <div class="account-detail-row"><dt>Email</dt><dd id="acct_email">-</dd></div>
+                  <div class="account-detail-row"><dt>User ID</dt><dd><code id="acct_user_id">-</code></dd></div>
+                  <div class="account-detail-row"><dt>Joined</dt><dd id="acct_created_at">-</dd></div>
+                  <div class="account-detail-row"><dt>Workspace Root</dt><dd><code id="acct_workspace_root">-</code></dd></div>
+                </dl>
+              </section>
+              <section class="account-card">
+                <h4>Security</h4>
+                <p class="account-sub">Use a strong password and update it regularly.</p>
+                <form id="form_change_password" class="stack">
+                  <label>Current Password</label>
+                  <input id="acct_current_pass" type="password" placeholder="Current password" required>
+                  <label>New Password</label>
+                  <input id="acct_new_pass" type="password" placeholder="Min 4 characters" minlength="4" required>
+                  <label>Confirm New Password</label>
+                  <input id="acct_confirm_pass" type="password" placeholder="Repeat new password" minlength="4" required>
+                  <button id="btn_change_password" type="submit">Update Password</button>
+                </form>
+                <div class="action-row account-inline-actions">
+                  <button id="btn_logout" type="button" class="secondary danger">Logout</button>
+                </div>
+                <p id="account_msg" class="helper"></p>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <aside class="chat-panel" aria-live="polite">
+          <div class="chat-head">
+            <strong>Chat</strong>
+            <p id="chat_project_name" class="helper">Project: none</p>
+          </div>
+          <p id="chat_hint" class="helper">Mention with @alias to route message.</p>
+          <div id="chat_agent_list" class="chat-agent-list"></div>
+          <div id="chat_messages" class="chat-messages"></div>
+          <div id="chat_autocomplete" class="chat-autocomplete hidden"></div>
+          <div class="chat-compose">
+            <div class="chat-compose-row">
+              <textarea id="chat_input" placeholder="Type message... example: @dailybot make recap"></textarea>
+              <button id="btn_chat_send" type="button">Send</button>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section id="project_wizard" class="wizard hidden">
+        <div class="wizard-card">
+          <div class="title-row">
+            <h3 id="wizard_title">New Project</h3>
+            <button id="btn_close_wizard" class="secondary" type="button">Close</button>
+          </div>
+
+          <div id="wizard_step_mode">
+            <p class="helper">Choose mode first: CHAT or MANUAL.</p>
+            <div class="wizard-mode-grid">
+              <button id="btn_mode_chat" class="wizard-mode active" type="button">
+                <strong>CHAT</strong>
+                <span>Setup via conversation. Agent asks questions from PROJECT-SETUP template.</span>
+              </button>
+              <button id="btn_mode_manual" class="wizard-mode" type="button">
+                <strong>MANUAL</strong>
+                <span>Fill project info manually, then continue with agent assignment.</span>
+              </button>
+            </div>
+          </div>
+
+          <div id="wizard_step_chat" class="hidden">
+            <p class="helper">New Project setup chat (template-driven).</p>
+            <div id="wizard_chat_log" class="wizard-chat-log"></div>
+            <div class="wizard-chat-compose">
+              <div class="wizard-chat-input-row">
+                <textarea id="wizard_chat_input" placeholder="Type reply for setup agent..."></textarea>
+                <button id="btn_wizard_chat_send" type="button">Send</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="wizard_step_project">
+            <form id="form_project" class="stack">
+              <label>Project Title</label>
+              <input id="prj_title" placeholder="Campaign planner" required>
+              <label>Brief</label>
+              <textarea id="prj_brief" placeholder="What are we solving?" required></textarea>
+              <label>Goal</label>
+              <textarea id="prj_goal" placeholder="Expected output from agents" required></textarea>
+              <label>Target Users</label>
+              <textarea id="prj_target_users" placeholder="Who uses this project?"></textarea>
+              <label>Constraints</label>
+              <textarea id="prj_constraints" placeholder="Time, budget, compliance, technical constraints"></textarea>
+              <label>In Scope</label>
+              <textarea id="prj_in_scope" placeholder="What's included?"></textarea>
+              <label>Out of Scope</label>
+              <textarea id="prj_out_scope" placeholder="What's excluded?"></textarea>
+              <label>Milestones</label>
+              <textarea id="prj_milestones" placeholder="Deadlines / milestone cadence"></textarea>
+              <label>Required Stack</label>
+              <textarea id="prj_required_stack" placeholder="Tooling / stack requirements"></textarea>
+              <label>First Output</label>
+              <textarea id="prj_first_output" placeholder="What should be produced first?"></textarea>
+            </form>
+          </div>
+
+          <div id="wizard_step_agents" class="hidden">
+            <p class="helper">Invite bots for this project and mark one as primary.</p>
+            <div id="wizard_agents" class="agent-pick-list"></div>
+            <div class="action-row">
+              <button id="btn_save_agents" type="button">Save Agent Setup</button>
+            </div>
+          </div>
+
+          <div id="wizard_footer_actions" class="action-row">
+            <button id="btn_wizard_create_now" type="button">Create Project Now</button>
+          </div>
+
+          <p id="wizard_msg" class="helper"></p>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/app.js?v=20260222p"></script>
+</body>
+</html>
