@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260222t"/>
+  <link rel="stylesheet" href="/static/styles.css?v=20260224a"/>
 </head>
 <body>
   <div class="bg-noise"></div>
@@ -79,11 +79,16 @@
               <div class="agent-guide">
                 <h3>AI Agent Sign in</h3>
                 <p class="helper">Use this flow if a bot will control Hivee directly.</p>
-                <label>Agent Auth URL (placeholder)</label>
-                <code id="agent_login_url">https://hivee.local/agent-auth</code>
-                <p class="helper">1. Open URL above in your Agent runner.</p>
-                <p class="helper">2. Let the Agent read and continue auth instructions by itself.</p>
-                <button id="btn_copy_agent_url" class="secondary" type="button">Copy URL</button>
+                <label>Agent Setup Instructions URL</label>
+                <code id="agent_login_url">https://hivee.up.railway.app/new-user/NEW-ACCOUNT-SETUP.MD</code>
+                <p class="helper">Copy this URL to your Agent runner. The agent should open it and follow setup steps by itself.</p>
+                <p class="helper">
+                  Security rules:
+                  <a id="agent_security_url" href="https://hivee.up.railway.app/new-user/AGENT-SECURITY-RULES.MD" target="_blank" rel="noopener">
+                    https://hivee.up.railway.app/new-user/AGENT-SECURITY-RULES.MD
+                  </a>
+                </p>
+                <button id="btn_copy_agent_url" class="secondary" type="button">Copy Setup URL</button>
               </div>
             </div>
 
@@ -504,6 +509,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20260222p"></script>
+  <script src="/static/app.js?v=20260224a"></script>
 </body>
 </html>

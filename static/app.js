@@ -52,6 +52,8 @@ let chatAutocompleteItems = [];
 let chatAutocompleteIndex = 0;
 const DEFAULT_OWNER_FILES_PATH = "";
 const SESSION_TOKEN_KEY = "hivee_session_token_v2";
+const AGENT_SETUP_DOC_PATH = "/new-user/NEW-ACCOUNT-SETUP.MD";
+const AGENT_SECURITY_DOC_PATH = "/new-user/AGENT-SECURITY-RULES.MD";
 
 function readStoredSessionToken() {
   try {
@@ -2502,6 +2504,28 @@ function setAuthMethod(method) {
   setMessage("auth_msg", "");
 }
 
+function toAbsoluteAppUrl(path) {
+  const raw = String(path || "").trim();
+  if (!raw) return "";
+  try {
+    return new URL(raw, window.location.origin).toString();
+  } catch {
+    return raw;
+  }
+}
+
+function refreshAgentGuideUrls() {
+  const setupUrl = toAbsoluteAppUrl(AGENT_SETUP_DOC_PATH);
+  const securityUrl = toAbsoluteAppUrl(AGENT_SECURITY_DOC_PATH);
+  const setupEl = $("agent_login_url");
+  const securityEl = $("agent_security_url");
+  if (setupEl) setupEl.textContent = setupUrl;
+  if (securityEl) {
+    securityEl.href = securityUrl;
+    securityEl.textContent = securityUrl;
+  }
+}
+
 async function copyAgentUrl() {
   const url = $("agent_login_url")?.textContent?.trim();
   if (!url) return;
@@ -2509,7 +2533,7 @@ async function copyAgentUrl() {
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(url);
-      setMessage("auth_msg", "Agent URL copied.", "ok");
+      setMessage("auth_msg", "Setup URL copied.", "ok");
       return;
     }
   } catch {}
@@ -2521,6 +2545,7 @@ function bindAuthMethods() {
   $("method_hooman").onclick = () => setAuthMethod("hooman");
   $("method_agent").onclick = () => setAuthMethod("agent");
   $("btn_copy_agent_url").onclick = () => copyAgentUrl().catch(() => {});
+  refreshAgentGuideUrls();
   setAuthMethod(activeAuthMethod);
 }
 

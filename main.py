@@ -5167,6 +5167,7 @@ def _resolve_workspace_relative_path(
 app = FastAPI(title="hivee (Prototype)")
 init_db()
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/new-user", StaticFiles(directory=str(NEW_USER_ASSETS_DIR), check_dir=False), name="new_user_assets")
 
 @app.get("/", response_class=HTMLResponse)
 async def index():

@@ -380,6 +380,15 @@ label {
   word-break: break-all;
 }
 
+.agent-guide a {
+  color: #9fc7ff;
+  word-break: break-all;
+}
+
+.agent-guide a:hover {
+  color: #c7ddff;
+}
+
 .setup-wrap {
   max-width: 720px;
   margin: 62px auto;
