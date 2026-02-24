@@ -246,10 +246,7 @@ async function changeAccountPassword(ev) {
   setMessage("account_msg", "Password updated successfully.", "ok");
 }
 
-async function logoutUser() {
-  try {
-    await api("/api/logout", "POST");
-  } catch {}
+function resetClientSessionState(authMessage) {
   if (streamAbort) {
     streamAbort.abort();
     streamAbort = null;
@@ -268,7 +265,36 @@ async function logoutUser() {
   showEmptyProject();
   renderAccountProfile(null);
   setView("auth");
-  setMessage("auth_msg", "Logged out.", "ok");
+  if (authMessage) setMessage("auth_msg", authMessage, "ok");
+}
+
+async function logoutUser() {
+  try {
+    await api("/api/logout", "POST");
+  } catch {}
+  resetClientSessionState("Logged out.");
+}
+
+async function deleteAccount(ev) {
+  ev.preventDefault();
+  setMessage("account_msg", "");
+  const currentPassword = $("acct_delete_pass")?.value || "";
+  const confirmText = String($("acct_delete_confirm")?.value || "").trim().toUpperCase();
+  if (!currentPassword) throw new Error("Enter current password.");
+  if (confirmText !== "DELETE") throw new Error("Type DELETE to confirm account deletion.");
+
+  const ok = window.confirm(
+    "Delete account permanently? This removes all projects, connections, and workspace files."
+  );
+  if (!ok) return;
+
+  await api("/api/me/delete", "POST", {
+    current_password: currentPassword,
+    confirm_text: confirmText,
+  });
+  $("form_delete_account")?.reset();
+  $("form_change_password")?.reset();
+  resetClientSessionState("Account deleted.");
 }
 
 function applyWorkspacePolicy(policy) {
@@ -2718,6 +2744,7 @@ function bindActions() {
   $("form_signup").addEventListener("submit", (ev) => signup(ev).catch((e) => showUiError("auth_msg", e)));
   $("form_connect").addEventListener("submit", (ev) => connectOpenClaw(ev).catch((e) => showUiError("setup_msg", e)));
   $("form_change_password")?.addEventListener("submit", (ev) => changeAccountPassword(ev).catch((e) => showUiError("account_msg", e)));
+  $("form_delete_account")?.addEventListener("submit", (ev) => deleteAccount(ev).catch((e) => showUiError("account_msg", e)));
   $("btn_refresh_account")?.addEventListener("click", () =>
     loadAccountProfile({ silent: false }).catch((e) => showUiError("account_msg", e))
   );

@@ -576,6 +576,72 @@ def _delete_project_with_resources(*, owner_user_id: str, project_id: str) -> Di
         "folder_error": folder_error or None,
     }
 
+def _delete_account_with_resources(*, user_id: str) -> Dict[str, Any]:
+    conn = db()
+    user_row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not user_row:
+        conn.close()
+        return {"ok": False, "error": "User not found"}
+
+    project_rows = conn.execute(
+        "SELECT id FROM projects WHERE user_id = ? ORDER BY created_at DESC",
+        (user_id,),
+    ).fetchall()
+    connection_rows = conn.execute(
+        "SELECT id FROM openclaw_connections WHERE user_id = ? ORDER BY created_at DESC",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+
+    project_ids = [str(r["id"]) for r in project_rows]
+    connection_ids = [str(r["id"]) for r in connection_rows]
+    deleted_projects = 0
+    for project_id in project_ids:
+        deleted = _delete_project_with_resources(owner_user_id=user_id, project_id=project_id)
+        if deleted.get("ok"):
+            deleted_projects += 1
+        project_queues.pop(project_id, None)
+
+    conn = db()
+    conn.execute(
+        "DELETE FROM project_agent_access_tokens WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)",
+        (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM project_agents WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)",
+        (user_id,),
+    )
+    conn.execute("DELETE FROM projects WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM connection_policies WHERE user_id = ?", (user_id,))
+    if connection_ids:
+        placeholders = ",".join(["?"] * len(connection_ids))
+        conn.execute(f"DELETE FROM connection_policies WHERE connection_id IN ({placeholders})", tuple(connection_ids))
+    conn.execute("DELETE FROM openclaw_connections WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+    workspace_deleted = False
+    workspace_error = ""
+    try:
+        user_home = _user_home_dir(user_id).resolve()
+        workspaces_root = SERVER_WORKSPACES_DIR.resolve()
+        if user_home.exists() and _path_within(user_home, workspaces_root):
+            shutil.rmtree(user_home)
+            workspace_deleted = True
+    except Exception as e:
+        workspace_error = str(e)[:500]
+
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "projects_deleted": deleted_projects,
+        "connections_deleted": len(connection_ids),
+        "workspace_deleted": workspace_deleted,
+        "workspace_error": workspace_error or None,
+    }
+
 def _parse_setup_json(raw: Any) -> Dict[str, Any]:
     if isinstance(raw, dict):
         return raw
@@ -4860,6 +4926,10 @@ class AccountPasswordChangeIn(BaseModel):
     current_password: str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=4)
 
+class AccountDeleteIn(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    confirm_text: str = Field(..., min_length=1, description="Type DELETE to confirm account deletion")
+
 class ConnectIn(BaseModel):
     base_url: str = Field(..., description="OpenClaw base URL, e.g. https://claw.yourdomain.com or http://1.2.3.4:3000")
     api_key: str = Field(..., description="Bearer token / API key from OpenClaw")
@@ -5280,6 +5350,31 @@ async def change_account_password(request: Request, payload: AccountPasswordChan
     conn.commit()
     conn.close()
     return {"ok": True, "message": "Password updated successfully."}
+
+@app.post("/api/me/delete")
+async def delete_account(request: Request, response: Response, payload: AccountDeleteIn):
+    user_id = get_session_user(request)
+    confirm = str(payload.confirm_text or "").strip().upper()
+    if confirm != "DELETE":
+        raise HTTPException(400, "Type DELETE to confirm account deletion.")
+
+    conn = db()
+    row = conn.execute(
+        "SELECT id, password FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "User not found")
+    if row["password"] != payload.current_password:
+        raise HTTPException(401, "Current password is incorrect")
+
+    deleted = _delete_account_with_resources(user_id=user_id)
+    if not deleted.get("ok"):
+        raise HTTPException(400, deleted.get("error") or "Failed to delete account")
+
+    _clear_session_cookie(response)
+    return {"ok": True, "message": "Account deleted permanently.", "details": deleted}
 
 @app.post("/api/logout")
 async def logout(request: Request, response: Response):

@@ -1267,6 +1267,11 @@ label {
   font-size: 14px;
 }
 
+.account-card h5 {
+  margin: 0;
+  font-size: 13px;
+}
+
 .account-card-head {
   display: flex;
   align-items: center;
@@ -1360,6 +1365,18 @@ label {
 
 .account-inline-actions {
   margin-top: 4px;
+}
+
+.account-danger-zone {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(255, 138, 154, 0.34);
+  display: grid;
+  gap: 8px;
+}
+
+.account-danger-zone .danger {
+  justify-self: start;
 }
 
 #account_msg {
