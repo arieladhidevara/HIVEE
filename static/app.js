@@ -132,6 +132,7 @@ function applyClaimAuthUI() {
   const methodAgent = $("method_agent");
   const btnLogin = $("btn_login");
   const btnSignup = $("btn_signup");
+  const claimOnlyBlocks = document.querySelectorAll(".claim-only");
   if (!claimAuthContext.active) {
     if (notice) {
       notice.classList.add("hidden");
@@ -143,6 +144,7 @@ function applyClaimAuthUI() {
     }
     if (btnLogin) btnLogin.textContent = "Continue";
     if (btnSignup) btnSignup.textContent = "Create Account";
+    claimOnlyBlocks.forEach((el) => el.classList.add("hidden"));
     return;
   }
   activeAuthMethod = "hooman";
@@ -159,6 +161,23 @@ function applyClaimAuthUI() {
   }
   if (btnLogin) btnLogin.textContent = "Login and Claim";
   if (btnSignup) btnSignup.textContent = "Create Account and Claim";
+  claimOnlyBlocks.forEach((el) => el.classList.remove("hidden"));
+}
+
+function claimConnectionPayload(prefix) {
+  return {
+    openclaw_base_url: $(`${prefix}_oc_base`)?.value?.trim() || "",
+    openclaw_api_key: $(`${prefix}_oc_key`)?.value || "",
+    openclaw_name: $(`${prefix}_oc_name`)?.value?.trim() || null,
+  };
+}
+
+function validateClaimConnectionPayload(payload) {
+  const base = String(payload?.openclaw_base_url || "").trim();
+  const key = String(payload?.openclaw_api_key || "").trim();
+  if (!base) throw new Error("OpenClaw base URL is required for claim.");
+  if (!/^https?:\/\//i.test(base)) throw new Error("OpenClaw base URL must start with http:// or https://");
+  if (!key) throw new Error("OpenClaw API key/token is required for claim.");
 }
 
 function detailToText(detail) {
@@ -2559,6 +2578,8 @@ async function login(ev) {
   const email = $("li_email").value.trim();
   const password = $("li_pass").value;
   const endpoint = claimAuthContext.active ? "/api/a2a/environments/claim/complete" : "/api/login";
+  const connection = claimAuthContext.active ? claimConnectionPayload("li") : null;
+  if (claimAuthContext.active) validateClaimConnectionPayload(connection);
   const body = claimAuthContext.active
     ? {
       environment_id: claimAuthContext.environmentId,
@@ -2566,6 +2587,9 @@ async function login(ev) {
       mode: "login",
       email,
       password,
+      openclaw_base_url: connection.openclaw_base_url,
+      openclaw_api_key: connection.openclaw_api_key,
+      openclaw_name: connection.openclaw_name,
     }
     : {
       email,
@@ -2591,6 +2615,8 @@ async function signup(ev) {
   const email = $("su_email").value.trim();
   const password = $("su_pass").value;
   const endpoint = claimAuthContext.active ? "/api/a2a/environments/claim/complete" : "/api/signup";
+  const connection = claimAuthContext.active ? claimConnectionPayload("su") : null;
+  if (claimAuthContext.active) validateClaimConnectionPayload(connection);
   const body = claimAuthContext.active
     ? {
       environment_id: claimAuthContext.environmentId,
@@ -2598,6 +2624,9 @@ async function signup(ev) {
       mode: "signup",
       email,
       password,
+      openclaw_base_url: connection.openclaw_base_url,
+      openclaw_api_key: connection.openclaw_api_key,
+      openclaw_name: connection.openclaw_name,
     }
     : {
       email,

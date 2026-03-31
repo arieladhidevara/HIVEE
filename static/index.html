@@ -58,6 +58,14 @@
                 <input id="li_email" type="email" placeholder="you@company.com" required>
                 <label>Password</label>
                 <input id="li_pass" type="password" placeholder="Your password" required>
+                <div class="claim-only hidden">
+                  <label>OpenClaw Base URL</label>
+                  <input id="li_oc_base" type="text" placeholder="https://claw.example.com">
+                  <label>OpenClaw API Key / Token</label>
+                  <input id="li_oc_key" type="password" placeholder="Paste gateway token">
+                  <label>Connection Name (optional)</label>
+                  <input id="li_oc_name" type="text" placeholder="Owner OpenClaw">
+                </div>
                 <button id="btn_login" type="submit">Continue</button>
               </form>
 
@@ -66,6 +74,14 @@
                 <input id="su_email" type="email" placeholder="you@company.com" required>
                 <label>Password</label>
                 <input id="su_pass" type="password" placeholder="Min 4 characters" minlength="4" required>
+                <div class="claim-only hidden">
+                  <label>OpenClaw Base URL</label>
+                  <input id="su_oc_base" type="text" placeholder="https://claw.example.com">
+                  <label>OpenClaw API Key / Token</label>
+                  <input id="su_oc_key" type="password" placeholder="Paste gateway token">
+                  <label>Connection Name (optional)</label>
+                  <input id="su_oc_name" type="text" placeholder="Owner OpenClaw">
+                </div>
                 <button id="btn_signup" type="submit">Create Account</button>
               </form>
 

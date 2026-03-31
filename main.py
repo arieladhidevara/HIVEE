@@ -5499,6 +5499,9 @@ class A2AEnvironmentClaimCompleteIn(BaseModel):
     mode: str = Field("signup", description="signup | login")
     email: str = Field(..., min_length=3)
     password: str = Field(..., min_length=4)
+    openclaw_base_url: str = Field(..., min_length=8)
+    openclaw_api_key: str = Field(..., min_length=1)
+    openclaw_name: Optional[str] = None
 
 class A2AEnvironmentClaimCompleteOut(BaseModel):
     token: str
@@ -5506,6 +5509,8 @@ class A2AEnvironmentClaimCompleteOut(BaseModel):
     status: str
     user_id: str
     email: str
+    connection_id: str
+    connection_name: Optional[str] = None
 
 def _bearer_token(request: Request) -> str:
     auth = request.headers.get("Authorization", "")
@@ -5818,12 +5823,28 @@ async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn,
     mode = str(payload.mode or "signup").strip().lower()
     email = str(payload.email or "").lower().strip()
     password = str(payload.password or "")
+    openclaw_base_url = str(payload.openclaw_base_url or "").strip()
+    openclaw_api_key = str(payload.openclaw_api_key or "").strip()
+    openclaw_name = str(payload.openclaw_name or "").strip() or None
     if mode not in {"signup", "login"}:
         raise HTTPException(400, "mode must be signup or login")
     if not env_id or not claim_code:
         raise HTTPException(400, "environment_id and code are required")
+    if not (openclaw_base_url.startswith("http://") or openclaw_base_url.startswith("https://")):
+        raise HTTPException(400, "openclaw_base_url must start with http:// or https://")
+    if not openclaw_api_key:
+        raise HTTPException(400, "openclaw_api_key is required")
 
     now = int(time.time())
+    health = await openclaw_health(openclaw_base_url.rstrip("/"), openclaw_api_key)
+    if not health.get("ok"):
+        raise HTTPException(
+            400,
+            {
+                "message": "Could not verify OpenClaw health during claim",
+                "details": health,
+            },
+        )
     conn = db()
     env_row = conn.execute(
         "SELECT id, owner_user_id, status FROM environments WHERE id = ?",
@@ -5882,7 +5903,19 @@ async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn,
         conn.close()
         raise HTTPException(409, "Environment already claimed by another user")
 
+    bootstrap = await _bootstrap_connection_workspace(user_id, openclaw_base_url.rstrip("/"), openclaw_api_key)
+    if not bootstrap.get("ok"):
+        conn.close()
+        raise HTTPException(
+            400,
+            {
+                "message": "OpenClaw verified, but workspace bootstrap failed during claim",
+                "details": bootstrap,
+            },
+        )
+
     token = new_id("sess")
+    conn_id = new_id("oc")
     conn.execute(
         "INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)",
         (token, user_id, now),
@@ -5911,8 +5944,31 @@ async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn,
         "UPDATE environment_agent_sessions SET status = ?, revoked_at = ? WHERE env_id = ? AND status = ?",
         ("revoked", now, env_id, "active"),
     )
+    conn.execute(
+        "INSERT INTO openclaw_connections (id, user_id, env_id, base_url, api_key, name, created_at) VALUES (?,?,?,?,?,?,?)",
+        (
+            conn_id,
+            user_id,
+            env_id,
+            openclaw_base_url.rstrip("/"),
+            openclaw_api_key,
+            openclaw_name,
+            now,
+        ),
+    )
     conn.commit()
     conn.close()
+    _upsert_connection_policy(
+        conn_id,
+        user_id,
+        main_agent_id=bootstrap.get("main_agent_id"),
+        main_agent_name=bootstrap.get("main_agent_name"),
+        bootstrap_status="ok",
+        bootstrap_error=None,
+        workspace_tree=bootstrap.get("workspace_tree"),
+        workspace_root=str(bootstrap.get("workspace_root") or _user_workspace_root_dir(user_id).as_posix()),
+        templates_root=str(bootstrap.get("templates_root") or _user_templates_dir(user_id).as_posix()),
+    )
 
     _set_session_cookie(response, token)
     return A2AEnvironmentClaimCompleteOut(
@@ -5921,6 +5977,8 @@ async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn,
         status=ENV_STATUS_ACTIVE,
         user_id=user_id,
         email=email,
+        connection_id=conn_id,
+        connection_name=openclaw_name,
     )
 
 @app.get("/api/a2a/environments/{env_id}")
