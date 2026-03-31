@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import mimetypes
+import os
 import re
 import secrets
 import shutil
@@ -11,11 +12,11 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote as url_quote, urlparse, urlunparse
+from urllib.parse import quote as url_quote, urlencode, urlparse, urlunparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -79,6 +80,36 @@ ENV_STATUS_ARCHIVED = "archived"
 ENV_CLAIM_CODE_TTL_SEC = 60 * 15
 ENV_AGENT_SESSION_TTL_SEC = 60 * 60 * 24
 ENV_AGENT_SESSION_HEADER = "X-A2A-Agent-Session"
+PASSWORD_MIN_LENGTH = 10
+PASSWORD_HASH_PREFIX = "pbkdf2_sha256"
+PASSWORD_HASH_ITERATIONS = 260_000
+OAUTH_STATE_TTL_SEC = 60 * 10
+OAUTH_PROVIDERS: Dict[str, Dict[str, str]] = {
+    "google": {
+        "display": "Google",
+        "client_id_env": "GOOGLE_OAUTH_CLIENT_ID",
+        "client_secret_env": "GOOGLE_OAUTH_CLIENT_SECRET",
+        "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scope": "openid email profile",
+    },
+    "github": {
+        "display": "GitHub",
+        "client_id_env": "GITHUB_OAUTH_CLIENT_ID",
+        "client_secret_env": "GITHUB_OAUTH_CLIENT_SECRET",
+        "authorize_url": "https://github.com/login/oauth/authorize",
+        "token_url": "https://github.com/login/oauth/access_token",
+        "scope": "read:user user:email",
+    },
+    "facebook": {
+        "display": "Facebook",
+        "client_id_env": "FACEBOOK_OAUTH_CLIENT_ID",
+        "client_secret_env": "FACEBOOK_OAUTH_CLIENT_SECRET",
+        "authorize_url": "https://www.facebook.com/v22.0/dialog/oauth",
+        "token_url": "https://graph.facebook.com/v22.0/oauth/access_token",
+        "scope": "email public_profile",
+    },
+}
 DEFAULT_PROJECT_SETUP_MD = """# PROJECT-SETUP
 Ask these questions one by one before creating a project:
 1. What is the project name?
@@ -253,6 +284,33 @@ def init_db() -> None:
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS oauth_identities (
+            provider TEXT NOT NULL,
+            provider_user_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            email TEXT,
+            display_name TEXT,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(provider, provider_user_id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS oauth_states (
+            state TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            redirect_path TEXT,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_oauth_identities_user_id ON oauth_identities(user_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_oauth_states_expires_at ON oauth_states(expires_at)")
     cols = [r[1] for r in cur.execute("PRAGMA table_info(project_agents)").fetchall()]
     if "is_primary" not in cols:
         cur.execute("ALTER TABLE project_agents ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0")
@@ -361,6 +419,295 @@ def format_ts(ts: Optional[int]) -> str:
 
 def _hash_access_token(token: str) -> str:
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+def _normalize_email(raw_email: str) -> str:
+    return str(raw_email or "").strip().lower()
+
+def _validate_password_strength(password: str, *, field_name: str = "Password") -> None:
+    raw = str(password or "")
+    if len(raw) < PASSWORD_MIN_LENGTH:
+        raise HTTPException(400, f"{field_name} must be at least {PASSWORD_MIN_LENGTH} characters.")
+    if not re.search(r"[a-z]", raw):
+        raise HTTPException(400, f"{field_name} must include at least one lowercase letter.")
+    if not re.search(r"[A-Z]", raw):
+        raise HTTPException(400, f"{field_name} must include at least one uppercase letter.")
+    if not re.search(r"[0-9]", raw):
+        raise HTTPException(400, f"{field_name} must include at least one number.")
+    if not re.search(r"[^A-Za-z0-9]", raw):
+        raise HTTPException(400, f"{field_name} must include at least one symbol.")
+
+def _hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        str(password or "").encode("utf-8"),
+        salt,
+        PASSWORD_HASH_ITERATIONS,
+    )
+    return f"{PASSWORD_HASH_PREFIX}${PASSWORD_HASH_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+def _verify_password(password: str, stored_password: str) -> bool:
+    provided = str(password or "")
+    stored = str(stored_password or "")
+    prefix = f"{PASSWORD_HASH_PREFIX}$"
+    if not stored.startswith(prefix):
+        return secrets.compare_digest(stored, provided)
+    parts = stored.split("$")
+    if len(parts) != 4:
+        return False
+    _, iter_raw, salt_hex, digest_hex = parts
+    try:
+        iterations = int(iter_raw)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+    except Exception:
+        return False
+    computed = hashlib.pbkdf2_hmac("sha256", provided.encode("utf-8"), salt, iterations)
+    return secrets.compare_digest(computed, expected)
+
+def _is_password_hashed(stored_password: str) -> bool:
+    return str(stored_password or "").startswith(f"{PASSWORD_HASH_PREFIX}$")
+
+def _verify_password_and_upgrade(conn: sqlite3.Connection, user_id: str, provided_password: str, stored_password: str) -> bool:
+    if not _verify_password(provided_password, stored_password):
+        return False
+    if _is_password_hashed(stored_password):
+        return True
+    conn.execute(
+        "UPDATE users SET password = ? WHERE id = ?",
+        (_hash_password(provided_password), user_id),
+    )
+    return True
+
+def _sanitize_next_path(raw_path: Optional[str]) -> str:
+    value = str(raw_path or "/").strip()
+    if not value:
+        return "/"
+    if not value.startswith("/") or value.startswith("//"):
+        return "/"
+    return value
+
+def _request_origin(request: Request) -> str:
+    proto = str(request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
+    host = str(request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc or "").split(",")[0].strip()
+    if not host:
+        return str(request.base_url).rstrip("/")
+    return f"{proto}://{host}"
+
+def _oauth_callback_url(request: Request, provider: str) -> str:
+    return f"{_request_origin(request)}{app.url_path_for('oauth_callback', provider=provider)}"
+
+def _new_oauth_state_token() -> str:
+    return f"oas_{secrets.token_urlsafe(24)}"
+
+def _oauth_provider_config(provider: str) -> Dict[str, str]:
+    key = str(provider or "").strip().lower()
+    cfg = OAUTH_PROVIDERS.get(key)
+    if not cfg:
+        raise HTTPException(404, "OAuth provider not supported")
+    client_id = str(os.getenv(cfg["client_id_env"], "")).strip()
+    client_secret = str(os.getenv(cfg["client_secret_env"], "")).strip()
+    if not client_id or not client_secret:
+        raise HTTPException(
+            400,
+            f"{cfg['display']} OAuth is not configured on server. Missing {cfg['client_id_env']} or {cfg['client_secret_env']}.",
+        )
+    return {
+        **cfg,
+        "provider": key,
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+
+def _build_oauth_authorize_url(provider_cfg: Dict[str, str], *, redirect_uri: str, state: str) -> str:
+    provider = str(provider_cfg.get("provider") or "").strip().lower()
+    params: Dict[str, str] = {
+        "client_id": str(provider_cfg["client_id"]),
+        "redirect_uri": str(redirect_uri),
+        "response_type": "code",
+        "scope": str(provider_cfg["scope"]),
+        "state": str(state),
+    }
+    if provider == "google":
+        params["access_type"] = "online"
+        params["prompt"] = "select_account"
+    return f"{provider_cfg['authorize_url']}?{urlencode(params)}"
+
+async def _oauth_exchange_code_for_token(
+    provider_cfg: Dict[str, str],
+    *,
+    code: str,
+    redirect_uri: str,
+) -> str:
+    provider = str(provider_cfg.get("provider") or "").strip().lower()
+    payload = {
+        "client_id": provider_cfg["client_id"],
+        "client_secret": provider_cfg["client_secret"],
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+    if provider in {"google", "facebook"}:
+        payload["grant_type"] = "authorization_code"
+    headers = {"Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        token_resp = await client.post(provider_cfg["token_url"], data=payload, headers=headers)
+    if token_resp.status_code >= 400:
+        raise HTTPException(400, f"{provider_cfg['display']} OAuth token exchange failed ({token_resp.status_code}).")
+    try:
+        token_payload = token_resp.json()
+    except Exception:
+        raise HTTPException(400, f"{provider_cfg['display']} OAuth token response is invalid.")
+    if token_payload.get("error"):
+        raise HTTPException(400, f"{provider_cfg['display']} OAuth token exchange failed: {detail_to_text(token_payload.get('error_description') or token_payload.get('error'))}")
+    token = str(token_payload.get("access_token") or "").strip()
+    if not token:
+        raise HTTPException(400, f"{provider_cfg['display']} OAuth did not return access token.")
+    return token
+
+async def _oauth_fetch_profile(provider_cfg: Dict[str, str], *, access_token: str) -> Dict[str, str]:
+    provider = str(provider_cfg.get("provider") or "").strip().lower()
+    display_name = str(provider_cfg.get("display") or provider.title())
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": "hivee-oauth",
+    }
+    async with httpx.AsyncClient(timeout=20) as client:
+        if provider == "google":
+            profile_resp = await client.get("https://openidconnect.googleapis.com/v1/userinfo", headers=headers)
+            if profile_resp.status_code >= 400:
+                raise HTTPException(400, f"{display_name} OAuth userinfo failed ({profile_resp.status_code}).")
+            payload = profile_resp.json()
+            provider_user_id = str(payload.get("sub") or "").strip()
+            email = _normalize_email(str(payload.get("email") or ""))
+            name = str(payload.get("name") or payload.get("given_name") or "").strip()
+        elif provider == "github":
+            profile_resp = await client.get("https://api.github.com/user", headers=headers)
+            if profile_resp.status_code >= 400:
+                raise HTTPException(400, f"{display_name} OAuth user profile failed ({profile_resp.status_code}).")
+            payload = profile_resp.json()
+            provider_user_id = str(payload.get("id") or "").strip()
+            email = _normalize_email(str(payload.get("email") or ""))
+            name = str(payload.get("name") or payload.get("login") or "").strip()
+            if not email:
+                emails_resp = await client.get("https://api.github.com/user/emails", headers=headers)
+                if emails_resp.status_code < 400:
+                    try:
+                        email_payload = emails_resp.json()
+                    except Exception:
+                        email_payload = []
+                    entries = email_payload if isinstance(email_payload, list) else []
+                    picked = ""
+                    for item in entries:
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("primary") and item.get("verified") and item.get("email"):
+                            picked = str(item.get("email"))
+                            break
+                    if not picked:
+                        for item in entries:
+                            if isinstance(item, dict) and item.get("verified") and item.get("email"):
+                                picked = str(item.get("email"))
+                                break
+                    email = _normalize_email(picked)
+        elif provider == "facebook":
+            profile_resp = await client.get(
+                "https://graph.facebook.com/me",
+                params={"fields": "id,name,email"},
+                headers=headers,
+            )
+            if profile_resp.status_code >= 400:
+                raise HTTPException(400, f"{display_name} OAuth user profile failed ({profile_resp.status_code}).")
+            payload = profile_resp.json()
+            provider_user_id = str(payload.get("id") or "").strip()
+            email = _normalize_email(str(payload.get("email") or ""))
+            name = str(payload.get("name") or "").strip()
+        else:
+            raise HTTPException(404, "OAuth provider not supported")
+    if not provider_user_id:
+        raise HTTPException(400, f"{display_name} OAuth did not return provider user id.")
+    return {
+        "provider_user_id": provider_user_id,
+        "email": email,
+        "display_name": name,
+    }
+
+def _resolve_oauth_user(conn: sqlite3.Connection, *, provider: str, provider_user_id: str, email: str, display_name: str) -> Tuple[str, str]:
+    now = int(time.time())
+    normalized_email = _normalize_email(email)
+    provider_key = str(provider or "").strip().lower()
+    p_user_id = str(provider_user_id or "").strip()
+    if not provider_key or not p_user_id:
+        raise HTTPException(400, "Invalid OAuth identity")
+
+    identity = conn.execute(
+        "SELECT user_id, email FROM oauth_identities WHERE provider = ? AND provider_user_id = ?",
+        (provider_key, p_user_id),
+    ).fetchone()
+    if identity:
+        user_row = conn.execute(
+            "SELECT id, email FROM users WHERE id = ?",
+            (str(identity["user_id"]),),
+        ).fetchone()
+        if user_row:
+            return str(user_row["id"]), str(user_row["email"] or normalized_email)
+
+    user_row = None
+    if normalized_email:
+        user_row = conn.execute(
+            "SELECT id, email FROM users WHERE email = ?",
+            (normalized_email,),
+        ).fetchone()
+    if user_row:
+        user_id = str(user_row["id"])
+        user_email = str(user_row["email"] or normalized_email)
+    else:
+        user_id = new_id("usr")
+        user_email = normalized_email
+        if not user_email:
+            user_email = f"{provider_key}_{p_user_id}@oauth.hivee.local"
+        inserted = False
+        while not inserted:
+            try:
+                conn.execute(
+                    "INSERT INTO users (id, email, password, created_at) VALUES (?,?,?,?)",
+                    (user_id, user_email, _hash_password(secrets.token_urlsafe(32)), now),
+                )
+                inserted = True
+            except sqlite3.IntegrityError:
+                user_email = f"{provider_key}_{p_user_id}_{secrets.token_hex(3)}@oauth.hivee.local"
+
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO oauth_identities (provider, provider_user_id, user_id, email, display_name, created_at)
+        VALUES (?,?,?,?,?,?)
+        """,
+        (
+            provider_key,
+            p_user_id,
+            user_id,
+            normalized_email or None,
+            str(display_name or "").strip() or None,
+            now,
+        ),
+    )
+    return user_id, user_email
+
+def _issue_user_session(conn: sqlite3.Connection, user_id: str) -> str:
+    token = new_id("sess")
+    conn.execute(
+        "INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)",
+        (token, user_id, int(time.time())),
+    )
+    return token
+
+def _oauth_redirect_with_message(next_path: str, *, error: Optional[str] = None) -> RedirectResponse:
+    base = _sanitize_next_path(next_path)
+    if not error:
+        return RedirectResponse(url=base, status_code=302)
+    sep = "&" if "?" in base else "?"
+    msg = url_quote(str(error or "OAuth failed")[:220], safe="")
+    return RedirectResponse(url=f"{base}{sep}oauth_error={msg}", status_code=302)
 
 def _new_agent_access_token() -> str:
     return f"agtok_{secrets.token_urlsafe(24)}"
@@ -5300,11 +5647,18 @@ async def _delegate_project_tasks(project_id: str) -> None:
 
 class SignupIn(BaseModel):
     email: str = Field(..., examples=["you@example.com"])
-    password: str = Field(..., min_length=4)
+    password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
 
 class LoginIn(BaseModel):
     email: str
     password: str
+
+class OAuthStartIn(BaseModel):
+    next_path: Optional[str] = "/"
+
+class OAuthStartOut(BaseModel):
+    provider: str
+    auth_url: str
 
 class SessionOut(BaseModel):
     token: str
@@ -5319,7 +5673,7 @@ class AccountProfileOut(BaseModel):
 
 class AccountPasswordChangeIn(BaseModel):
     current_password: str = Field(..., min_length=1)
-    new_password: str = Field(..., min_length=4)
+    new_password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
 
 class AccountDeleteIn(BaseModel):
     current_password: str = Field(..., min_length=1)
@@ -5498,7 +5852,7 @@ class A2AEnvironmentClaimCompleteIn(BaseModel):
     code: str = Field(..., min_length=1)
     mode: str = Field("signup", description="signup | login")
     email: str = Field(..., min_length=3)
-    password: str = Field(..., min_length=4)
+    password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
     openclaw_base_url: str = Field(..., min_length=8)
     openclaw_api_key: str = Field(..., min_length=1)
     openclaw_name: Optional[str] = None
@@ -5668,50 +6022,134 @@ async def index():
 
 @app.post("/api/signup", response_model=SessionOut)
 async def signup(payload: SignupIn, response: Response):
+    email = _normalize_email(payload.email)
+    _validate_password_strength(payload.password)
     conn = db()
-    cur = conn.cursor()
     user_id = new_id("usr")
     try:
-        cur.execute(
+        conn.execute(
             "INSERT INTO users (id, email, password, created_at) VALUES (?,?,?,?)",
-            (user_id, payload.email.lower().strip(), payload.password, int(time.time())),
+            (user_id, email, _hash_password(payload.password), int(time.time())),
         )
-        token = new_id("sess")
-        cur.execute(
-            "INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)",
-            (token, user_id, int(time.time())),
-        )
+        token = _issue_user_session(conn, user_id)
         conn.commit()
     except sqlite3.IntegrityError:
         conn.close()
         raise HTTPException(400, "Email already registered")
     conn.close()
     _ensure_user_workspace(user_id)
-    _ensure_primary_environment_for_user(user_id, email=payload.email.lower().strip())
+    _ensure_primary_environment_for_user(user_id, email=email)
     _set_session_cookie(response, token)
     return SessionOut(token=token)
 
 @app.post("/api/login", response_model=SessionOut)
 async def login(payload: LoginIn, response: Response):
+    email = _normalize_email(payload.email)
     conn = db()
     row = conn.execute(
         "SELECT id, email, password FROM users WHERE email = ?",
-        (payload.email.lower().strip(),),
+        (email,),
     ).fetchone()
-    if not row or row["password"] != payload.password:
+    if not row or not _verify_password_and_upgrade(conn, str(row["id"]), payload.password, str(row["password"] or "")):
         conn.close()
         raise HTTPException(401, "Invalid email/password")
-    token = new_id("sess")
-    conn.execute(
-        "INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)",
-        (token, row["id"], int(time.time())),
-    )
+    token = _issue_user_session(conn, str(row["id"]))
     conn.commit()
     conn.close()
     _ensure_user_workspace(row["id"])
-    _ensure_primary_environment_for_user(str(row["id"]), email=str(row["email"] or payload.email))
+    _ensure_primary_environment_for_user(str(row["id"]), email=str(row["email"] or email))
     _set_session_cookie(response, token)
     return SessionOut(token=token)
+
+@app.post("/api/oauth/{provider}/start", response_model=OAuthStartOut)
+async def oauth_start(request: Request, provider: str, payload: OAuthStartIn):
+    provider_cfg = _oauth_provider_config(provider)
+    provider_key = str(provider_cfg["provider"])
+    next_path = _sanitize_next_path(payload.next_path)
+    state = _new_oauth_state_token()
+    now = int(time.time())
+    conn = db()
+    conn.execute("DELETE FROM oauth_states WHERE expires_at <= ?", (now,))
+    conn.execute(
+        "INSERT INTO oauth_states (state, provider, redirect_path, created_at, expires_at) VALUES (?,?,?,?,?)",
+        (state, provider_key, next_path, now, now + OAUTH_STATE_TTL_SEC),
+    )
+    conn.commit()
+    conn.close()
+    redirect_uri = _oauth_callback_url(request, provider_key)
+    auth_url = _build_oauth_authorize_url(provider_cfg, redirect_uri=redirect_uri, state=state)
+    return OAuthStartOut(provider=provider_key, auth_url=auth_url)
+
+@app.get("/api/oauth/{provider}/callback", name="oauth_callback")
+async def oauth_callback(
+    request: Request,
+    provider: str,
+    code: str = "",
+    state: str = "",
+    error: Optional[str] = None,
+):
+    provider_key = str(provider or "").strip().lower()
+    if error:
+        return _oauth_redirect_with_message("/", error=f"{provider_key} OAuth error: {error}")
+    if not code or not state:
+        return _oauth_redirect_with_message("/", error="Missing OAuth code/state.")
+
+    now = int(time.time())
+    next_path = "/"
+    conn = db()
+    row = conn.execute(
+        "SELECT provider, redirect_path, expires_at FROM oauth_states WHERE state = ?",
+        (state,),
+    ).fetchone()
+    conn.execute("DELETE FROM oauth_states WHERE expires_at <= ?", (now,))
+    if not row:
+        conn.commit()
+        conn.close()
+        return _oauth_redirect_with_message("/", error="OAuth state invalid or expired.")
+    next_path = _sanitize_next_path(row["redirect_path"])
+    if str(row["provider"] or "").strip().lower() != provider_key:
+        conn.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+        conn.commit()
+        conn.close()
+        return _oauth_redirect_with_message(next_path, error="OAuth state/provider mismatch.")
+    if int(row["expires_at"] or 0) <= now:
+        conn.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+        conn.commit()
+        conn.close()
+        return _oauth_redirect_with_message(next_path, error="OAuth state expired.")
+    conn.execute("DELETE FROM oauth_states WHERE state = ?", (state,))
+    conn.commit()
+    conn.close()
+
+    try:
+        provider_cfg = _oauth_provider_config(provider_key)
+        redirect_uri = _oauth_callback_url(request, provider_key)
+        access_token = await _oauth_exchange_code_for_token(provider_cfg, code=str(code), redirect_uri=redirect_uri)
+        profile = await _oauth_fetch_profile(provider_cfg, access_token=access_token)
+    except HTTPException as exc:
+        return _oauth_redirect_with_message(next_path, error=detail_to_text(exc.detail))
+    except Exception:
+        return _oauth_redirect_with_message(next_path, error="OAuth login failed. Please retry.")
+
+    conn = db()
+    try:
+        user_id, user_email = _resolve_oauth_user(
+            conn,
+            provider=provider_key,
+            provider_user_id=str(profile.get("provider_user_id") or ""),
+            email=str(profile.get("email") or ""),
+            display_name=str(profile.get("display_name") or ""),
+        )
+        token = _issue_user_session(conn, user_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+    _ensure_user_workspace(user_id)
+    _ensure_primary_environment_for_user(user_id, email=user_email)
+    redirect = _oauth_redirect_with_message(next_path)
+    _set_session_cookie(redirect, token)
+    return redirect
 
 @app.post("/api/a2a/environments/bootstrap")
 async def bootstrap_a2a_environment(request: Request, payload: A2AEnvironmentBootstrapIn):
@@ -5821,7 +6259,7 @@ async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn,
     env_id = str(payload.environment_id or "").strip()
     claim_code = str(payload.code or "").strip()
     mode = str(payload.mode or "signup").strip().lower()
-    email = str(payload.email or "").lower().strip()
+    email = _normalize_email(payload.email)
     password = str(payload.password or "")
     openclaw_base_url = str(payload.openclaw_base_url or "").strip()
     openclaw_api_key = str(payload.openclaw_api_key or "").strip()
@@ -5834,6 +6272,8 @@ async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn,
         raise HTTPException(400, "openclaw_base_url must start with http:// or https://")
     if not openclaw_api_key:
         raise HTTPException(400, "openclaw_api_key is required")
+    if mode == "signup":
+        _validate_password_strength(password)
 
     now = int(time.time())
     health = await openclaw_health(openclaw_base_url.rstrip("/"), openclaw_api_key)
@@ -5883,7 +6323,7 @@ async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn,
         try:
             conn.execute(
                 "INSERT INTO users (id, email, password, created_at) VALUES (?,?,?,?)",
-                (user_id, email, password, now),
+                (user_id, email, _hash_password(password), now),
             )
         except sqlite3.IntegrityError:
             conn.close()
@@ -5893,7 +6333,7 @@ async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn,
             "SELECT id, password FROM users WHERE email = ?",
             (email,),
         ).fetchone()
-        if not user_row or str(user_row["password"] or "") != password:
+        if not user_row or not _verify_password_and_upgrade(conn, str(user_row["id"]), password, str(user_row["password"] or "")):
             conn.close()
             raise HTTPException(401, "Invalid email/password")
         user_id = str(user_row["id"])
@@ -6118,6 +6558,7 @@ async def change_account_password(request: Request, payload: AccountPasswordChan
     current_token = _bearer_token(request)
     current_password = str(payload.current_password or "")
     new_password = str(payload.new_password or "")
+    _validate_password_strength(new_password, field_name="New password")
     if current_password == new_password:
         raise HTTPException(400, "New password must be different from current password")
     conn = db()
@@ -6128,12 +6569,12 @@ async def change_account_password(request: Request, payload: AccountPasswordChan
     if not row:
         conn.close()
         raise HTTPException(404, "User not found")
-    if str(row["password"] or "") != current_password:
+    if not _verify_password(current_password, str(row["password"] or "")):
         conn.close()
         raise HTTPException(401, "Current password is incorrect")
     conn.execute(
         "UPDATE users SET password = ? WHERE id = ?",
-        (new_password, user_id),
+        (_hash_password(new_password), user_id),
     )
     if current_token:
         conn.execute(
@@ -6159,7 +6600,7 @@ async def delete_account(request: Request, response: Response, payload: AccountD
     conn.close()
     if not row:
         raise HTTPException(404, "User not found")
-    if row["password"] != payload.current_password:
+    if not _verify_password(str(payload.current_password or ""), str(row["password"] or "")):
         raise HTTPException(401, "Current password is incorrect")
 
     deleted = _delete_account_with_resources(user_id=user_id)

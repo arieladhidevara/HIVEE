@@ -56,6 +56,8 @@ const AGENT_SETUP_DOC_PATH = "/new-user/NEW-ACCOUNT-SETUP.MD";
 const AGENT_SECURITY_DOC_PATH = "/new-user/AGENT-SECURITY-RULES.MD";
 const CLAIM_ENV_PARAM = "claim_env_id";
 const CLAIM_CODE_PARAM = "claim_code";
+const OAUTH_ERROR_PARAM = "oauth_error";
+const PASSWORD_POLICY_MIN_LENGTH = 10;
 let claimAuthContext = {
   active: false,
   environmentId: "",
@@ -127,11 +129,28 @@ function clearClaimParamsFromUrl() {
   window.history.replaceState({}, "", next);
 }
 
+function readOauthErrorFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    return String(params.get(OAUTH_ERROR_PARAM) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function clearOauthErrorParamFromUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete(OAUTH_ERROR_PARAM);
+  const next = url.pathname + (url.search ? url.search : "") + (url.hash ? url.hash : "");
+  window.history.replaceState({}, "", next);
+}
+
 function applyClaimAuthUI() {
   const notice = $("claim_notice");
   const methodAgent = $("method_agent");
   const btnLogin = $("btn_login");
   const btnSignup = $("btn_signup");
+  const socialAuthBlock = $("social_auth_block");
   const claimOnlyBlocks = document.querySelectorAll(".claim-only");
   if (!claimAuthContext.active) {
     if (notice) {
@@ -144,6 +163,7 @@ function applyClaimAuthUI() {
     }
     if (btnLogin) btnLogin.textContent = "Continue";
     if (btnSignup) btnSignup.textContent = "Create Account";
+    if (socialAuthBlock) socialAuthBlock.classList.remove("hidden");
     claimOnlyBlocks.forEach((el) => el.classList.add("hidden"));
     return;
   }
@@ -161,6 +181,7 @@ function applyClaimAuthUI() {
   }
   if (btnLogin) btnLogin.textContent = "Login and Claim";
   if (btnSignup) btnSignup.textContent = "Create Account and Claim";
+  if (socialAuthBlock) socialAuthBlock.classList.add("hidden");
   claimOnlyBlocks.forEach((el) => el.classList.remove("hidden"));
 }
 
@@ -178,6 +199,63 @@ function validateClaimConnectionPayload(payload) {
   if (!base) throw new Error("OpenClaw base URL is required for claim.");
   if (!/^https?:\/\//i.test(base)) throw new Error("OpenClaw base URL must start with http:// or https://");
   if (!key) throw new Error("OpenClaw API key/token is required for claim.");
+}
+
+function validatePasswordStrength(password, label = "Password") {
+  const value = String(password || "");
+  if (value.length < PASSWORD_POLICY_MIN_LENGTH) {
+    throw new Error(`${label} must be at least ${PASSWORD_POLICY_MIN_LENGTH} characters.`);
+  }
+  if (!/[a-z]/.test(value)) throw new Error(`${label} must include at least one lowercase letter.`);
+  if (!/[A-Z]/.test(value)) throw new Error(`${label} must include at least one uppercase letter.`);
+  if (!/[0-9]/.test(value)) throw new Error(`${label} must include at least one number.`);
+  if (!/[^A-Za-z0-9]/.test(value)) throw new Error(`${label} must include at least one symbol.`);
+}
+
+function randomChar(source) {
+  if (!source || !source.length) return "";
+  let idx = Math.floor(Math.random() * source.length);
+  if (window.crypto?.getRandomValues) {
+    const bytes = new Uint32Array(1);
+    window.crypto.getRandomValues(bytes);
+    idx = bytes[0] % source.length;
+  }
+  return source[idx];
+}
+
+function shuffleString(input) {
+  const arr = String(input || "").split("");
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    let j = Math.floor(Math.random() * (i + 1));
+    if (window.crypto?.getRandomValues) {
+      const bytes = new Uint32Array(1);
+      window.crypto.getRandomValues(bytes);
+      j = bytes[0] % (i + 1);
+    }
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.join("");
+}
+
+function buildGeneratedPassword(length = 18) {
+  const targetLength = Math.max(PASSWORD_POLICY_MIN_LENGTH, Number(length || 18));
+  const lower = "abcdefghjkmnpqrstuvwxyz";
+  const upper = "ABCDEFGHJKMNPQRSTUVWXYZ";
+  const nums = "23456789";
+  const symbols = "!@#$%^&*-_=+?";
+  const all = lower + upper + nums + symbols;
+  let raw = randomChar(lower) + randomChar(upper) + randomChar(nums) + randomChar(symbols);
+  while (raw.length < targetLength) raw += randomChar(all);
+  return shuffleString(raw);
+}
+
+function fillGeneratedSignupPassword() {
+  const generated = buildGeneratedPassword(18);
+  const passEl = $("su_pass");
+  const confirmEl = $("su_pass_confirm");
+  if (passEl) passEl.value = generated;
+  if (confirmEl) confirmEl.value = generated;
+  setMessage("auth_msg", "Secure password generated. You can still edit it before sign up.", "ok");
 }
 
 function detailToText(detail) {
@@ -311,9 +389,7 @@ async function changeAccountPassword(ev) {
   if (!currentPassword || !newPassword || !confirmPassword) {
     throw new Error("Fill all password fields.");
   }
-  if (newPassword.length < 4) {
-    throw new Error("New password must be at least 4 characters.");
-  }
+  validatePasswordStrength(newPassword, "New password");
   if (newPassword !== confirmPassword) {
     throw new Error("New password confirmation does not match.");
   }
@@ -2614,6 +2690,11 @@ async function signup(ev) {
   setMessage("auth_msg", "");
   const email = $("su_email").value.trim();
   const password = $("su_pass").value;
+  const confirmPassword = $("su_pass_confirm")?.value || "";
+  if (password !== confirmPassword) {
+    throw new Error("Password confirmation does not match.");
+  }
+  validatePasswordStrength(password);
   const endpoint = claimAuthContext.active ? "/api/a2a/environments/claim/complete" : "/api/signup";
   const connection = claimAuthContext.active ? claimConnectionPayload("su") : null;
   if (claimAuthContext.active) validateClaimConnectionPayload(connection);
@@ -2644,6 +2725,21 @@ async function signup(ev) {
     setMessage("auth_msg", "Account created", "ok");
   }
   await fetchInitial();
+}
+
+async function startOAuth(provider) {
+  setMessage("auth_msg", "");
+  if (claimAuthContext.active) {
+    throw new Error("Social login is disabled in claim mode. Use email and password for this claim link.");
+  }
+  const providerKey = String(provider || "").trim().toLowerCase();
+  if (!providerKey) throw new Error("Invalid OAuth provider.");
+  const res = await api(`/api/oauth/${encodeURIComponent(providerKey)}/start`, "POST", {
+    next_path: window.location.pathname || "/",
+  });
+  const authUrl = String(res?.auth_url || "").trim();
+  if (!authUrl) throw new Error("OAuth URL was not generated.");
+  window.location.assign(authUrl);
 }
 
 function setAuthMethod(method) {
@@ -2870,6 +2966,13 @@ async function fetchInitial() {
 function bindActions() {
   $("form_login").addEventListener("submit", (ev) => login(ev).catch((e) => showUiError("auth_msg", e)));
   $("form_signup").addEventListener("submit", (ev) => signup(ev).catch((e) => showUiError("auth_msg", e)));
+  $("btn_generate_password")?.addEventListener("click", () => fillGeneratedSignupPassword());
+  for (const btn of document.querySelectorAll("[data-oauth-provider]")) {
+    btn.addEventListener("click", () => {
+      const provider = btn.dataset.oauthProvider;
+      startOAuth(provider).catch((e) => showUiError("auth_msg", e));
+    });
+  }
   $("form_connect").addEventListener("submit", (ev) => connectOpenClaw(ev).catch((e) => showUiError("setup_msg", e)));
   $("form_change_password")?.addEventListener("submit", (ev) => changeAccountPassword(ev).catch((e) => showUiError("account_msg", e)));
   $("form_delete_account")?.addEventListener("submit", (ev) => deleteAccount(ev).catch((e) => showUiError("account_msg", e)));
@@ -3023,6 +3126,11 @@ bindAuthMethods();
 bindActions();
 sessionToken = readStoredSessionToken();
 setView("auth");
+const oauthError = readOauthErrorFromUrl();
+if (oauthError) {
+  setMessage("auth_msg", oauthError, "error");
+  clearOauthErrorParamFromUrl();
+}
 fetchInitial()
   .catch(() => {
     setView("auth");

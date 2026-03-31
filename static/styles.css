@@ -355,6 +355,66 @@ label {
   background: rgba(171, 179, 194, 0.7);
 }
 
+.social-auth-block {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.social-divider {
+  position: relative;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.social-divider::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px solid rgba(94, 103, 118, 0.66);
+  transform: translateY(-50%);
+}
+
+.social-divider span {
+  position: relative;
+  padding: 0 8px;
+  background: rgba(23, 28, 35, 0.92);
+}
+
+.social-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.social-btn {
+  border: 1px solid rgba(90, 100, 116, 0.74);
+  background: rgba(25, 30, 37, 0.95);
+  color: #eef2fb;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 9px 12px;
+}
+
+.social-btn:hover {
+  border-color: rgba(157, 176, 211, 0.88);
+  background: rgba(33, 39, 48, 0.98);
+  transform: translateY(-1px);
+}
+
+.social-btn svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}
+
 .agent-guide {
   border: 1px solid rgba(88, 97, 113, 0.58);
   border-radius: 12px;
