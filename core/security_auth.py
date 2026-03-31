@@ -96,14 +96,52 @@ def _sanitize_next_path(raw_path: Optional[str]) -> str:
     return value
 
 def _request_origin(request: Request) -> str:
-    proto = str(request.headers.get("x-forwarded-proto") or request.url.scheme or "http").split(",")[0].strip()
-    host = str(request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc or "").split(",")[0].strip()
+    explicit_base = str(os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
+    if explicit_base:
+        parsed = urlparse(explicit_base)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return explicit_base
+
+    railway_domain = str(os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip().strip("/")
+    if railway_domain:
+        if railway_domain.startswith("http://") or railway_domain.startswith("https://"):
+            parsed = urlparse(railway_domain)
+            if parsed.netloc:
+                return f"https://{parsed.netloc}"
+        return f"https://{railway_domain}"
+
+    proto_candidates = [
+        part.strip().lower()
+        for part in str(request.headers.get("x-forwarded-proto") or "").split(",")
+        if part.strip()
+    ]
+    host_candidates = [
+        part.strip()
+        for part in str(request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")
+        if part.strip()
+    ]
+
+    if "https" in proto_candidates:
+        proto = "https"
+    elif proto_candidates:
+        proto = proto_candidates[0]
+    else:
+        proto = str(request.url.scheme or "http").strip().lower() or "http"
+
+    host = host_candidates[0] if host_candidates else str(request.url.netloc or "").strip()
     if not host:
         return str(request.base_url).rstrip("/")
+
+    if proto == "http":
+        host_only = host.split(":", 1)[0].strip().lower()
+        if host_only.endswith(".railway.app"):
+            proto = "https"
+
     return f"{proto}://{host}"
 
 def _oauth_callback_url(request: Request, provider: str) -> str:
-    return str(request.url_for('oauth_callback', provider=provider))
+    callback_path = str(request.app.url_path_for('oauth_callback', provider=provider))
+    return f"{_request_origin(request)}{callback_path}"
 
 def _new_oauth_state_token() -> str:
     return f"oas_{secrets.token_urlsafe(24)}"

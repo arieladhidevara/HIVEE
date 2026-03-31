@@ -112,7 +112,7 @@ def _resolve_project_relative_path(
     return target
 
 def _build_claim_url(request: Request, env_id: str, code: str) -> str:
-    base = str(request.base_url).rstrip("/")
+    base = _request_origin(request)
     return (
         f"{base}/?claim_env_id={url_quote(env_id, safe='')}"
         f"&claim_code={url_quote(code, safe='')}"
