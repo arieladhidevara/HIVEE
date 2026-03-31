@@ -124,17 +124,17 @@ def _oauth_provider_config(provider: str) -> Dict[str, str]:
         "client_secret": client_secret,
     }
 
-def _oauth_providers_public_status() -> List["OAuthProviderOut"]:
-    providers: List["OAuthProviderOut"] = []
+def _oauth_providers_public_status() -> List[Dict[str, Any]]:
+    providers: List[Dict[str, Any]] = []
     for key, cfg in OAUTH_PROVIDERS.items():
         client_id = str(os.getenv(str(cfg.get("client_id_env") or ""), "")).strip()
         client_secret = str(os.getenv(str(cfg.get("client_secret_env") or ""), "")).strip()
         providers.append(
-            OAuthProviderOut(
-                provider=key,
-                display_name=str(cfg.get("display") or key.title()),
-                configured=bool(client_id and client_secret),
-            )
+            {
+                "provider": key,
+                "display_name": str(cfg.get("display") or key.title()),
+                "configured": bool(client_id and client_secret),
+            }
         )
     return providers
 
