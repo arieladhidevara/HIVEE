@@ -58,6 +58,7 @@ const CLAIM_ENV_PARAM = "claim_env_id";
 const CLAIM_CODE_PARAM = "claim_code";
 const OAUTH_ERROR_PARAM = "oauth_error";
 const PASSWORD_POLICY_MIN_LENGTH = 10;
+const CLAIM_SOCIAL_CTX_KEY = "hivee_claim_social_ctx_v1";
 let claimAuthContext = {
   active: false,
   environmentId: "",
@@ -146,6 +147,35 @@ function clearOauthErrorParamFromUrl() {
   window.history.replaceState({}, "", next);
 }
 
+function currentAuthTabPrefix() {
+  const loginHidden = $("form_login")?.classList?.contains("hidden");
+  return loginHidden ? "su" : "li";
+}
+
+function readClaimSocialContext() {
+  try {
+    const raw = sessionStorage.getItem(CLAIM_SOCIAL_CTX_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeClaimSocialContext(payload) {
+  try {
+    sessionStorage.setItem(CLAIM_SOCIAL_CTX_KEY, JSON.stringify(payload || {}));
+  } catch {}
+}
+
+function clearClaimSocialContext() {
+  try {
+    sessionStorage.removeItem(CLAIM_SOCIAL_CTX_KEY);
+  } catch {}
+}
+
 function oauthDisplayName(provider) {
   const key = String(provider || "").trim().toLowerCase();
   if (key === "google") return "Google";
@@ -176,10 +206,14 @@ function applyOAuthProvidersUI() {
     return;
   }
   if (configuredCount < buttons.length) {
-    hint.textContent = "Sebagian provider belum aktif.";
+    hint.textContent = claimAuthContext.active
+      ? "Sebagian provider belum aktif. Isi OpenClaw Base URL + API key sebelum klik social login."
+      : "Sebagian provider belum aktif.";
     return;
   }
-  hint.textContent = "";
+  hint.textContent = claimAuthContext.active
+    ? "Isi OpenClaw Base URL + API key dulu, lalu klik social login."
+    : "";
 }
 
 async function loadOAuthProviders() {
@@ -239,7 +273,8 @@ function applyClaimAuthUI() {
   }
   if (btnLogin) btnLogin.textContent = "Login and Claim";
   if (btnSignup) btnSignup.textContent = "Create Account and Claim";
-  if (socialAuthBlock) socialAuthBlock.classList.add("hidden");
+  if (socialAuthBlock) socialAuthBlock.classList.remove("hidden");
+  applyOAuthProvidersUI();
   claimOnlyBlocks.forEach((el) => el.classList.remove("hidden"));
 }
 
@@ -268,52 +303,6 @@ function validatePasswordStrength(password, label = "Password") {
   if (!/[A-Z]/.test(value)) throw new Error(`${label} must include at least one uppercase letter.`);
   if (!/[0-9]/.test(value)) throw new Error(`${label} must include at least one number.`);
   if (!/[^A-Za-z0-9]/.test(value)) throw new Error(`${label} must include at least one symbol.`);
-}
-
-function randomChar(source) {
-  if (!source || !source.length) return "";
-  let idx = Math.floor(Math.random() * source.length);
-  if (window.crypto?.getRandomValues) {
-    const bytes = new Uint32Array(1);
-    window.crypto.getRandomValues(bytes);
-    idx = bytes[0] % source.length;
-  }
-  return source[idx];
-}
-
-function shuffleString(input) {
-  const arr = String(input || "").split("");
-  for (let i = arr.length - 1; i > 0; i -= 1) {
-    let j = Math.floor(Math.random() * (i + 1));
-    if (window.crypto?.getRandomValues) {
-      const bytes = new Uint32Array(1);
-      window.crypto.getRandomValues(bytes);
-      j = bytes[0] % (i + 1);
-    }
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr.join("");
-}
-
-function buildGeneratedPassword(length = 18) {
-  const targetLength = Math.max(PASSWORD_POLICY_MIN_LENGTH, Number(length || 18));
-  const lower = "abcdefghjkmnpqrstuvwxyz";
-  const upper = "ABCDEFGHJKMNPQRSTUVWXYZ";
-  const nums = "23456789";
-  const symbols = "!@#$%^&*-_=+?";
-  const all = lower + upper + nums + symbols;
-  let raw = randomChar(lower) + randomChar(upper) + randomChar(nums) + randomChar(symbols);
-  while (raw.length < targetLength) raw += randomChar(all);
-  return shuffleString(raw);
-}
-
-function fillGeneratedSignupPassword() {
-  const generated = buildGeneratedPassword(18);
-  const passEl = $("su_pass");
-  const confirmEl = $("su_pass_confirm");
-  if (passEl) passEl.value = generated;
-  if (confirmEl) confirmEl.value = generated;
-  setMessage("auth_msg", "Secure password generated. You can still edit it before sign up.", "ok");
 }
 
 function detailToText(detail) {
@@ -2787,21 +2776,90 @@ async function signup(ev) {
 
 async function startOAuth(provider) {
   setMessage("auth_msg", "");
-  if (claimAuthContext.active) {
-    throw new Error("Social login is disabled in claim mode. Use email and password for this claim link.");
-  }
   const providerKey = String(provider || "").trim().toLowerCase();
   if (!providerKey) throw new Error("Invalid OAuth provider.");
   const configured = oauthProvidersState.get(providerKey);
   if (!configured) {
     throw new Error(`${oauthDisplayName(providerKey)} login belum aktif di server.`);
   }
+  if (claimAuthContext.active) {
+    const prefix = currentAuthTabPrefix();
+    const connection = claimConnectionPayload(prefix);
+    validateClaimConnectionPayload(connection);
+    writeClaimSocialContext({
+      environment_id: claimAuthContext.environmentId,
+      code: claimAuthContext.code,
+      openclaw_base_url: connection.openclaw_base_url,
+      openclaw_api_key: connection.openclaw_api_key,
+      openclaw_name: connection.openclaw_name,
+    });
+  } else {
+    clearClaimSocialContext();
+  }
+  const nextPath = `${window.location.pathname || "/"}${window.location.search || ""}${window.location.hash || ""}`;
   const res = await api(`/api/oauth/${encodeURIComponent(providerKey)}/start`, "POST", {
-    next_path: window.location.pathname || "/",
+    next_path: nextPath || "/",
   });
   const authUrl = String(res?.auth_url || "").trim();
   if (!authUrl) throw new Error("OAuth URL was not generated.");
   window.location.assign(authUrl);
+}
+
+function shouldClearStoredClaimContext(messageText) {
+  const msg = String(messageText || "").toLowerCase();
+  if (!msg) return false;
+  return (
+    msg.includes("invalid claim code")
+    || msg.includes("claim code expired")
+    || msg.includes("claim code already used")
+    || msg.includes("environment already claimed")
+    || msg.includes("environment not found")
+    || msg.includes("invalid session token")
+  );
+}
+
+async function tryAutoCompleteClaimFromSocialSession() {
+  if (!claimAuthContext.active) return false;
+  const saved = readClaimSocialContext();
+  if (!saved) return false;
+  const envId = String(saved.environment_id || "").trim();
+  const code = String(saved.code || "").trim();
+  if (!envId || !code) {
+    clearClaimSocialContext();
+    return false;
+  }
+  if (envId !== claimAuthContext.environmentId || code !== claimAuthContext.code) {
+    clearClaimSocialContext();
+    return false;
+  }
+  try {
+    const res = await api("/api/a2a/environments/claim/complete", "POST", {
+      environment_id: envId,
+      code,
+      mode: "session",
+      openclaw_base_url: String(saved.openclaw_base_url || "").trim(),
+      openclaw_api_key: String(saved.openclaw_api_key || ""),
+      openclaw_name: saved.openclaw_name || null,
+    });
+    sessionToken = res.token;
+    persistSessionToken(sessionToken);
+    clearClaimSocialContext();
+    clearClaimParamsFromUrl();
+    claimAuthContext = { active: false, environmentId: "", code: "" };
+    applyClaimAuthUI();
+    setMessage("auth_msg", "Login social success. Environment claimed.", "ok");
+    return true;
+  } catch (e) {
+    const msg = detailToText(e?.message || e);
+    if (shouldClearStoredClaimContext(msg)) {
+      clearClaimSocialContext();
+    }
+    const low = String(msg || "").toLowerCase();
+    if (!low.includes("missing authorization") && !low.includes("session is required")) {
+      setMessage("auth_msg", msg, "error");
+    }
+    return false;
+  }
 }
 
 function setAuthMethod(method) {
@@ -3028,7 +3086,6 @@ async function fetchInitial() {
 function bindActions() {
   $("form_login").addEventListener("submit", (ev) => login(ev).catch((e) => showUiError("auth_msg", e)));
   $("form_signup").addEventListener("submit", (ev) => signup(ev).catch((e) => showUiError("auth_msg", e)));
-  $("btn_generate_password")?.addEventListener("click", () => fillGeneratedSignupPassword());
   for (const btn of document.querySelectorAll("[data-oauth-provider]")) {
     btn.addEventListener("click", () => {
       const provider = btn.dataset.oauthProvider;
@@ -3194,7 +3251,10 @@ if (oauthError) {
   setMessage("auth_msg", oauthError, "error");
   clearOauthErrorParamFromUrl();
 }
-fetchInitial()
-  .catch(() => {
-    setView("auth");
-  });
+(async () => {
+  await tryAutoCompleteClaimFromSocialSession().catch(() => false);
+  fetchInitial()
+    .catch(() => {
+      setView("auth");
+    });
+})();

@@ -5852,9 +5852,9 @@ class A2AEnvironmentClaimStartIn(BaseModel):
 class A2AEnvironmentClaimCompleteIn(BaseModel):
     environment_id: str = Field(..., min_length=1)
     code: str = Field(..., min_length=1)
-    mode: str = Field("signup", description="signup | login")
-    email: str = Field(..., min_length=3)
-    password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
+    mode: str = Field("signup", description="signup | login | session")
+    email: Optional[str] = Field(None, min_length=3)
+    password: Optional[str] = Field(None, min_length=PASSWORD_MIN_LENGTH)
     openclaw_base_url: str = Field(..., min_length=8)
     openclaw_api_key: str = Field(..., min_length=1)
     openclaw_name: Optional[str] = None
@@ -6261,23 +6261,27 @@ async def start_a2a_environment_claim(request: Request, env_id: str, payload: A2
     }
 
 @app.post("/api/a2a/environments/claim/complete", response_model=A2AEnvironmentClaimCompleteOut)
-async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn, response: Response):
+async def complete_a2a_environment_claim(request: Request, payload: A2AEnvironmentClaimCompleteIn, response: Response):
     env_id = str(payload.environment_id or "").strip()
     claim_code = str(payload.code or "").strip()
     mode = str(payload.mode or "signup").strip().lower()
-    email = _normalize_email(payload.email)
+    email = _normalize_email(str(payload.email or ""))
     password = str(payload.password or "")
     openclaw_base_url = str(payload.openclaw_base_url or "").strip()
     openclaw_api_key = str(payload.openclaw_api_key or "").strip()
     openclaw_name = str(payload.openclaw_name or "").strip() or None
-    if mode not in {"signup", "login"}:
-        raise HTTPException(400, "mode must be signup or login")
+    if mode not in {"signup", "login", "session"}:
+        raise HTTPException(400, "mode must be signup, login, or session")
     if not env_id or not claim_code:
         raise HTTPException(400, "environment_id and code are required")
     if not (openclaw_base_url.startswith("http://") or openclaw_base_url.startswith("https://")):
         raise HTTPException(400, "openclaw_base_url must start with http:// or https://")
     if not openclaw_api_key:
         raise HTTPException(400, "openclaw_api_key is required")
+    if mode in {"signup", "login"} and not email:
+        raise HTTPException(400, "email is required")
+    if mode in {"signup", "login"} and not password:
+        raise HTTPException(400, "password is required")
     if mode == "signup":
         _validate_password_strength(password)
 
@@ -6334,7 +6338,7 @@ async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn,
         except sqlite3.IntegrityError:
             conn.close()
             raise HTTPException(400, "Email already registered")
-    else:
+    elif mode == "login":
         user_row = conn.execute(
             "SELECT id, password FROM users WHERE email = ?",
             (email,),
@@ -6343,6 +6347,20 @@ async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn,
             conn.close()
             raise HTTPException(401, "Invalid email/password")
         user_id = str(user_row["id"])
+    else:
+        session_user = get_optional_session_user(request)
+        if not session_user:
+            conn.close()
+            raise HTTPException(401, "Login session is required for session claim mode")
+        user_row = conn.execute(
+            "SELECT id, email FROM users WHERE id = ?",
+            (session_user,),
+        ).fetchone()
+        if not user_row:
+            conn.close()
+            raise HTTPException(404, "User not found")
+        user_id = str(user_row["id"])
+        email = _normalize_email(str(user_row["email"] or ""))
 
     owner_user_id = str(env_row["owner_user_id"] or "").strip()
     if owner_user_id and owner_user_id != user_id:
