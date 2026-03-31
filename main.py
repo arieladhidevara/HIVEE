@@ -23,6 +23,10 @@ from pydantic import BaseModel, Field
 DB_PATH = "app.db"
 HIVEE_ROOT = "HIVEE"
 HIVEE_TEMPLATES_ROOT = f"{HIVEE_ROOT}/TEMPLATES"
+AGENTS_ROOT_DIRNAME = "AGENTS"
+AGENT_CARD_FILENAME = "agent-card.json"
+MANAGED_AGENT_CARD_VERSION = "1.0"
+MANAGED_AGENT_MEMORY_SCOPES = ("working", "project", "long_term")
 NEW_USER_ASSETS_DIR = Path("assets") / "new_user"
 SERVER_WORKSPACES_DIR = Path("server_workspaces")
 MAX_TEMPLATE_FILE_BYTES = 96_000
@@ -60,6 +64,16 @@ BRIEF_FILE = f"{PROJECT_INFO_DIRNAME}/brief.md"
 GOAL_FILE = f"{PROJECT_INFO_DIRNAME}/goal.md"
 PROJECT_SETUP_FILE = f"{PROJECT_INFO_DIRNAME}/project-setup.md"
 CHAT_HIVEE_FILE = f"{PROJECT_INFO_DIRNAME}/chat-hivee.md"
+PROJECT_META_DIRNAME = "Project Meta"
+PROJECT_CARD_FILE = f"{PROJECT_META_DIRNAME}/project-card.json"
+PROJECT_MEMORY_FILE = f"{PROJECT_META_DIRNAME}/project-memory.json"
+PROJECT_HISTORY_FILE = f"{PROJECT_META_DIRNAME}/project-history.jsonl"
+PROJECT_CHECKPOINTS_DIR = f"{PROJECT_META_DIRNAME}/checkpoints"
+PROJECT_POLICIES_FILE = f"{PROJECT_META_DIRNAME}/project-policies.json"
+PROJECT_METRICS_FILE = f"{PROJECT_META_DIRNAME}/project-metrics.json"
+PROJECT_RISKS_FILE = f"{PROJECT_META_DIRNAME}/project-risks.json"
+PROJECT_DECISIONS_FILE = f"{PROJECT_META_DIRNAME}/project-decisions.jsonl"
+PROJECT_HANDOFF_FILE = f"{PROJECT_META_DIRNAME}/handoff.md"
 PLAN_STATUS_PENDING = "pending"
 PLAN_STATUS_GENERATING = "generating"
 PLAN_STATUS_AWAITING_APPROVAL = "awaiting_approval"
@@ -83,6 +97,7 @@ ENV_AGENT_HANDOFF_TTL_SEC = 60 * 5
 ENV_AGENT_RUNTIME_SESSION_TTL_SEC = 60 * 15
 ENV_AGENT_LINK_TOKEN_TTL_SEC = 60 * 60 * 24 * 180
 ENV_AGENT_SESSION_HEADER = "X-A2A-Agent-Session"
+ENV_AGENT_ID_HEADER = "X-A2A-Agent-Id"
 ENV_AGENT_SESSION_STATUS_ACTIVE = "active"
 ENV_AGENT_SESSION_STATUS_HANDOFF_PENDING = "handoff_pending"
 ENV_AGENT_SESSION_STATUS_REVOKED = "revoked"
@@ -304,6 +319,137 @@ def init_db() -> None:
     )
     cur.execute("CREATE INDEX IF NOT EXISTS idx_environment_agent_links_env_agent ON environment_agent_links(env_id, agent_id, status)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_environment_agent_links_expires_at ON environment_agent_links(expires_at)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS managed_agents (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            env_id TEXT,
+            connection_id TEXT,
+            agent_id TEXT NOT NULL,
+            agent_name TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            card_version TEXT NOT NULL DEFAULT '1.0',
+            card_json TEXT NOT NULL,
+            root_path TEXT NOT NULL,
+            provisioned_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(user_id, connection_id, agent_id),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(connection_id) REFERENCES openclaw_connections(id),
+            FOREIGN KEY(env_id) REFERENCES environments(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS managed_agent_memory (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            env_id TEXT,
+            connection_id TEXT,
+            agent_id TEXT NOT NULL,
+            memory_scope TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            updated_at INTEGER NOT NULL,
+            UNIQUE(user_id, connection_id, agent_id, memory_scope)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS managed_agent_history (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            env_id TEXT,
+            connection_id TEXT,
+            agent_id TEXT NOT NULL,
+            event_kind TEXT NOT NULL,
+            event_text TEXT NOT NULL DEFAULT '',
+            event_payload_json TEXT,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS managed_agent_checkpoints (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            env_id TEXT,
+            connection_id TEXT,
+            agent_id TEXT NOT NULL,
+            checkpoint_key TEXT NOT NULL,
+            state_json TEXT NOT NULL DEFAULT '{}',
+            status TEXT NOT NULL DEFAULT 'ready',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(user_id, connection_id, agent_id, checkpoint_key)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS managed_agent_permissions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            env_id TEXT,
+            connection_id TEXT,
+            agent_id TEXT NOT NULL,
+            scopes_json TEXT NOT NULL DEFAULT '[]',
+            tools_json TEXT NOT NULL DEFAULT '[]',
+            path_allowlist_json TEXT NOT NULL DEFAULT '[]',
+            secrets_policy_json TEXT NOT NULL DEFAULT '{}',
+            approval_required INTEGER NOT NULL DEFAULT 1,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(user_id, connection_id, agent_id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS managed_agent_metrics (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            env_id TEXT,
+            connection_id TEXT,
+            agent_id TEXT NOT NULL,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            total_calls INTEGER NOT NULL DEFAULT 0,
+            total_prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            total_completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_latency_ms INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            last_seen_at INTEGER,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(user_id, connection_id, agent_id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS managed_agent_approval_rules (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            env_id TEXT,
+            connection_id TEXT,
+            agent_id TEXT NOT NULL,
+            rule_key TEXT NOT NULL,
+            policy_json TEXT NOT NULL DEFAULT '{}',
+            is_enabled INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(user_id, connection_id, agent_id, rule_key)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_managed_agents_user ON managed_agents(user_id, updated_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_managed_agents_lookup ON managed_agents(user_id, agent_id, connection_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_managed_agent_history_lookup ON managed_agent_history(user_id, agent_id, connection_id, created_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_managed_agent_memory_lookup ON managed_agent_memory(user_id, agent_id, connection_id, memory_scope)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_managed_agent_checkpoints_lookup ON managed_agent_checkpoints(user_id, agent_id, connection_id, checkpoint_key)")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS oauth_identities (
@@ -743,6 +889,20 @@ def _new_environment_agent_session_token() -> str:
 def _new_environment_agent_link_token() -> str:
     return f"a2al_{secrets.token_urlsafe(24)}"
 
+def _derive_bootstrap_agent_id(request: Request, explicit_agent_id: Optional[str] = None) -> str:
+    for raw in [
+        explicit_agent_id,
+        request.headers.get(ENV_AGENT_ID_HEADER),
+        request.headers.get("X-Agent-Id"),
+        request.headers.get("X-OpenClaw-Agent-Id"),
+    ]:
+        candidate = str(raw or "").strip()
+        if candidate:
+            safe = re.sub(r"[^a-zA-Z0-9._:-]+", "-", candidate).strip("-")
+            if safe:
+                return safe[:80]
+    return "bootstrap-agent"
+
 def _environment_home_dir(env_id: str) -> Path:
     safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(env_id or "").strip()).strip("-") or "env"
     return SERVER_WORKSPACES_DIR / f"env_{safe}"
@@ -767,6 +927,50 @@ def _user_templates_dir(user_id: str) -> Path:
 
 def _user_projects_dir(user_id: str) -> Path:
     return _user_workspace_root_dir(user_id) / "PROJECTS"
+
+def _safe_filesystem_token(raw: Any, fallback: str = "item", max_len: int = 72) -> str:
+    token = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(raw or "").strip()).strip("-._")
+    if not token:
+        token = fallback
+    if len(token) > max_len:
+        token = token[:max_len].rstrip("-._") or fallback
+    return token
+
+def _user_agents_root_dir(user_id: str) -> Path:
+    return _user_workspace_root_dir(user_id) / AGENTS_ROOT_DIRNAME
+
+def _user_connection_agents_dir(user_id: str, connection_id: str) -> Path:
+    return _user_agents_root_dir(user_id) / _safe_filesystem_token(connection_id, "connection")
+
+def _user_agent_runtime_dir(user_id: str, connection_id: str, agent_id: str) -> Path:
+    return _user_connection_agents_dir(user_id, connection_id) / _safe_filesystem_token(agent_id, "agent")
+
+def _agent_component_paths(user_id: str, connection_id: str, agent_id: str) -> Dict[str, Path]:
+    root = _user_agent_runtime_dir(user_id, connection_id, agent_id)
+    return {
+        "root": root,
+        "card": root / "card",
+        "memory": root / "memory",
+        "history": root / "history",
+        "checkpoints": root / "checkpoints",
+        "metrics": root / "metrics",
+        "approvals": root / "approvals",
+    }
+
+def _write_json_file(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    path.write_text(text, encoding="utf-8")
+
+def _read_json_file(path: Path, fallback: Any) -> Any:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception:
+        return fallback
+    try:
+        return json.loads(raw)
+    except Exception:
+        return fallback
 
 def _path_within(child: Path, parent: Path) -> bool:
     try:
@@ -923,11 +1127,13 @@ def _ensure_user_workspace(user_id: str) -> Dict[str, Any]:
     workspace_root = _user_workspace_root_dir(user_id)
     templates_root = _user_templates_dir(user_id)
     projects_root = _user_projects_dir(user_id)
+    agents_root = _user_agents_root_dir(user_id)
 
     home.mkdir(parents=True, exist_ok=True)
     workspace_root.mkdir(parents=True, exist_ok=True)
     templates_root.mkdir(parents=True, exist_ok=True)
     projects_root.mkdir(parents=True, exist_ok=True)
+    agents_root.mkdir(parents=True, exist_ok=True)
 
     payload = _collect_new_user_templates()
     for rel_dir in payload.get("directories") or []:
@@ -950,6 +1156,7 @@ def _ensure_user_workspace(user_id: str) -> Dict[str, Any]:
         "workspace_root": workspace_root.as_posix(),
         "templates_root": templates_root.as_posix(),
         "projects_root": projects_root.as_posix(),
+        "agents_root": agents_root.as_posix(),
         "workspace_tree": _render_tree(workspace_root),
         "template_warnings": payload.get("warnings") or [],
     }
@@ -960,11 +1167,13 @@ def _ensure_environment_workspace(env_id: str) -> Dict[str, Any]:
     workspace_root = _environment_workspace_root_dir(env_id)
     templates_root = _environment_templates_dir(env_id)
     projects_root = _environment_projects_dir(env_id)
+    agents_root = workspace_root / AGENTS_ROOT_DIRNAME
 
     home.mkdir(parents=True, exist_ok=True)
     workspace_root.mkdir(parents=True, exist_ok=True)
     templates_root.mkdir(parents=True, exist_ok=True)
     projects_root.mkdir(parents=True, exist_ok=True)
+    agents_root.mkdir(parents=True, exist_ok=True)
 
     payload = _collect_new_user_templates()
     for rel_dir in payload.get("directories") or []:
@@ -987,6 +1196,7 @@ def _ensure_environment_workspace(env_id: str) -> Dict[str, Any]:
         "workspace_root": workspace_root.as_posix(),
         "templates_root": templates_root.as_posix(),
         "projects_root": projects_root.as_posix(),
+        "agents_root": agents_root.as_posix(),
         "workspace_tree": _render_tree(workspace_root),
         "template_warnings": payload.get("warnings") or [],
     }
@@ -1111,7 +1321,7 @@ def _transition_environment_agent_sessions_to_handoff(
     now = int(time.time())
     ttl = max(60, min(int(ttl_sec or ENV_AGENT_HANDOFF_TTL_SEC), 60 * 30))
     handoff_expires_at = now + ttl
-    read_only_scopes = json.dumps(["env.read", "env.handoff.ack"], ensure_ascii=False)
+    read_only_scopes = json.dumps(["env.read", "env.handoff.wait", "env.handoff.ack"], ensure_ascii=False)
     conn.execute(
         """
         UPDATE environment_agent_sessions
@@ -1454,6 +1664,13 @@ def _delete_account_with_resources(*, user_id: str) -> Dict[str, Any]:
         "DELETE FROM environment_agent_sessions WHERE env_id IN (SELECT id FROM environments WHERE owner_user_id = ?)",
         (user_id,),
     )
+    conn.execute("DELETE FROM managed_agent_approval_rules WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM managed_agent_metrics WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM managed_agent_permissions WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM managed_agent_checkpoints WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM managed_agent_history WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM managed_agent_memory WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM managed_agents WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM environments WHERE owner_user_id = ?", (user_id,))
     conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
@@ -2039,13 +2256,380 @@ def _write_project_overview_file(
         except Exception:
             pass
 
+def _project_meta_dir(project_dir: Path) -> Path:
+    return (project_dir / PROJECT_META_DIRNAME).resolve()
+
+def _append_project_meta_jsonl(path: Path, record: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+def _is_project_decision_event(kind: str) -> bool:
+    low = str(kind or "").strip().lower()
+    if not low:
+        return False
+    if low in {"project.created", "run.completed", "run.stopped", "plan.approve", "plan.revert"}:
+        return True
+    if low.startswith("execution."):
+        return True
+    return False
+
+def _project_handoff_markdown(
+    *,
+    title: str,
+    project_id: str,
+    plan_status: str,
+    execution_status: str,
+    progress_pct: int,
+    primary_agent_id: Optional[str],
+    agents: List[Dict[str, Any]],
+    usage_total_tokens: int,
+    updated_at: int,
+) -> str:
+    lines: List[str] = [
+        f"# Handoff - {title}",
+        "",
+        f"- project_id: `{project_id}`",
+        f"- plan_status: `{plan_status}`",
+        f"- execution_status: `{execution_status}`",
+        f"- progress_pct: `{progress_pct}`",
+        f"- primary_agent_id: `{primary_agent_id or '-'}`",
+        f"- assigned_agents: `{len(agents)}`",
+        f"- total_tokens: `{max(0, _to_int(usage_total_tokens))}`",
+        f"- updated_at: {format_ts(updated_at)}",
+        "",
+        "## Next Steps",
+    ]
+    if execution_status in {EXEC_STATUS_PAUSED, EXEC_STATUS_STOPPED}:
+        lines.append("- Resume or rerun after owner confirmation.")
+    elif execution_status == EXEC_STATUS_COMPLETED:
+        lines.append("- Validate outputs and archive completed tasks.")
+    else:
+        lines.append("- Continue execution and monitor blockers.")
+    lines.extend(
+        [
+            "",
+            "## Active Agents",
+        ]
+    )
+    if not agents:
+        lines.append("- No agent assigned yet.")
+    else:
+        for row in agents:
+            name = str(row.get("agent_name") or row.get("agent_id") or "agent")
+            aid = str(row.get("agent_id") or "").strip()
+            role = str(row.get("role") or "").strip()
+            primary = bool(row.get("is_primary"))
+            summary = f"- `{aid}` ({name})"
+            if primary:
+                summary += " [primary]"
+            if role:
+                summary += f" - {role}"
+            lines.append(summary)
+    lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+def _write_project_meta_bundle(
+    *,
+    project_id: str,
+    owner_user_id: str,
+    env_id: Optional[str],
+    connection_id: str,
+    created_at: Optional[int],
+    project_root: str,
+    title: str,
+    brief: str,
+    goal: str,
+    setup_details: Dict[str, Any],
+    role_rows: List[Dict[str, Any]],
+    plan_status: str,
+    plan_text: str,
+    execution_status: str,
+    progress_pct: int,
+    execution_updated_at: Optional[int],
+    usage_prompt_tokens: int,
+    usage_completion_tokens: int,
+    usage_total_tokens: int,
+    usage_updated_at: Optional[int],
+) -> None:
+    try:
+        project_dir = _resolve_owner_project_dir(owner_user_id, project_root).resolve()
+    except Exception:
+        return
+    if not project_dir.exists():
+        return
+
+    meta_dir = _project_meta_dir(project_dir)
+    if not _path_within(meta_dir, project_dir):
+        return
+    checkpoints_dir = (meta_dir / Path(PROJECT_CHECKPOINTS_DIR).name).resolve()
+    if not _path_within(checkpoints_dir, project_dir):
+        return
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
+    now = int(time.time())
+    normalized_plan_status = _coerce_plan_status(plan_status)
+    normalized_exec_status = _coerce_execution_status(execution_status)
+    normalized_progress = _clamp_progress(progress_pct)
+    role_payload = [
+        {
+            "agent_id": str(r.get("agent_id") or ""),
+            "agent_name": str(r.get("agent_name") or r.get("agent_id") or ""),
+            "is_primary": bool(r.get("is_primary")),
+            "role": str(r.get("role") or ""),
+        }
+        for r in (role_rows or [])
+    ]
+    primary_agent_id = next((r["agent_id"] for r in role_payload if r.get("is_primary")), None)
+
+    card_payload = {
+        "schemaVersion": "1.0",
+        "project_id": project_id,
+        "title": str(title or "").strip(),
+        "brief": str(brief or "").strip(),
+        "goal": str(goal or "").strip(),
+        "owner_user_id": owner_user_id,
+        "environment_id": env_id,
+        "connection_id": connection_id,
+        "project_root": project_root,
+        "status": {
+            "plan_status": normalized_plan_status,
+            "execution_status": normalized_exec_status,
+            "progress_pct": normalized_progress,
+        },
+        "assigned_agents": role_payload,
+        "primary_agent_id": primary_agent_id,
+        "created_at": _to_int(created_at) if created_at else None,
+        "updated_at": now,
+    }
+
+    memory_path = meta_dir / Path(PROJECT_MEMORY_FILE).name
+    existing_memory = _read_json_file(memory_path, {})
+    memory_payload = {
+        "summary": str(existing_memory.get("summary") or ""),
+        "key_facts": [
+            {"key": "title", "value": str(title or "").strip()},
+            {"key": "goal", "value": str(goal or "").strip()},
+            {"key": "brief", "value": str(brief or "").strip()[:600]},
+            {"key": "plan_status", "value": normalized_plan_status},
+            {"key": "execution_status", "value": normalized_exec_status},
+        ],
+        "open_questions": existing_memory.get("open_questions") if isinstance(existing_memory.get("open_questions"), list) else [],
+        "assumptions": existing_memory.get("assumptions") if isinstance(existing_memory.get("assumptions"), list) else [],
+        "decision_refs": existing_memory.get("decision_refs") if isinstance(existing_memory.get("decision_refs"), list) else [],
+        "plan_excerpt": str(plan_text or "").strip()[:1500],
+        "setup_highlights": {
+            "target_users": str(setup_details.get("target_users") or setup_details.get("target_user") or "").strip(),
+            "constraints": str(setup_details.get("constraints") or "").strip(),
+            "first_output": str(setup_details.get("first_output") or "").strip(),
+        },
+        "updated_at": now,
+    }
+
+    policies_path = meta_dir / Path(PROJECT_POLICIES_FILE).name
+    existing_policies = _read_json_file(policies_path, {})
+    policies_payload = {
+        "workspace_policy": {
+            "workspace_root": _user_workspace_root_dir(owner_user_id).resolve().as_posix(),
+            "project_root": project_dir.as_posix(),
+            "allow_outside_workspace": False,
+        },
+        "approval_rules": existing_policies.get("approval_rules")
+        if isinstance(existing_policies.get("approval_rules"), list)
+        else [
+            {"rule": "destructive_file_ops", "required": True},
+            {"rule": "outside_project_scope", "required": True},
+            {"rule": "high_token_budget", "required": True, "max_total_tokens": 120000},
+        ],
+        "execution_policy": {
+            "pause_requires_owner": True,
+            "stop_requires_owner": True,
+            "max_parallel_agents": max(1, len(role_payload)),
+        },
+        "updated_at": now,
+    }
+
+    metrics_payload = {
+        "project_id": project_id,
+        "plan_status": normalized_plan_status,
+        "execution_status": normalized_exec_status,
+        "progress_pct": normalized_progress,
+        "assigned_agents_count": len(role_payload),
+        "prompt_tokens": max(0, _to_int(usage_prompt_tokens)),
+        "completion_tokens": max(0, _to_int(usage_completion_tokens)),
+        "total_tokens": max(0, _to_int(usage_total_tokens)),
+        "usage_updated_at": usage_updated_at,
+        "execution_updated_at": execution_updated_at,
+        "updated_at": now,
+    }
+
+    risks_path = meta_dir / Path(PROJECT_RISKS_FILE).name
+    existing_risks = _read_json_file(risks_path, {})
+    existing_items = existing_risks.get("risks") if isinstance(existing_risks.get("risks"), list) else []
+    risks_payload = {
+        "risks": existing_items
+        if existing_items
+        else [
+            {
+                "id": "R-001",
+                "title": "Scope drift",
+                "severity": "medium",
+                "status": "open",
+                "mitigation": "Revalidate scope at each plan checkpoint.",
+                "owner": "primary-agent",
+            },
+            {
+                "id": "R-002",
+                "title": "Missing credentials or external access",
+                "severity": "high",
+                "status": "open",
+                "mitigation": "Pause and request owner approval when blockers appear.",
+                "owner": "owner",
+            },
+        ],
+        "updated_at": now,
+    }
+
+    checkpoint_latest_path = checkpoints_dir / "latest.json"
+    previous_checkpoint = _read_json_file(checkpoint_latest_path, {})
+    checkpoint_payload = {
+        "project_id": project_id,
+        "plan_status": normalized_plan_status,
+        "execution_status": normalized_exec_status,
+        "progress_pct": normalized_progress,
+        "usage_total_tokens": max(0, _to_int(usage_total_tokens)),
+        "updated_at": now,
+    }
+    milestone_changed = (
+        isinstance(previous_checkpoint, dict)
+        and previous_checkpoint
+        and (
+            str(previous_checkpoint.get("plan_status") or "") != normalized_plan_status
+            or str(previous_checkpoint.get("execution_status") or "") != normalized_exec_status
+            or _to_int(previous_checkpoint.get("progress_pct")) != normalized_progress
+        )
+    )
+
+    _write_json_file(meta_dir / Path(PROJECT_CARD_FILE).name, card_payload)
+    _write_json_file(memory_path, memory_payload)
+    _write_json_file(policies_path, policies_payload)
+    _write_json_file(meta_dir / Path(PROJECT_METRICS_FILE).name, metrics_payload)
+    _write_json_file(risks_path, risks_payload)
+    _write_json_file(checkpoint_latest_path, checkpoint_payload)
+    if milestone_changed and (normalized_plan_status == PLAN_STATUS_APPROVED or normalized_exec_status in {EXEC_STATUS_PAUSED, EXEC_STATUS_STOPPED, EXEC_STATUS_COMPLETED}):
+        checkpoint_name = f"checkpoint-{now}-{normalized_plan_status}-{normalized_exec_status}.json"
+        _write_json_file(checkpoints_dir / checkpoint_name, checkpoint_payload)
+
+    history_path = meta_dir / Path(PROJECT_HISTORY_FILE).name
+    decisions_path = meta_dir / Path(PROJECT_DECISIONS_FILE).name
+    if not history_path.exists():
+        history_path.touch()
+    if not decisions_path.exists():
+        decisions_path.touch()
+
+    handoff_text = _project_handoff_markdown(
+        title=title,
+        project_id=project_id,
+        plan_status=normalized_plan_status,
+        execution_status=normalized_exec_status,
+        progress_pct=normalized_progress,
+        primary_agent_id=primary_agent_id,
+        agents=role_payload,
+        usage_total_tokens=max(0, _to_int(usage_total_tokens)),
+        updated_at=now,
+    )
+    (meta_dir / Path(PROJECT_HANDOFF_FILE).name).write_text(handoff_text, encoding="utf-8")
+
+def _append_project_meta_event(
+    *,
+    project_dir: Path,
+    kind: str,
+    text: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    meta_dir = _project_meta_dir(project_dir)
+    if not _path_within(meta_dir, project_dir):
+        return
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    now = int(time.time())
+    event_record = {
+        "ts": now,
+        "kind": str(kind or "").strip(),
+        "text": str(text or "").strip(),
+        "payload": payload or {},
+    }
+    _append_project_meta_jsonl(meta_dir / Path(PROJECT_HISTORY_FILE).name, event_record)
+    if _is_project_decision_event(kind):
+        decision_record = {
+            "ts": now,
+            "decision_kind": str(kind or "").strip(),
+            "decision": str(text or "").strip(),
+            "context": payload or {},
+        }
+        _append_project_meta_jsonl(meta_dir / Path(PROJECT_DECISIONS_FILE).name, decision_record)
+
+def _read_jsonl_tail(path: Path, limit: int = 40) -> List[Dict[str, Any]]:
+    cap = max(1, min(int(limit or 40), 400))
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    out: List[Dict[str, Any]] = []
+    for raw in lines[-cap:]:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                out.append(parsed)
+        except Exception:
+            continue
+    return out
+
+def _load_project_meta_snapshot(
+    *,
+    owner_user_id: str,
+    project_root: str,
+    history_limit: int = 40,
+) -> Dict[str, Any]:
+    try:
+        project_dir = _resolve_owner_project_dir(owner_user_id, project_root).resolve()
+    except Exception:
+        return {"ok": False, "error": "Project path not accessible"}
+    meta_dir = _project_meta_dir(project_dir)
+    if not _path_within(meta_dir, project_dir):
+        return {"ok": False, "error": "Project meta path is invalid"}
+    handoff_text = ""
+    handoff_path = meta_dir / Path(PROJECT_HANDOFF_FILE).name
+    if handoff_path.exists():
+        try:
+            handoff_text = handoff_path.read_text(encoding="utf-8")
+        except Exception:
+            handoff_text = ""
+    return {
+        "ok": True,
+        "meta_dir": meta_dir.as_posix(),
+        "card": _read_json_file(meta_dir / Path(PROJECT_CARD_FILE).name, {}),
+        "memory": _read_json_file(meta_dir / Path(PROJECT_MEMORY_FILE).name, {}),
+        "metrics": _read_json_file(meta_dir / Path(PROJECT_METRICS_FILE).name, {}),
+        "policies": _read_json_file(meta_dir / Path(PROJECT_POLICIES_FILE).name, {}),
+        "risks": _read_json_file(meta_dir / Path(PROJECT_RISKS_FILE).name, {}),
+        "latest_checkpoint": _read_json_file(meta_dir / Path(PROJECT_CHECKPOINTS_DIR).name / "latest.json", {}),
+        "history": _read_jsonl_tail(meta_dir / Path(PROJECT_HISTORY_FILE).name, limit=history_limit),
+        "decisions": _read_jsonl_tail(meta_dir / Path(PROJECT_DECISIONS_FILE).name, limit=history_limit),
+        "handoff_md": handoff_text,
+    }
+
 def _refresh_project_documents(project_id: str) -> None:
     conn = db()
     row = conn.execute(
         """
-        SELECT id, user_id, title, brief, goal, project_root, setup_json, plan_text, plan_status,
+        SELECT id, user_id, env_id, connection_id, title, brief, goal, project_root, setup_json, plan_text, plan_status,
                execution_status, progress_pct, execution_updated_at,
-               usage_prompt_tokens, usage_completion_tokens, usage_total_tokens, usage_updated_at
+               usage_prompt_tokens, usage_completion_tokens, usage_total_tokens, usage_updated_at,
+               created_at
         FROM projects
         WHERE id = ?
         """,
@@ -2058,6 +2642,28 @@ def _refresh_project_documents(project_id: str) -> None:
     conn.close()
     _write_project_overview_file(
         owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        title=str(row["title"] or ""),
+        brief=str(row["brief"] or ""),
+        goal=str(row["goal"] or ""),
+        setup_details=_normalize_setup_details(_parse_setup_json(row["setup_json"])),
+        role_rows=role_rows,
+        plan_status=_coerce_plan_status(row["plan_status"]),
+        plan_text=str(row["plan_text"] or ""),
+        execution_status=_coerce_execution_status(row["execution_status"]),
+        progress_pct=_clamp_progress(row["progress_pct"]),
+        execution_updated_at=row["execution_updated_at"],
+        usage_prompt_tokens=max(0, _to_int(row["usage_prompt_tokens"])),
+        usage_completion_tokens=max(0, _to_int(row["usage_completion_tokens"])),
+        usage_total_tokens=max(0, _to_int(row["usage_total_tokens"])),
+        usage_updated_at=row["usage_updated_at"],
+    )
+    _write_project_meta_bundle(
+        project_id=str(row["id"] or project_id),
+        owner_user_id=str(row["user_id"]),
+        env_id=(str(row["env_id"]).strip() if row["env_id"] is not None else None),
+        connection_id=str(row["connection_id"] or ""),
+        created_at=row["created_at"],
         project_root=str(row["project_root"] or ""),
         title=str(row["title"] or ""),
         brief=str(row["brief"] or ""),
@@ -2210,9 +2816,14 @@ def _initialize_project_folder(
 ) -> None:
     project_dir.mkdir(parents=True, exist_ok=True)
     info_dir = _project_info_dir(project_dir)
+    meta_dir = _project_meta_dir(project_dir)
     if not _path_within(info_dir, project_dir):
         return
+    if not _path_within(meta_dir, project_dir):
+        return
     info_dir.mkdir(parents=True, exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    (meta_dir / Path(PROJECT_CHECKPOINTS_DIR).name).mkdir(parents=True, exist_ok=True)
     (project_dir / "agents").mkdir(parents=True, exist_ok=True)
     (project_dir / USER_OUTPUTS_DIRNAME).mkdir(parents=True, exist_ok=True)
     (project_dir / "logs").mkdir(parents=True, exist_ok=True)
@@ -2274,6 +2885,15 @@ def _initialize_project_folder(
             "# Chat Hivee\n\nDaily conversation and event logs are saved in `logs/YYYY-MM-DD-chat.md` and `logs/YYYY-MM-DD-events.jsonl`.\n",
             encoding="utf-8",
         )
+    history_file = meta_dir / Path(PROJECT_HISTORY_FILE).name
+    if not history_file.exists():
+        history_file.touch()
+    decisions_file = meta_dir / Path(PROJECT_DECISIONS_FILE).name
+    if not decisions_file.exists():
+        decisions_file.touch()
+    handoff_file = meta_dir / Path(PROJECT_HANDOFF_FILE).name
+    if not handoff_file.exists():
+        handoff_file.write_text("# Handoff\n\nNo handoff summary generated yet.\n", encoding="utf-8")
     for legacy in _legacy_project_doc_paths(project_dir):
         if not legacy.exists():
             continue
@@ -2757,6 +3377,15 @@ def _append_project_daily_log(
         record["payload"] = payload
     with jsonl_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    try:
+        _append_project_meta_event(
+            project_dir=project_dir.resolve(),
+            kind=kind,
+            text=compact_text,
+            payload=payload,
+        )
+    except Exception:
+        pass
 
 def _summarize_ws_frames(frames: Any, limit: int = 12) -> List[str]:
     if not isinstance(frames, list):
@@ -3792,13 +4421,17 @@ def _upsert_connection_policy(
 async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: str) -> Dict[str, Any]:
     main_agent_id: Optional[str] = None
     main_agent_name: Optional[str] = None
+    discovered_agents: List[Dict[str, Any]] = []
     probe = await openclaw_list_agents(base_url, api_key)
     if probe.get("ok"):
+        discovered_agents = [dict(a) for a in (probe.get("agents") or []) if isinstance(a, dict)]
         picked = _pick_main_agent(probe.get("agents") or [])
         if picked:
             picked_id = str(picked.get("id") or "").strip()
             main_agent_id = picked_id or None
             main_agent_name = str(picked.get("name") or main_agent_id)
+    if (not discovered_agents) and main_agent_id:
+        discovered_agents = [{"id": main_agent_id, "name": main_agent_name or main_agent_id}]
 
     try:
         workspace = _ensure_user_workspace(user_id)
@@ -3809,6 +4442,7 @@ async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: 
             "main_agent_id": main_agent_id,
             "main_agent_name": main_agent_name,
             "agent_probe": probe,
+            "agents": discovered_agents,
         }
 
     return {
@@ -3816,11 +4450,531 @@ async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: 
         "main_agent_id": main_agent_id,
         "main_agent_name": main_agent_name,
         "agent_probe": probe,
+        "agents": discovered_agents,
         "workspace_tree": workspace["workspace_tree"],
         "workspace_root": workspace["workspace_root"],
         "templates_root": workspace["templates_root"],
         "projects_root": workspace["projects_root"],
         "template_warnings": workspace.get("template_warnings") or [],
+    }
+
+def _normalize_managed_agent_candidates(
+    raw_agents: Any,
+    *,
+    fallback_agent_id: Optional[str] = None,
+    fallback_agent_name: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    cleaned: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    candidates = raw_agents if isinstance(raw_agents, list) else []
+    for row in candidates:
+        if isinstance(row, str):
+            aid = str(row).strip()
+            nm = aid
+        elif isinstance(row, dict):
+            aid = str(row.get("id") or row.get("agent_id") or row.get("name") or "").strip()
+            nm = str(row.get("name") or row.get("title") or aid).strip()
+        else:
+            continue
+        if not aid:
+            continue
+        if aid in seen:
+            continue
+        seen.add(aid)
+        cleaned.append({"id": aid[:180], "name": (nm or aid)[:220]})
+    fallback_id = str(fallback_agent_id or "").strip()
+    if fallback_id and fallback_id not in seen:
+        cleaned.append(
+            {
+                "id": fallback_id[:180],
+                "name": (str(fallback_agent_name or fallback_id).strip() or fallback_id)[:220],
+            }
+        )
+    return cleaned
+
+def _build_managed_agent_card(
+    *,
+    agent_id: str,
+    agent_name: str,
+    base_url: str,
+    connection_id: str,
+    env_id: Optional[str],
+    root_path: str,
+) -> Dict[str, Any]:
+    now = int(time.time())
+    safe_skill_id = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(agent_id or "").strip()).strip("-") or "agent"
+    return {
+        "schemaVersion": MANAGED_AGENT_CARD_VERSION,
+        "name": str(agent_name or agent_id),
+        "description": f"Hivee managed profile for agent `{agent_id}`.",
+        "version": "1.0.0",
+        "provider": {"organization": "Hivee"},
+        "supportedInterfaces": [
+            {
+                "url": str(base_url or "").rstrip("/"),
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": "1.0",
+            }
+        ],
+        "capabilities": {
+            "streaming": True,
+            "pushNotifications": False,
+            "stateTransitionHistory": True,
+        },
+        "defaultInputModes": ["text"],
+        "defaultOutputModes": ["text"],
+        "skills": [
+            {
+                "id": f"{safe_skill_id}.execute",
+                "name": "Project Execution",
+                "description": "Executes scoped project tasks and reports progress.",
+                "tags": ["execution", "workflow", "collaboration"],
+            }
+        ],
+        "securityRequirements": [{"type": "bearer", "scopes": ["env.read"]}],
+        "metadata": {
+            "managedBy": "hivee",
+            "connectionId": connection_id,
+            "environmentId": env_id,
+            "rootPath": root_path,
+            "provisionedAt": now,
+        },
+    }
+
+def _append_managed_agent_history_record(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    env_id: Optional[str],
+    connection_id: str,
+    agent_id: str,
+    event_kind: str,
+    event_text: str,
+    event_payload: Optional[Dict[str, Any]],
+    history_file: Optional[Path] = None,
+) -> None:
+    payload_json = json.dumps(event_payload or {}, ensure_ascii=False)
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT INTO managed_agent_history (
+            id, user_id, env_id, connection_id, agent_id, event_kind, event_text, event_payload_json, created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            new_id("mgh"),
+            user_id,
+            env_id,
+            connection_id,
+            agent_id,
+            str(event_kind or "event")[:120],
+            str(event_text or "")[:2000],
+            payload_json,
+            now,
+        ),
+    )
+    if history_file:
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": now,
+            "event_kind": str(event_kind or "event")[:120],
+            "event_text": str(event_text or "")[:2000],
+            "payload": event_payload or {},
+        }
+        with history_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+def _refresh_managed_agents_index(user_id: str) -> None:
+    conn = db()
+    rows = conn.execute(
+        """
+        SELECT connection_id, agent_id, agent_name, status, root_path, updated_at
+        FROM managed_agents
+        WHERE user_id = ?
+        ORDER BY updated_at DESC, agent_name ASC
+        """,
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    payload = {
+        "generated_at": int(time.time()),
+        "count": len(rows),
+        "agents": [
+            {
+                "connection_id": str(r["connection_id"] or ""),
+                "agent_id": str(r["agent_id"] or ""),
+                "agent_name": str(r["agent_name"] or ""),
+                "status": str(r["status"] or ""),
+                "root_path": str(r["root_path"] or ""),
+                "updated_at": _to_int(r["updated_at"]),
+            }
+            for r in rows
+        ],
+    }
+    _write_json_file(_user_agents_root_dir(user_id) / "index.json", payload)
+
+def _provision_managed_agents_for_connection(
+    *,
+    user_id: str,
+    env_id: Optional[str],
+    connection_id: str,
+    base_url: str,
+    raw_agents: Any,
+    fallback_agent_id: Optional[str] = None,
+    fallback_agent_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    _ensure_user_workspace(user_id)
+    now = int(time.time())
+    workspace_root = _user_workspace_root_dir(user_id).resolve()
+    normalized_agents = _normalize_managed_agent_candidates(
+        raw_agents,
+        fallback_agent_id=fallback_agent_id,
+        fallback_agent_name=fallback_agent_name,
+    )
+    if not normalized_agents:
+        return {
+            "ok": False,
+            "error": "No agents available for managed provisioning",
+            "provisioned": 0,
+            "updated": 0,
+            "failed": 0,
+            "agents": [],
+            "errors": [],
+        }
+
+    conn = db()
+    provisioned = 0
+    updated = 0
+    failed = 0
+    errors: List[str] = []
+    output_agents: List[Dict[str, Any]] = []
+    for agent in normalized_agents:
+        agent_id = str(agent.get("id") or "").strip()
+        agent_name = str(agent.get("name") or agent_id).strip() or agent_id
+        if not agent_id:
+            failed += 1
+            errors.append("Missing agent id in candidate entry")
+            continue
+        try:
+            parts = _agent_component_paths(user_id, connection_id, agent_id)
+            for path in parts.values():
+                if path == parts["root"]:
+                    path.mkdir(parents=True, exist_ok=True)
+                    continue
+                path.mkdir(parents=True, exist_ok=True)
+
+            root_path = parts["root"].resolve().as_posix()
+            card_payload = _build_managed_agent_card(
+                agent_id=agent_id,
+                agent_name=agent_name,
+                base_url=base_url,
+                connection_id=connection_id,
+                env_id=env_id,
+                root_path=root_path,
+            )
+            memory_payloads = {
+                "working": {
+                    "scope": "working",
+                    "summary": "",
+                    "entries": [],
+                    "updated_at": now,
+                },
+                "project": {
+                    "scope": "project",
+                    "summary": "",
+                    "entries": [],
+                    "updated_at": now,
+                },
+                "long_term": {
+                    "scope": "long_term",
+                    "summary": "",
+                    "entries": [],
+                    "updated_at": now,
+                },
+            }
+            checkpoint_state = {
+                "checkpoint_key": "latest",
+                "status": "ready",
+                "notes": "Auto-generated checkpoint seed.",
+                "updated_at": now,
+            }
+            permissions_payload = {
+                "scopes": ["env.read", "project.read", "project.write"],
+                "tools": ["workspace.read", "workspace.write", "chat.send", "project.control"],
+                "path_allowlist": [workspace_root.as_posix(), root_path],
+                "secrets_policy": {
+                    "mode": "connection-bound",
+                    "connection_id": connection_id,
+                },
+                "approval_required": True,
+                "updated_at": now,
+            }
+            metrics_payload = {
+                "success_count": 0,
+                "failure_count": 0,
+                "total_calls": 0,
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "total_latency_ms": 0,
+                "last_error": None,
+                "last_seen_at": None,
+                "updated_at": now,
+            }
+            approval_rules = {
+                "destructive_write": {
+                    "description": "Require owner approval for destructive file actions.",
+                    "required": True,
+                    "patterns": ["delete", "remove", "truncate", "reset", "drop table"],
+                },
+                "outside_workspace": {
+                    "description": "Require owner approval for access outside workspace root.",
+                    "required": True,
+                    "workspace_root": workspace_root.as_posix(),
+                },
+                "high_token_budget": {
+                    "description": "Require owner approval for very large token usage.",
+                    "required": True,
+                    "max_total_tokens": 120000,
+                },
+            }
+
+            existing = conn.execute(
+                "SELECT id FROM managed_agents WHERE user_id = ? AND connection_id = ? AND agent_id = ?",
+                (user_id, connection_id, agent_id),
+            ).fetchone()
+            card_json = json.dumps(card_payload, ensure_ascii=False)
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE managed_agents
+                    SET env_id = ?, agent_name = ?, status = ?, card_version = ?, card_json = ?, root_path = ?, updated_at = ?
+                    WHERE user_id = ? AND connection_id = ? AND agent_id = ?
+                    """,
+                    (
+                        env_id,
+                        agent_name,
+                        "active",
+                        MANAGED_AGENT_CARD_VERSION,
+                        card_json,
+                        root_path,
+                        now,
+                        user_id,
+                        connection_id,
+                        agent_id,
+                    ),
+                )
+                updated += 1
+                event_kind = "agent.synced"
+                event_text = "Managed agent resources refreshed."
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO managed_agents (
+                        id, user_id, env_id, connection_id, agent_id, agent_name, status,
+                        card_version, card_json, root_path, provisioned_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        new_id("mga"),
+                        user_id,
+                        env_id,
+                        connection_id,
+                        agent_id,
+                        agent_name,
+                        "active",
+                        MANAGED_AGENT_CARD_VERSION,
+                        card_json,
+                        root_path,
+                        now,
+                        now,
+                    ),
+                )
+                provisioned += 1
+                event_kind = "agent.provisioned"
+                event_text = "Managed agent resources initialized."
+
+            for scope in MANAGED_AGENT_MEMORY_SCOPES:
+                scope_payload = memory_payloads.get(scope, {"scope": scope, "summary": "", "entries": [], "updated_at": now})
+                conn.execute(
+                    """
+                    INSERT INTO managed_agent_memory (
+                        id, user_id, env_id, connection_id, agent_id, memory_scope, summary, payload_json, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(user_id, connection_id, agent_id, memory_scope) DO UPDATE SET
+                        env_id=excluded.env_id,
+                        summary=CASE
+                            WHEN managed_agent_memory.summary IS NULL OR managed_agent_memory.summary = '' THEN excluded.summary
+                            ELSE managed_agent_memory.summary
+                        END,
+                        payload_json=CASE
+                            WHEN managed_agent_memory.payload_json IS NULL OR managed_agent_memory.payload_json = '' THEN excluded.payload_json
+                            ELSE managed_agent_memory.payload_json
+                        END,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        new_id("mgm"),
+                        user_id,
+                        env_id,
+                        connection_id,
+                        agent_id,
+                        scope,
+                        str(scope_payload.get("summary") or ""),
+                        json.dumps(scope_payload, ensure_ascii=False),
+                        now,
+                    ),
+                )
+
+            conn.execute(
+                """
+                INSERT INTO managed_agent_checkpoints (
+                    id, user_id, env_id, connection_id, agent_id, checkpoint_key, state_json, status, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(user_id, connection_id, agent_id, checkpoint_key) DO UPDATE SET
+                    env_id=excluded.env_id,
+                    state_json=excluded.state_json,
+                    status=excluded.status,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    new_id("mgc"),
+                    user_id,
+                    env_id,
+                    connection_id,
+                    agent_id,
+                    "latest",
+                    json.dumps(checkpoint_state, ensure_ascii=False),
+                    "ready",
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO managed_agent_permissions (
+                    id, user_id, env_id, connection_id, agent_id, scopes_json, tools_json, path_allowlist_json, secrets_policy_json, approval_required, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(user_id, connection_id, agent_id) DO UPDATE SET
+                    env_id=excluded.env_id,
+                    scopes_json=excluded.scopes_json,
+                    tools_json=excluded.tools_json,
+                    path_allowlist_json=excluded.path_allowlist_json,
+                    secrets_policy_json=excluded.secrets_policy_json,
+                    approval_required=excluded.approval_required,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    new_id("mgp"),
+                    user_id,
+                    env_id,
+                    connection_id,
+                    agent_id,
+                    json.dumps(permissions_payload.get("scopes") or [], ensure_ascii=False),
+                    json.dumps(permissions_payload.get("tools") or [], ensure_ascii=False),
+                    json.dumps(permissions_payload.get("path_allowlist") or [], ensure_ascii=False),
+                    json.dumps(permissions_payload.get("secrets_policy") or {}, ensure_ascii=False),
+                    1 if _coerce_bool(permissions_payload.get("approval_required")) else 0,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO managed_agent_metrics (
+                    id, user_id, env_id, connection_id, agent_id, success_count, failure_count, total_calls,
+                    total_prompt_tokens, total_completion_tokens, total_latency_ms, last_error, last_seen_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(user_id, connection_id, agent_id) DO UPDATE SET
+                    env_id=excluded.env_id,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    new_id("mgt"),
+                    user_id,
+                    env_id,
+                    connection_id,
+                    agent_id,
+                    _to_int(metrics_payload.get("success_count")),
+                    _to_int(metrics_payload.get("failure_count")),
+                    _to_int(metrics_payload.get("total_calls")),
+                    _to_int(metrics_payload.get("total_prompt_tokens")),
+                    _to_int(metrics_payload.get("total_completion_tokens")),
+                    _to_int(metrics_payload.get("total_latency_ms")),
+                    metrics_payload.get("last_error"),
+                    metrics_payload.get("last_seen_at"),
+                    now,
+                ),
+            )
+            for rule_key, policy in approval_rules.items():
+                conn.execute(
+                    """
+                    INSERT INTO managed_agent_approval_rules (
+                        id, user_id, env_id, connection_id, agent_id, rule_key, policy_json, is_enabled, created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(user_id, connection_id, agent_id, rule_key) DO UPDATE SET
+                        env_id=excluded.env_id,
+                        policy_json=excluded.policy_json,
+                        is_enabled=excluded.is_enabled,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        new_id("mga"),
+                        user_id,
+                        env_id,
+                        connection_id,
+                        agent_id,
+                        rule_key,
+                        json.dumps(policy, ensure_ascii=False),
+                        1 if _coerce_bool(policy.get("required", True)) else 0,
+                        now,
+                        now,
+                    ),
+                )
+
+            _write_json_file(parts["card"] / AGENT_CARD_FILENAME, card_payload)
+            for scope in MANAGED_AGENT_MEMORY_SCOPES:
+                _write_json_file(parts["memory"] / f"{scope}.json", memory_payloads.get(scope, {}))
+            _write_json_file(parts["checkpoints"] / "latest.json", checkpoint_state)
+            _write_json_file(parts["metrics"] / "summary.json", metrics_payload)
+            _write_json_file(parts["approvals"] / "rules.json", approval_rules)
+            _write_json_file(parts["approvals"] / "permissions.json", permissions_payload)
+
+            _append_managed_agent_history_record(
+                conn,
+                user_id=user_id,
+                env_id=env_id,
+                connection_id=connection_id,
+                agent_id=agent_id,
+                event_kind=event_kind,
+                event_text=event_text,
+                event_payload={
+                    "agent_name": agent_name,
+                    "root_path": root_path,
+                    "connection_id": connection_id,
+                },
+                history_file=parts["history"] / "events.jsonl",
+            )
+            output_agents.append(
+                {
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "root_path": root_path,
+                    "status": "active",
+                }
+            )
+        except Exception as e:
+            failed += 1
+            errors.append(f"{agent_id or 'unknown'}: {str(e)[:220]}")
+
+    conn.commit()
+    conn.close()
+    _refresh_managed_agents_index(user_id)
+    return {
+        "ok": failed == 0,
+        "provisioned": provisioned,
+        "updated": updated,
+        "failed": failed,
+        "agents": output_agents,
+        "errors": errors[:20],
     }
 
 async def try_get_json(
@@ -5946,7 +7100,7 @@ class ProjectFileWriteIn(BaseModel):
     append: bool = False
 
 class A2AEnvironmentBootstrapIn(BaseModel):
-    agent_id: str = Field("bootstrap-agent", min_length=1)
+    agent_id: Optional[str] = Field(None, min_length=1)
     display_name: Optional[str] = None
     claim_ttl_sec: int = ENV_CLAIM_CODE_TTL_SEC
     session_ttl_sec: int = ENV_AGENT_SESSION_TTL_SEC
@@ -5972,6 +7126,7 @@ class A2AEnvironmentClaimCompleteOut(BaseModel):
     email: str
     connection_id: str
     connection_name: Optional[str] = None
+    agent_provision: Optional[Dict[str, Any]] = None
 
 class A2AEnvironmentHandoffAckOut(BaseModel):
     ok: bool
@@ -5992,6 +7147,16 @@ class A2AAgentLinkSessionStartOut(BaseModel):
     session_token: str
     session_expires_at: int
     scopes: List[str]
+
+class A2AEnvironmentHandoffWaitOut(BaseModel):
+    ok: bool
+    environment_id: str
+    event: str
+    claimed: bool
+    status: str
+    owner_user_id: Optional[str] = None
+    claimed_at: Optional[int] = None
+    waited_ms: int
 
 def _bearer_token(request: Request) -> str:
     auth = request.headers.get("Authorization", "")
@@ -6286,6 +7451,7 @@ async def oauth_callback(
 async def bootstrap_a2a_environment(request: Request, payload: A2AEnvironmentBootstrapIn):
     env_id = new_id("env")
     now = int(time.time())
+    agent_id = _derive_bootstrap_agent_id(request, payload.agent_id)
     display_name = str(payload.display_name or "").strip()[:160] or f"env-{env_id[-6:]}"
     workspace = _ensure_environment_workspace(env_id)
     conn = db()
@@ -6305,12 +7471,11 @@ async def bootstrap_a2a_environment(request: Request, payload: A2AEnvironmentBoo
             None,
         ),
     )
-    agent_id = str(payload.agent_id or "bootstrap-agent").strip() or "bootstrap-agent"
     agent_token, agent_expires_at = _issue_environment_agent_session(
         conn,
         env_id=env_id,
         agent_id=agent_id,
-        scopes=["env.read", "env.bootstrap", "env.claim.start"],
+        scopes=["env.read", "env.bootstrap", "env.claim.start", "env.handoff.wait"],
         ttl_sec=payload.session_ttl_sec,
     )
     claim_code, claim_expires_at = _issue_environment_claim_code(
@@ -6325,6 +7490,7 @@ async def bootstrap_a2a_environment(request: Request, payload: A2AEnvironmentBoo
     return {
         "ok": True,
         "environment_id": env_id,
+        "agent_id": agent_id,
         "status": ENV_STATUS_PENDING_CLAIM,
         "workspace_root": workspace.get("workspace_root"),
         "templates_root": workspace.get("templates_root"),
@@ -6575,6 +7741,15 @@ async def complete_a2a_environment_claim(request: Request, payload: A2AEnvironme
         workspace_root=str(bootstrap.get("workspace_root") or _user_workspace_root_dir(user_id).as_posix()),
         templates_root=str(bootstrap.get("templates_root") or _user_templates_dir(user_id).as_posix()),
     )
+    provision = _provision_managed_agents_for_connection(
+        user_id=user_id,
+        env_id=env_id,
+        connection_id=conn_id,
+        base_url=openclaw_base_url.rstrip("/"),
+        raw_agents=bootstrap.get("agents") or [],
+        fallback_agent_id=bootstrap.get("main_agent_id") or claim_agent_id,
+        fallback_agent_name=bootstrap.get("main_agent_name") or claim_agent_id,
+    )
 
     _set_session_cookie(response, token)
     return A2AEnvironmentClaimCompleteOut(
@@ -6585,6 +7760,7 @@ async def complete_a2a_environment_claim(request: Request, payload: A2AEnvironme
         email=email,
         connection_id=conn_id,
         connection_name=openclaw_name,
+        agent_provision=provision,
     )
 
 @app.get("/api/a2a/environments/{env_id}")
@@ -6670,6 +7846,55 @@ async def get_a2a_environment_status(request: Request, env_id: str):
         "outstanding_count": len(outstanding),
         "outstanding_projects": outstanding[:20],
     }
+
+@app.get("/api/a2a/environments/{env_id}/handoff/wait", response_model=A2AEnvironmentHandoffWaitOut)
+async def wait_a2a_environment_handoff(
+    request: Request,
+    env_id: str,
+    timeout_sec: int = 45,
+    poll_interval_ms: int = 1000,
+):
+    timeout_sec = max(1, min(int(timeout_sec or 45), 300))
+    poll_interval_ms = max(200, min(int(poll_interval_ms or 1000), 5000))
+    started = time.monotonic()
+    deadline = started + float(timeout_sec)
+    while True:
+        _resolve_environment_agent_access(request, env_id, required_scope="env.handoff.wait")
+        conn = db()
+        env_row = conn.execute(
+            "SELECT id, owner_user_id, status, claimed_at FROM environments WHERE id = ?",
+            (env_id,),
+        ).fetchone()
+        conn.close()
+        if not env_row:
+            raise HTTPException(404, "Environment not found")
+        owner_user_id = str(env_row["owner_user_id"] or "").strip()
+        status = str(env_row["status"] or "").strip()
+        claimed = bool(owner_user_id) and status == ENV_STATUS_ACTIVE
+        waited_ms = int(max(0.0, (time.monotonic() - started) * 1000.0))
+        if claimed:
+            return A2AEnvironmentHandoffWaitOut(
+                ok=True,
+                environment_id=env_id,
+                event="claimed",
+                claimed=True,
+                status=status,
+                owner_user_id=owner_user_id,
+                claimed_at=_to_int(env_row["claimed_at"]) or None,
+                waited_ms=waited_ms,
+            )
+        if time.monotonic() >= deadline:
+            return A2AEnvironmentHandoffWaitOut(
+                ok=True,
+                environment_id=env_id,
+                event="timeout",
+                claimed=False,
+                status=status,
+                owner_user_id=owner_user_id or None,
+                claimed_at=_to_int(env_row["claimed_at"]) or None,
+                waited_ms=waited_ms,
+            )
+        await asyncio.sleep(poll_interval_ms / 1000.0)
 
 @app.post("/api/a2a/environments/{env_id}/handoff/ack", response_model=A2AEnvironmentHandoffAckOut)
 async def ack_a2a_environment_handoff(request: Request, env_id: str):
@@ -6803,6 +8028,275 @@ async def start_a2a_session_from_agent_link(payload: A2AAgentLinkSessionStartIn)
         session_expires_at=session_expires_at,
         scopes=["env.read"],
     )
+
+def _json_loads_or(raw: Any, fallback: Any) -> Any:
+    text = str(raw or "").strip()
+    if not text:
+        return fallback
+    try:
+        return json.loads(text)
+    except Exception:
+        return fallback
+
+def _resolve_managed_agent_row(user_id: str, agent_id: str, connection_id: Optional[str] = None) -> Dict[str, Any]:
+    aid = str(agent_id or "").strip()
+    if not aid:
+        raise HTTPException(400, "agent_id is required")
+    conn = db()
+    if connection_id:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM managed_agents
+            WHERE user_id = ? AND agent_id = ? AND connection_id = ?
+            LIMIT 1
+            """,
+            (user_id, aid, str(connection_id).strip()),
+        ).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(404, "Managed agent not found")
+        return dict(row)
+
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM managed_agents
+        WHERE user_id = ? AND agent_id = ?
+        ORDER BY updated_at DESC
+        LIMIT 2
+        """,
+        (user_id, aid),
+    ).fetchall()
+    conn.close()
+    if not rows:
+        raise HTTPException(404, "Managed agent not found")
+    if len(rows) > 1:
+        raise HTTPException(409, "Multiple agents share this id. Pass connection_id to disambiguate.")
+    return dict(rows[0])
+
+@app.get("/api/a2a/agents")
+async def list_managed_a2a_agents(request: Request, connection_id: Optional[str] = None):
+    user_id = get_session_user(request)
+    conn = db()
+    if connection_id:
+        rows = conn.execute(
+            """
+            SELECT connection_id, env_id, agent_id, agent_name, status, root_path, provisioned_at, updated_at
+            FROM managed_agents
+            WHERE user_id = ? AND connection_id = ?
+            ORDER BY updated_at DESC, agent_name ASC
+            """,
+            (user_id, str(connection_id).strip()),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT connection_id, env_id, agent_id, agent_name, status, root_path, provisioned_at, updated_at
+            FROM managed_agents
+            WHERE user_id = ?
+            ORDER BY updated_at DESC, agent_name ASC
+            """,
+            (user_id,),
+        ).fetchall()
+    conn.close()
+    return {
+        "ok": True,
+        "count": len(rows),
+        "agents": [dict(r) for r in rows],
+    }
+
+@app.get("/api/a2a/agents/{agent_id}/card")
+async def get_managed_a2a_agent_card(request: Request, agent_id: str, connection_id: Optional[str] = None):
+    user_id = get_session_user(request)
+    row = _resolve_managed_agent_row(user_id, agent_id, connection_id)
+    return {
+        "ok": True,
+        "agent_id": row["agent_id"],
+        "agent_name": row["agent_name"],
+        "connection_id": row["connection_id"],
+        "env_id": row["env_id"],
+        "card_version": row["card_version"],
+        "card": _json_loads_or(row["card_json"], {}),
+        "root_path": row["root_path"],
+        "updated_at": row["updated_at"],
+    }
+
+@app.get("/api/a2a/agents/{agent_id}/memory")
+async def get_managed_a2a_agent_memory(request: Request, agent_id: str, connection_id: Optional[str] = None):
+    user_id = get_session_user(request)
+    row = _resolve_managed_agent_row(user_id, agent_id, connection_id)
+    conn = db()
+    mem_rows = conn.execute(
+        """
+        SELECT memory_scope, summary, payload_json, updated_at
+        FROM managed_agent_memory
+        WHERE user_id = ? AND connection_id = ? AND agent_id = ?
+        ORDER BY memory_scope ASC
+        """,
+        (user_id, row["connection_id"], row["agent_id"]),
+    ).fetchall()
+    conn.close()
+    return {
+        "ok": True,
+        "agent_id": row["agent_id"],
+        "connection_id": row["connection_id"],
+        "memory": [
+            {
+                "scope": str(r["memory_scope"]),
+                "summary": str(r["summary"] or ""),
+                "payload": _json_loads_or(r["payload_json"], {}),
+                "updated_at": _to_int(r["updated_at"]),
+            }
+            for r in mem_rows
+        ],
+    }
+
+@app.get("/api/a2a/agents/{agent_id}/history")
+async def get_managed_a2a_agent_history(
+    request: Request,
+    agent_id: str,
+    connection_id: Optional[str] = None,
+    limit: int = 50,
+):
+    user_id = get_session_user(request)
+    row = _resolve_managed_agent_row(user_id, agent_id, connection_id)
+    cap = max(1, min(int(limit or 50), 300))
+    conn = db()
+    history_rows = conn.execute(
+        """
+        SELECT event_kind, event_text, event_payload_json, created_at
+        FROM managed_agent_history
+        WHERE user_id = ? AND connection_id = ? AND agent_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, row["connection_id"], row["agent_id"], cap),
+    ).fetchall()
+    conn.close()
+    return {
+        "ok": True,
+        "agent_id": row["agent_id"],
+        "connection_id": row["connection_id"],
+        "count": len(history_rows),
+        "events": [
+            {
+                "kind": str(r["event_kind"] or ""),
+                "text": str(r["event_text"] or ""),
+                "payload": _json_loads_or(r["event_payload_json"], {}),
+                "created_at": _to_int(r["created_at"]),
+            }
+            for r in history_rows
+        ],
+    }
+
+@app.get("/api/a2a/agents/{agent_id}/checkpoints")
+async def get_managed_a2a_agent_checkpoints(request: Request, agent_id: str, connection_id: Optional[str] = None):
+    user_id = get_session_user(request)
+    row = _resolve_managed_agent_row(user_id, agent_id, connection_id)
+    conn = db()
+    cp_rows = conn.execute(
+        """
+        SELECT checkpoint_key, state_json, status, created_at, updated_at
+        FROM managed_agent_checkpoints
+        WHERE user_id = ? AND connection_id = ? AND agent_id = ?
+        ORDER BY updated_at DESC
+        """,
+        (user_id, row["connection_id"], row["agent_id"]),
+    ).fetchall()
+    conn.close()
+    return {
+        "ok": True,
+        "agent_id": row["agent_id"],
+        "connection_id": row["connection_id"],
+        "checkpoints": [
+            {
+                "key": str(r["checkpoint_key"] or ""),
+                "status": str(r["status"] or ""),
+                "state": _json_loads_or(r["state_json"], {}),
+                "created_at": _to_int(r["created_at"]),
+                "updated_at": _to_int(r["updated_at"]),
+            }
+            for r in cp_rows
+        ],
+    }
+
+@app.get("/api/a2a/agents/{agent_id}/metrics")
+async def get_managed_a2a_agent_metrics(request: Request, agent_id: str, connection_id: Optional[str] = None):
+    user_id = get_session_user(request)
+    row = _resolve_managed_agent_row(user_id, agent_id, connection_id)
+    conn = db()
+    metric_row = conn.execute(
+        """
+        SELECT success_count, failure_count, total_calls, total_prompt_tokens, total_completion_tokens,
+               total_latency_ms, last_error, last_seen_at, updated_at
+        FROM managed_agent_metrics
+        WHERE user_id = ? AND connection_id = ? AND agent_id = ?
+        LIMIT 1
+        """,
+        (user_id, row["connection_id"], row["agent_id"]),
+    ).fetchone()
+    conn.close()
+    if not metric_row:
+        return {"ok": True, "agent_id": row["agent_id"], "connection_id": row["connection_id"], "metrics": None}
+    return {
+        "ok": True,
+        "agent_id": row["agent_id"],
+        "connection_id": row["connection_id"],
+        "metrics": dict(metric_row),
+    }
+
+@app.get("/api/a2a/agents/{agent_id}/policies")
+async def get_managed_a2a_agent_policies(request: Request, agent_id: str, connection_id: Optional[str] = None):
+    user_id = get_session_user(request)
+    row = _resolve_managed_agent_row(user_id, agent_id, connection_id)
+    conn = db()
+    perm_row = conn.execute(
+        """
+        SELECT scopes_json, tools_json, path_allowlist_json, secrets_policy_json, approval_required, updated_at
+        FROM managed_agent_permissions
+        WHERE user_id = ? AND connection_id = ? AND agent_id = ?
+        LIMIT 1
+        """,
+        (user_id, row["connection_id"], row["agent_id"]),
+    ).fetchone()
+    approval_rows = conn.execute(
+        """
+        SELECT rule_key, policy_json, is_enabled, created_at, updated_at
+        FROM managed_agent_approval_rules
+        WHERE user_id = ? AND connection_id = ? AND agent_id = ?
+        ORDER BY rule_key ASC
+        """,
+        (user_id, row["connection_id"], row["agent_id"]),
+    ).fetchall()
+    conn.close()
+    return {
+        "ok": True,
+        "agent_id": row["agent_id"],
+        "connection_id": row["connection_id"],
+        "permissions": (
+            {
+                "scopes": _json_loads_or(perm_row["scopes_json"], []),
+                "tools": _json_loads_or(perm_row["tools_json"], []),
+                "path_allowlist": _json_loads_or(perm_row["path_allowlist_json"], []),
+                "secrets_policy": _json_loads_or(perm_row["secrets_policy_json"], {}),
+                "approval_required": bool(_to_int(perm_row["approval_required"])),
+                "updated_at": _to_int(perm_row["updated_at"]),
+            }
+            if perm_row
+            else None
+        ),
+        "approval_rules": [
+            {
+                "rule_key": str(r["rule_key"] or ""),
+                "policy": _json_loads_or(r["policy_json"], {}),
+                "is_enabled": bool(_to_int(r["is_enabled"])),
+                "created_at": _to_int(r["created_at"]),
+                "updated_at": _to_int(r["updated_at"]),
+            }
+            for r in approval_rows
+        ],
+    }
 
 @app.get("/api/me", response_model=AccountProfileOut)
 async def get_account_profile(request: Request):
@@ -6993,12 +8487,22 @@ async def connect_openclaw(request: Request, payload: ConnectIn):
         workspace_root=str(bootstrap.get("workspace_root") or HIVEE_ROOT),
         templates_root=str(bootstrap.get("templates_root") or HIVEE_TEMPLATES_ROOT),
     )
+    provision = _provision_managed_agents_for_connection(
+        user_id=user_id,
+        env_id=env_id,
+        connection_id=conn_id,
+        base_url=payload.base_url.rstrip("/"),
+        raw_agents=bootstrap.get("agents") or [],
+        fallback_agent_id=bootstrap.get("main_agent_id"),
+        fallback_agent_name=bootstrap.get("main_agent_name"),
+    )
 
     return {
         "ok": True,
         "connection": {"id": conn_id, "base_url": payload.base_url.rstrip("/"), "name": payload.name},
         "health": health,
         "bootstrap": bootstrap,
+        "agent_provision": provision,
     }
 
 @app.post("/api/openclaw/{connection_id}/bootstrap")
@@ -7006,7 +8510,7 @@ async def bootstrap_openclaw_connection(request: Request, connection_id: str):
     user_id = get_session_user(request)
     conn = db()
     row = conn.execute(
-        "SELECT base_url, api_key FROM openclaw_connections WHERE id = ? AND user_id = ?",
+        "SELECT base_url, api_key, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
         (connection_id, user_id),
     ).fetchone()
     conn.close()
@@ -7027,6 +8531,15 @@ async def bootstrap_openclaw_connection(request: Request, connection_id: str):
     )
     if not bootstrap.get("ok"):
         raise HTTPException(400, bootstrap)
+    bootstrap["agent_provision"] = _provision_managed_agents_for_connection(
+        user_id=user_id,
+        env_id=str(row["env_id"] or "").strip() or None,
+        connection_id=connection_id,
+        base_url=str(row["base_url"]),
+        raw_agents=bootstrap.get("agents") or [],
+        fallback_agent_id=bootstrap.get("main_agent_id"),
+        fallback_agent_name=bootstrap.get("main_agent_name"),
+    )
     return bootstrap
 
 @app.get("/api/openclaw/connections", response_model=List[ConnectionOut])
@@ -7981,6 +9494,53 @@ async def get_project(request: Request, project_id: str):
     if not row:
         raise HTTPException(404, "Project not found")
     return _project_out_from_row(row)
+
+@app.get("/api/projects/{project_id}/card")
+async def get_project_card(request: Request, project_id: str):
+    user_id = get_session_user(request)
+    conn = db()
+    row = conn.execute(
+        "SELECT id, user_id, project_root FROM projects WHERE id = ? AND user_id = ?",
+        (project_id, user_id),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Project not found")
+    _refresh_project_documents(project_id)
+    meta = _load_project_meta_snapshot(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        history_limit=20,
+    )
+    if not meta.get("ok"):
+        raise HTTPException(400, meta.get("error") or "Project meta is not available")
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "card": meta.get("card") or {},
+    }
+
+@app.get("/api/projects/{project_id}/meta")
+async def get_project_meta(request: Request, project_id: str, limit: int = 40):
+    user_id = get_session_user(request)
+    conn = db()
+    row = conn.execute(
+        "SELECT id, user_id, project_root FROM projects WHERE id = ? AND user_id = ?",
+        (project_id, user_id),
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "Project not found")
+    _refresh_project_documents(project_id)
+    meta = _load_project_meta_snapshot(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        history_limit=max(1, min(int(limit or 40), 300)),
+    )
+    if not meta.get("ok"):
+        raise HTTPException(400, meta.get("error") or "Project meta is not available")
+    meta["project_id"] = project_id
+    return meta
 
 @app.delete("/api/projects/{project_id}")
 async def delete_project(request: Request, project_id: str):
