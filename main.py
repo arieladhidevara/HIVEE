@@ -79,7 +79,17 @@ ENV_STATUS_SUSPENDED = "suspended"
 ENV_STATUS_ARCHIVED = "archived"
 ENV_CLAIM_CODE_TTL_SEC = 60 * 15
 ENV_AGENT_SESSION_TTL_SEC = 60 * 60 * 24
+ENV_AGENT_HANDOFF_TTL_SEC = 60 * 5
+ENV_AGENT_RUNTIME_SESSION_TTL_SEC = 60 * 15
+ENV_AGENT_LINK_TOKEN_TTL_SEC = 60 * 60 * 24 * 180
 ENV_AGENT_SESSION_HEADER = "X-A2A-Agent-Session"
+ENV_AGENT_SESSION_STATUS_ACTIVE = "active"
+ENV_AGENT_SESSION_STATUS_HANDOFF_PENDING = "handoff_pending"
+ENV_AGENT_SESSION_STATUS_REVOKED = "revoked"
+ENV_AGENT_SESSION_STATUS_EXPIRED = "expired"
+ENV_AGENT_LINK_STATUS_ACTIVE = "active"
+ENV_AGENT_LINK_STATUS_REVOKED = "revoked"
+ENV_AGENT_LINK_STATUS_EXPIRED = "expired"
 PASSWORD_MIN_LENGTH = 10
 PASSWORD_HASH_PREFIX = "pbkdf2_sha256"
 PASSWORD_HASH_ITERATIONS = 260_000
@@ -276,6 +286,24 @@ def init_db() -> None:
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS environment_agent_links (
+            id TEXT PRIMARY KEY,
+            env_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            revoked_at INTEGER,
+            last_used_at INTEGER,
+            FOREIGN KEY(env_id) REFERENCES environments(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_environment_agent_links_env_agent ON environment_agent_links(env_id, agent_id, status)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_environment_agent_links_expires_at ON environment_agent_links(expires_at)")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS oauth_identities (
@@ -712,6 +740,9 @@ def _new_environment_claim_code() -> str:
 def _new_environment_agent_session_token() -> str:
     return f"a2as_{secrets.token_urlsafe(24)}"
 
+def _new_environment_agent_link_token() -> str:
+    return f"a2al_{secrets.token_urlsafe(24)}"
+
 def _environment_home_dir(env_id: str) -> Path:
     safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(env_id or "").strip()).strip("-") or "env"
     return SERVER_WORKSPACES_DIR / f"env_{safe}"
@@ -1016,7 +1047,7 @@ def _issue_environment_agent_session(
             str(agent_id or "agent").strip() or "agent",
             _hash_access_token(raw_token),
             json.dumps(cleaned_scopes, ensure_ascii=False),
-            "active",
+            ENV_AGENT_SESSION_STATUS_ACTIVE,
             now,
             expires_at,
             None,
@@ -1024,6 +1055,84 @@ def _issue_environment_agent_session(
         ),
     )
     return raw_token, expires_at
+
+def _issue_environment_agent_link_token(
+    conn: sqlite3.Connection,
+    *,
+    env_id: str,
+    agent_id: str,
+    ttl_sec: int = ENV_AGENT_LINK_TOKEN_TTL_SEC,
+) -> Tuple[str, int]:
+    now = int(time.time())
+    ttl = max(60 * 60, min(int(ttl_sec or ENV_AGENT_LINK_TOKEN_TTL_SEC), 60 * 60 * 24 * 365))
+    expires_at = now + ttl
+    normalized_agent = str(agent_id or "agent").strip() or "agent"
+    conn.execute(
+        """
+        UPDATE environment_agent_links
+        SET status = ?, revoked_at = ?
+        WHERE env_id = ? AND agent_id = ? AND status = ?
+        """,
+        (
+            ENV_AGENT_LINK_STATUS_REVOKED,
+            now,
+            env_id,
+            normalized_agent,
+            ENV_AGENT_LINK_STATUS_ACTIVE,
+        ),
+    )
+    raw_token = _new_environment_agent_link_token()
+    conn.execute(
+        """
+        INSERT INTO environment_agent_links (
+            id, env_id, agent_id, token_hash, status, created_at, expires_at, revoked_at, last_used_at
+        ) VALUES (?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            new_id("alk"),
+            env_id,
+            normalized_agent,
+            _hash_access_token(raw_token),
+            ENV_AGENT_LINK_STATUS_ACTIVE,
+            now,
+            expires_at,
+            None,
+            now,
+        ),
+    )
+    return raw_token, expires_at
+
+def _transition_environment_agent_sessions_to_handoff(
+    conn: sqlite3.Connection,
+    *,
+    env_id: str,
+    ttl_sec: int = ENV_AGENT_HANDOFF_TTL_SEC,
+) -> int:
+    now = int(time.time())
+    ttl = max(60, min(int(ttl_sec or ENV_AGENT_HANDOFF_TTL_SEC), 60 * 30))
+    handoff_expires_at = now + ttl
+    read_only_scopes = json.dumps(["env.read", "env.handoff.ack"], ensure_ascii=False)
+    conn.execute(
+        """
+        UPDATE environment_agent_sessions
+        SET status = ?,
+            scopes_json = ?,
+            expires_at = CASE WHEN expires_at < ? THEN expires_at ELSE ? END,
+            revoked_at = NULL,
+            last_seen_at = ?
+        WHERE env_id = ? AND status = ?
+        """,
+        (
+            ENV_AGENT_SESSION_STATUS_HANDOFF_PENDING,
+            read_only_scopes,
+            handoff_expires_at,
+            handoff_expires_at,
+            now,
+            env_id,
+            ENV_AGENT_SESSION_STATUS_ACTIVE,
+        ),
+    )
+    return handoff_expires_at
 
 def _parse_scopes_json(raw: Any) -> List[str]:
     if raw is None:
@@ -1066,13 +1175,14 @@ def _resolve_environment_agent_access(
     if not row:
         conn.close()
         raise HTTPException(401, "Invalid A2A agent session")
-    if str(row["status"] or "").strip().lower() != "active":
+    session_status = str(row["status"] or "").strip().lower()
+    if session_status not in {ENV_AGENT_SESSION_STATUS_ACTIVE, ENV_AGENT_SESSION_STATUS_HANDOFF_PENDING}:
         conn.close()
         raise HTTPException(403, "A2A agent session is not active")
     if _to_int(row["expires_at"]) <= now:
         conn.execute(
             "UPDATE environment_agent_sessions SET status = ?, revoked_at = ? WHERE id = ?",
-            ("expired", now, row["id"]),
+            (ENV_AGENT_SESSION_STATUS_EXPIRED, now, row["id"]),
         )
         conn.commit()
         conn.close()
@@ -1093,6 +1203,7 @@ def _resolve_environment_agent_access(
         "env_id": str(row["env_id"]),
         "agent_id": str(row["agent_id"]),
         "scopes": scopes,
+        "status": session_status,
         "expires_at": _to_int(row["expires_at"]),
     }
 
@@ -1333,6 +1444,10 @@ def _delete_account_with_resources(*, user_id: str) -> Dict[str, Any]:
     conn.execute("DELETE FROM openclaw_connections WHERE user_id = ?", (user_id,))
     conn.execute(
         "DELETE FROM environment_claim_codes WHERE env_id IN (SELECT id FROM environments WHERE owner_user_id = ?)",
+        (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM environment_agent_links WHERE env_id IN (SELECT id FROM environments WHERE owner_user_id = ?)",
         (user_id,),
     )
     conn.execute(
@@ -2467,24 +2582,11 @@ def _infer_pause_request(
         "need your confirmation",
         "requires your confirmation",
         "awaiting your confirmation",
-        "menunggu input",
-        "butuh input",
-        "menunggu jawaban",
-        "butuh jawaban",
-        "menunggu konfirmasi",
-        "butuh konfirmasi",
-        "perlu konfirmasi",
-        "menunggu persetujuan",
-        "butuh persetujuan",
-        "perlu persetujuan",
-        "menunggu approval",
-        "butuh approval",
-        "perlu approval",
         "pit stop",
         "blocked waiting",
         "pause until user",
     ]
-    owner_context = any(marker in combined for marker in ["@owner", " owner", " user", " pengguna"])
+    owner_context = any(marker in combined for marker in ["@owner", " owner", " user"])
     soft_pause_keywords = [
         "please provide",
         "please share",
@@ -2512,9 +2614,9 @@ def _is_resume_command_message(text: str) -> bool:
     low = str(text or "").strip().lower()
     if not low:
         return False
-    if re.search(r"\b(don't|do not|jangan)\s+(resume|continue|lanjut|lanjutkan)\b", low):
+    if re.search(r"\b(don't|do not)\s+(resume|continue|proceed|go on|carry on)\b", low):
         return False
-    return bool(re.search(r"\b(resume|continue|lanjut|lanjutkan|proceed|go on|carry on)\b", low))
+    return bool(re.search(r"\b(resume|continue|proceed|go on|carry on)\b", low))
 
 def _estimate_tokens_from_text(text: Any) -> int:
     raw = str(text or "").strip()
@@ -3276,25 +3378,25 @@ def _extract_setup_details_from_user_lines(user_lines: List[str]) -> Dict[str, A
                 return line[:5000]
         return None
 
-    target = _pick_first(["target user", "target users", "audience", "pengguna", "target market"])
+    target = _pick_first(["target user", "target users", "audience", "target market"])
     if target:
         details["target_users"] = target
-    constraints = _pick_first(["constraint", "constraints", "batas", "budget", "deadline", "timeline", "compliance"])
+    constraints = _pick_first(["constraint", "constraints", "budget", "deadline", "timeline", "compliance"])
     if constraints:
         details["constraints"] = constraints
-    in_scope = _pick_first(["in-scope", "in scope", "scope", "cakupan"])
+    in_scope = _pick_first(["in-scope", "in scope", "scope"])
     if in_scope:
         details["in_scope"] = in_scope
-    out_scope = _pick_first(["out-of-scope", "out of scope", "exclude", "not include", "tidak termasuk"])
+    out_scope = _pick_first(["out-of-scope", "out of scope", "exclude", "not include"])
     if out_scope:
         details["out_of_scope"] = out_scope
-    milestones = _pick_first(["milestone", "timeline", "schedule", "jadwal", "sprint", "deadline"])
+    milestones = _pick_first(["milestone", "timeline", "schedule", "sprint", "deadline"])
     if milestones:
         details["milestones"] = milestones
     stack = _pick_first(["stack", "framework", "language", "tech", "tools", "tooling", "library"])
     if stack:
         details["required_stack"] = stack
-    first_output = _pick_first(["first output", "deliverable", "output", "hasil pertama", "deliver"])
+    first_output = _pick_first(["first output", "deliverable", "output", "deliver"])
     if first_output:
         details["first_output"] = first_output
     return details
@@ -3318,19 +3420,19 @@ def _local_setup_draft(transcript: List[Dict[str, Any]]) -> Dict[str, Any]:
             continue
         if pending_question:
             qlow = pending_question.lower()
-            if not details.get("target_users") and any(k in qlow for k in ["target user", "target users", "audience", "pengguna"]):
+            if not details.get("target_users") and any(k in qlow for k in ["target user", "target users", "audience", "target market"]):
                 details["target_users"] = compact[:5000]
-            if not details.get("constraints") and any(k in qlow for k in ["constraint", "constraints", "budget", "deadline", "timeline", "compliance", "batas"]):
+            if not details.get("constraints") and any(k in qlow for k in ["constraint", "constraints", "budget", "deadline", "timeline", "compliance"]):
                 details["constraints"] = compact[:5000]
-            if not details.get("in_scope") and any(k in qlow for k in ["in-scope", "in scope", "scope", "cakupan"]):
+            if not details.get("in_scope") and any(k in qlow for k in ["in-scope", "in scope", "scope"]):
                 details["in_scope"] = compact[:5000]
-            if not details.get("out_of_scope") and any(k in qlow for k in ["out-of-scope", "out of scope", "exclude", "tidak termasuk"]):
+            if not details.get("out_of_scope") and any(k in qlow for k in ["out-of-scope", "out of scope", "exclude", "not include"]):
                 details["out_of_scope"] = compact[:5000]
-            if not details.get("milestones") and any(k in qlow for k in ["milestone", "timeline", "schedule", "jadwal", "sprint"]):
+            if not details.get("milestones") and any(k in qlow for k in ["milestone", "timeline", "schedule", "sprint"]):
                 details["milestones"] = compact[:5000]
             if not details.get("required_stack") and any(k in qlow for k in ["stack", "framework", "tech", "tools", "language"]):
                 details["required_stack"] = compact[:5000]
-            if not details.get("first_output") and any(k in qlow for k in ["first output", "deliverable", "output", "hasil pertama"]):
+            if not details.get("first_output") and any(k in qlow for k in ["first output", "deliverable", "output", "deliver"]):
                 details["first_output"] = compact[:5000]
             summary_lines.append(f"- Q: {pending_question}")
             summary_lines.append(f"  A: {compact}")
@@ -5871,6 +5973,26 @@ class A2AEnvironmentClaimCompleteOut(BaseModel):
     connection_id: str
     connection_name: Optional[str] = None
 
+class A2AEnvironmentHandoffAckOut(BaseModel):
+    ok: bool
+    environment_id: str
+    status: str
+    revoked_sessions: int
+    link_token: str
+    link_token_expires_at: int
+
+class A2AAgentLinkSessionStartIn(BaseModel):
+    link_token: str = Field(..., min_length=8)
+    session_ttl_sec: int = ENV_AGENT_RUNTIME_SESSION_TTL_SEC
+
+class A2AAgentLinkSessionStartOut(BaseModel):
+    ok: bool
+    environment_id: str
+    agent_id: str
+    session_token: str
+    session_expires_at: int
+    scopes: List[str]
+
 def _bearer_token(request: Request) -> str:
     auth = request.headers.get("Authorization", "")
     token = auth.replace("Bearer ", "").strip()
@@ -6312,7 +6434,7 @@ async def complete_a2a_environment_claim(request: Request, payload: A2AEnvironme
 
     claim_row = conn.execute(
         """
-        SELECT id, expires_at, used_at
+        SELECT id, expires_at, used_at, created_by_agent_id
         FROM environment_claim_codes
         WHERE env_id = ? AND code_hash = ?
         ORDER BY created_at DESC
@@ -6329,6 +6451,7 @@ async def complete_a2a_environment_claim(request: Request, payload: A2AEnvironme
     if _to_int(claim_row["expires_at"]) <= now:
         conn.close()
         raise HTTPException(400, "Claim code expired")
+    claim_agent_id = str(claim_row["created_by_agent_id"] or "").strip()
 
     user_id = ""
     if mode == "signup":
@@ -6407,10 +6530,26 @@ async def complete_a2a_environment_claim(request: Request, payload: A2AEnvironme
         "UPDATE environment_claim_codes SET used_at = ?, used_by_user_id = ? WHERE id = ?",
         (now, user_id, claim_row["id"]),
     )
-    conn.execute(
-        "UPDATE environment_agent_sessions SET status = ?, revoked_at = ? WHERE env_id = ? AND status = ?",
-        ("revoked", now, env_id, "active"),
+    _transition_environment_agent_sessions_to_handoff(
+        conn,
+        env_id=env_id,
+        ttl_sec=ENV_AGENT_HANDOFF_TTL_SEC,
     )
+    if claim_agent_id:
+        conn.execute(
+            """
+            UPDATE environment_agent_links
+            SET status = ?, revoked_at = ?
+            WHERE env_id = ? AND agent_id = ? AND status = ?
+            """,
+            (
+                ENV_AGENT_LINK_STATUS_REVOKED,
+                now,
+                env_id,
+                claim_agent_id,
+                ENV_AGENT_LINK_STATUS_ACTIVE,
+            ),
+        )
     conn.execute(
         "INSERT INTO openclaw_connections (id, user_id, env_id, base_url, api_key, name, created_at) VALUES (?,?,?,?,?,?,?)",
         (
@@ -6462,12 +6601,13 @@ async def get_a2a_environment_status(request: Request, env_id: str):
 
     owner_user_id = str(env_row["owner_user_id"] or "").strip()
     access_mode = ""
+    agent_access: Optional[Dict[str, Any]] = None
     if session_user and owner_user_id and str(session_user) == owner_user_id:
         access_mode = "owner"
     else:
         conn.close()
-        access = _resolve_environment_agent_access(request, env_id, required_scope="env.read")
-        access_mode = f"agent:{access.get('agent_id')}"
+        agent_access = _resolve_environment_agent_access(request, env_id, required_scope="env.read")
+        access_mode = f"agent:{agent_access.get('agent_id')}"
         conn = db()
         env_row = conn.execute(
             "SELECT id, owner_user_id, display_name, status, workspace_root, created_at, claimed_at FROM environments WHERE id = ?",
@@ -6503,21 +6643,166 @@ async def get_a2a_environment_status(request: Request, env_id: str):
                 }
             )
     conn.close()
+    env_status = str(env_row["status"] or "").strip()
+    claimed = bool(owner_user_id)
     return {
         "ok": True,
         "environment": {
             "id": str(env_row["id"]),
             "display_name": str(env_row["display_name"] or ""),
-            "status": str(env_row["status"] or ""),
+            "status": env_status,
+            "claimed": claimed,
             "workspace_root": str(env_row["workspace_root"] or ""),
             "created_at": env_row["created_at"],
             "claimed_at": env_row["claimed_at"],
             "owner_user_id": owner_user_id or None,
         },
         "access_mode": access_mode,
+        "agent_session": (
+            {
+                "status": str(agent_access.get("status") or ""),
+                "expires_at": _to_int(agent_access.get("expires_at")),
+                "handoff_pending": str(agent_access.get("status") or "") == ENV_AGENT_SESSION_STATUS_HANDOFF_PENDING,
+            }
+            if agent_access
+            else None
+        ),
         "outstanding_count": len(outstanding),
         "outstanding_projects": outstanding[:20],
     }
+
+@app.post("/api/a2a/environments/{env_id}/handoff/ack", response_model=A2AEnvironmentHandoffAckOut)
+async def ack_a2a_environment_handoff(request: Request, env_id: str):
+    access = _resolve_environment_agent_access(request, env_id, required_scope="env.handoff.ack")
+    now = int(time.time())
+    agent_id = str(access.get("agent_id") or "").strip() or "agent"
+    conn = db()
+    env_row = conn.execute(
+        "SELECT id, owner_user_id, status FROM environments WHERE id = ?",
+        (env_id,),
+    ).fetchone()
+    if not env_row:
+        conn.close()
+        raise HTTPException(404, "Environment not found")
+    owner_user_id = str(env_row["owner_user_id"] or "").strip()
+    if not owner_user_id:
+        conn.close()
+        raise HTTPException(409, "Environment is not claimed yet")
+    link_token, link_expires_at = _issue_environment_agent_link_token(
+        conn,
+        env_id=env_id,
+        agent_id=agent_id,
+        ttl_sec=ENV_AGENT_LINK_TOKEN_TTL_SEC,
+    )
+    revoked = conn.execute(
+        """
+        UPDATE environment_agent_sessions
+        SET status = ?, revoked_at = ?
+        WHERE env_id = ? AND agent_id = ? AND status IN (?, ?)
+        """,
+        (
+            ENV_AGENT_SESSION_STATUS_REVOKED,
+            now,
+            env_id,
+            agent_id,
+            ENV_AGENT_SESSION_STATUS_ACTIVE,
+            ENV_AGENT_SESSION_STATUS_HANDOFF_PENDING,
+        ),
+    ).rowcount
+    conn.commit()
+    conn.close()
+    return A2AEnvironmentHandoffAckOut(
+        ok=True,
+        environment_id=env_id,
+        status=ENV_AGENT_SESSION_STATUS_REVOKED,
+        revoked_sessions=max(0, int(revoked or 0)),
+        link_token=link_token,
+        link_token_expires_at=link_expires_at,
+    )
+
+@app.post("/api/a2a/agent-links/session/start", response_model=A2AAgentLinkSessionStartOut)
+async def start_a2a_session_from_agent_link(payload: A2AAgentLinkSessionStartIn):
+    raw_link = str(payload.link_token or "").strip()
+    if not raw_link:
+        raise HTTPException(400, "link_token is required")
+    now = int(time.time())
+    conn = db()
+    link_row = conn.execute(
+        """
+        SELECT id, env_id, agent_id, status, expires_at
+        FROM environment_agent_links
+        WHERE token_hash = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (_hash_access_token(raw_link),),
+    ).fetchone()
+    if not link_row:
+        conn.close()
+        raise HTTPException(401, "Invalid agent link token")
+    link_status = str(link_row["status"] or "").strip().lower()
+    if link_status != ENV_AGENT_LINK_STATUS_ACTIVE:
+        conn.close()
+        raise HTTPException(403, "Agent link token is not active")
+    if _to_int(link_row["expires_at"]) <= now:
+        conn.execute(
+            "UPDATE environment_agent_links SET status = ?, revoked_at = ? WHERE id = ?",
+            (ENV_AGENT_LINK_STATUS_EXPIRED, now, str(link_row["id"])),
+        )
+        conn.commit()
+        conn.close()
+        raise HTTPException(401, "Agent link token expired")
+    env_id = str(link_row["env_id"] or "").strip()
+    agent_id = str(link_row["agent_id"] or "").strip() or "agent"
+    env_row = conn.execute(
+        "SELECT id, owner_user_id, status FROM environments WHERE id = ?",
+        (env_id,),
+    ).fetchone()
+    if not env_row:
+        conn.close()
+        raise HTTPException(404, "Environment not found")
+    owner_user_id = str(env_row["owner_user_id"] or "").strip()
+    if not owner_user_id or str(env_row["status"] or "").strip() != ENV_STATUS_ACTIVE:
+        conn.close()
+        raise HTTPException(409, "Environment is not active for runtime agent session")
+
+    conn.execute(
+        """
+        UPDATE environment_agent_sessions
+        SET status = ?, revoked_at = ?
+        WHERE env_id = ? AND agent_id = ? AND status IN (?, ?)
+        """,
+        (
+            ENV_AGENT_SESSION_STATUS_REVOKED,
+            now,
+            env_id,
+            agent_id,
+            ENV_AGENT_SESSION_STATUS_ACTIVE,
+            ENV_AGENT_SESSION_STATUS_HANDOFF_PENDING,
+        ),
+    )
+    runtime_ttl = max(60, min(int(payload.session_ttl_sec or ENV_AGENT_RUNTIME_SESSION_TTL_SEC), 60 * 60))
+    session_token, session_expires_at = _issue_environment_agent_session(
+        conn,
+        env_id=env_id,
+        agent_id=agent_id,
+        scopes=["env.read"],
+        ttl_sec=runtime_ttl,
+    )
+    conn.execute(
+        "UPDATE environment_agent_links SET last_used_at = ? WHERE id = ?",
+        (now, str(link_row["id"])),
+    )
+    conn.commit()
+    conn.close()
+    return A2AAgentLinkSessionStartOut(
+        ok=True,
+        environment_id=env_id,
+        agent_id=agent_id,
+        session_token=session_token,
+        session_expires_at=session_expires_at,
+        scopes=["env.read"],
+    )
 
 @app.get("/api/me", response_model=AccountProfileOut)
 async def get_account_profile(request: Request):

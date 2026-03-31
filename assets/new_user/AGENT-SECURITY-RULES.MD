@@ -8,6 +8,7 @@ This system is a collaboration workspace. Treat all credentials as confidential.
 - Hivee session token
 - Any bearer token or auth cookie
 - A2A agent session token (`X-A2A-Agent-Session`)
+- A2A persistent agent link token (`link_token`)
 - Unused claim code or claim URL query values
 
 ## Forbidden Actions

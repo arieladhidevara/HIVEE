@@ -221,7 +221,7 @@ function validateOptionalClaimConnectionPayload(payload) {
   const key = String(payload?.openclaw_api_key || "").trim();
   if (!base && !key) return;
   if (!base || !key) {
-    throw new Error("Isi OpenClaw Base URL dan API key sekaligus, atau kosongkan keduanya.");
+    throw new Error("Enter both OpenClaw Base URL and API key together, or leave both empty.");
   }
   validateClaimConnectionPayload(payload);
 }
@@ -287,13 +287,13 @@ function applyOAuthProvidersUI() {
     return;
   }
   if (configuredCount === 0) {
-    hint.textContent = "Social login belum aktif di server.";
+    hint.textContent = "Social login is not enabled on this server.";
     return;
   }
   if (configuredCount < buttons.length) {
     hint.textContent = claimAuthContext.active
-      ? "Sebagian provider belum aktif. Kamu bisa login social dulu atau isi OpenClaw dulu."
-      : "Sebagian provider belum aktif.";
+      ? "Some providers are not enabled yet. You can sign in with social auth first or fill OpenClaw details first."
+      : "Some providers are not enabled yet.";
     return;
   }
   if (!claimAuthContext.active) {
@@ -301,8 +301,8 @@ function applyOAuthProvidersUI() {
     return;
   }
   hint.textContent = claimSessionState.connected
-    ? "Session sudah terhubung. Isi OpenClaw Base URL + API key lalu klik Claim Environment."
-    : "Kamu bisa login social dulu, lalu lanjut isi OpenClaw Base URL + API key.";
+    ? "Session is connected. Enter OpenClaw Base URL + API key, then click Claim Environment."
+    : "You can sign in with social auth first, then continue by entering OpenClaw Base URL + API key.";
 }
 
 async function loadOAuthProviders() {
@@ -2939,7 +2939,7 @@ async function startOAuth(provider) {
   if (!providerKey) throw new Error("Invalid OAuth provider.");
   const configured = oauthProvidersState.get(providerKey);
   if (!configured) {
-    throw new Error(`${oauthDisplayName(providerKey)} login belum aktif di server.`);
+    throw new Error(`${oauthDisplayName(providerKey)} login is not enabled on this server.`);
   }
   if (claimAuthContext.active) {
     const connection = claimConnectionForContext();
@@ -3440,7 +3440,7 @@ if (oauthError) {
       await loadClaimSessionState().catch(() => {});
       applyClaimAuthUI();
       if (claimSessionState.connected) {
-        setMessage("auth_msg", "OAuth login success. Isi OpenClaw Base URL + API key, lalu klik Claim Environment.", "ok");
+        setMessage("auth_msg", "OAuth login successful. Enter OpenClaw Base URL + API key, then click Claim Environment.", "ok");
       }
       setView("auth");
       return;

@@ -35,10 +35,38 @@ No owner credentials are required for this flow.
    - OpenClaw base URL
    - OpenClaw API key / token
    - Optional connection name
-7. Optionally monitor status:
+6. Optionally monitor status:
    - `GET /api/a2a/environments/{environment_id}`
    - Header: `X-A2A-Agent-Session: <agent_session_token>`
-8. Consider setup complete when environment status becomes `active`.
+7. When status payload shows `environment.claimed = true` (and status `active`):
+   - Send user message: `Connected. You can now control me directly from the Hivee UI.`
+8. After sending that message, acknowledge handoff:
+   - `POST /api/a2a/environments/{environment_id}/handoff/ack`
+   - Header: `X-A2A-Agent-Session: <agent_session_token>`
+9. Read handoff ACK response and save:
+   - `link_token`
+   - `link_token_expires_at`
+10. Consider setup complete when handoff ACK succeeds and `link_token` is stored.
+
+## Handoff Session Notes
+- After claim succeeds, Hivee keeps the bootstrap agent session alive briefly in read-only handoff mode.
+- Default handoff window is short (`~5 minutes`) before session expiry.
+- Agent should poll quickly, notify user once connected, then call handoff ACK immediately.
+- If this environment was previously claimed for the same agent, the old active link token is revoked during the new claim.
+- Handoff ACK rotates/replaces any previous active link token for the same `environment_id + agent_id`.
+- Store `link_token` only in agent private memory/secrets storage, never in shared chat.
+
+## Reconnect On Future Chats
+When owner chats again later (next day, etc):
+1. Start runtime session from link token:
+   - `POST /api/a2a/agent-links/session/start`
+   - JSON: `{"link_token":"<stored_link_token>"}`
+2. Save response:
+   - `session_token`
+   - `session_expires_at`
+3. Call Hivee API with:
+   - Header: `X-A2A-Agent-Session: <session_token>`
+4. If session expires, call `session/start` again with the same stored `link_token`.
 
 ## If Claim Link Expires
 1. Regenerate claim link:
@@ -55,4 +83,4 @@ No owner credentials are required for this flow.
 ## Completion Message Template
 Use this format:
 
-`Environment bootstrap completed. Claim URL sent privately. Waiting for owner claim or status active confirmation.`
+`Environment bootstrap completed. Claim URL sent privately. Waiting for owner claim.`
