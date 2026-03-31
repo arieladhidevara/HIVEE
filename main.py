@@ -71,6 +71,14 @@ EXEC_STATUS_STOPPED = "stopped"
 EXEC_STATUS_COMPLETED = "completed"
 SESSION_COOKIE_NAME = "hivee_session"
 SESSION_COOKIE_MAX_AGE_SEC = 60 * 60 * 24 * 30
+ENV_STATUS_PENDING_BOOTSTRAP = "pending_bootstrap"
+ENV_STATUS_PENDING_CLAIM = "pending_claim"
+ENV_STATUS_ACTIVE = "active"
+ENV_STATUS_SUSPENDED = "suspended"
+ENV_STATUS_ARCHIVED = "archived"
+ENV_CLAIM_CODE_TTL_SEC = 60 * 15
+ENV_AGENT_SESSION_TTL_SEC = 60 * 60 * 24
+ENV_AGENT_SESSION_HEADER = "X-A2A-Agent-Session"
 DEFAULT_PROJECT_SETUP_MD = """# PROJECT-SETUP
 Ask these questions one by one before creating a project:
 1. What is the project name?
@@ -117,6 +125,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS openclaw_connections (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
+            env_id TEXT,
             base_url TEXT NOT NULL,
             api_key TEXT NOT NULL,
             name TEXT,
@@ -130,6 +139,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS projects (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
+            env_id TEXT,
             title TEXT NOT NULL,
             brief TEXT NOT NULL,
             goal TEXT NOT NULL,
@@ -195,16 +205,69 @@ def init_db() -> None:
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS environments (
+            id TEXT PRIMARY KEY,
+            owner_user_id TEXT,
+            display_name TEXT,
+            status TEXT NOT NULL DEFAULT 'pending_bootstrap',
+            workspace_root TEXT,
+            created_at INTEGER NOT NULL,
+            claimed_at INTEGER,
+            archived_at INTEGER,
+            FOREIGN KEY(owner_user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS environment_claim_codes (
+            id TEXT PRIMARY KEY,
+            env_id TEXT NOT NULL,
+            code_hash TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            used_at INTEGER,
+            used_by_user_id TEXT,
+            created_by_agent_id TEXT,
+            FOREIGN KEY(env_id) REFERENCES environments(id),
+            FOREIGN KEY(used_by_user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS environment_agent_sessions (
+            id TEXT PRIMARY KEY,
+            env_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            token_hash TEXT NOT NULL,
+            scopes_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            revoked_at INTEGER,
+            last_seen_at INTEGER,
+            FOREIGN KEY(env_id) REFERENCES environments(id)
+        )
+        """
+    )
     cols = [r[1] for r in cur.execute("PRAGMA table_info(project_agents)").fetchall()]
     if "is_primary" not in cols:
         cur.execute("ALTER TABLE project_agents ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0")
     if "role" not in cols:
         cur.execute("ALTER TABLE project_agents ADD COLUMN role TEXT NOT NULL DEFAULT ''")
     project_cols = [r[1] for r in cur.execute("PRAGMA table_info(projects)").fetchall()]
+    conn_cols = [r[1] for r in cur.execute("PRAGMA table_info(openclaw_connections)").fetchall()]
+    if "env_id" not in conn_cols:
+        cur.execute("ALTER TABLE openclaw_connections ADD COLUMN env_id TEXT")
     if "workspace_root" not in project_cols:
         cur.execute(f"ALTER TABLE projects ADD COLUMN workspace_root TEXT NOT NULL DEFAULT '{HIVEE_ROOT}'")
     if "project_root" not in project_cols:
         cur.execute("ALTER TABLE projects ADD COLUMN project_root TEXT NOT NULL DEFAULT ''")
+    if "env_id" not in project_cols:
+        cur.execute("ALTER TABLE projects ADD COLUMN env_id TEXT")
     if "scope_requires_owner_approval" not in project_cols:
         cur.execute("ALTER TABLE projects ADD COLUMN scope_requires_owner_approval INTEGER NOT NULL DEFAULT 1")
     if "setup_json" not in project_cols:
@@ -302,6 +365,25 @@ def _hash_access_token(token: str) -> str:
 def _new_agent_access_token() -> str:
     return f"agtok_{secrets.token_urlsafe(24)}"
 
+def _new_environment_claim_code() -> str:
+    return f"jnc_{secrets.token_urlsafe(18)}"
+
+def _new_environment_agent_session_token() -> str:
+    return f"a2as_{secrets.token_urlsafe(24)}"
+
+def _environment_home_dir(env_id: str) -> Path:
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(env_id or "").strip()).strip("-") or "env"
+    return SERVER_WORKSPACES_DIR / f"env_{safe}"
+
+def _environment_workspace_root_dir(env_id: str) -> Path:
+    return _environment_home_dir(env_id) / HIVEE_ROOT
+
+def _environment_templates_dir(env_id: str) -> Path:
+    return _environment_workspace_root_dir(env_id) / "TEMPLATES"
+
+def _environment_projects_dir(env_id: str) -> Path:
+    return _environment_workspace_root_dir(env_id) / "PROJECTS"
+
 def _user_home_dir(user_id: str) -> Path:
     return SERVER_WORKSPACES_DIR / user_id
 
@@ -320,6 +402,13 @@ def _path_within(child: Path, parent: Path) -> bool:
         return True
     except Exception:
         return False
+
+def _build_claim_url(request: Request, env_id: str, code: str) -> str:
+    base = str(request.base_url).rstrip("/")
+    return (
+        f"{base}/?claim_env_id={url_quote(env_id, safe='')}"
+        f"&claim_code={url_quote(code, safe='')}"
+    )
 
 def _encode_rel_path_for_url_path(path: str) -> str:
     clean = str(path or "").replace("\\", "/").strip("/")
@@ -493,6 +582,285 @@ def _ensure_user_workspace(user_id: str) -> Dict[str, Any]:
         "template_warnings": payload.get("warnings") or [],
     }
 
+def _ensure_environment_workspace(env_id: str) -> Dict[str, Any]:
+    SERVER_WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
+    home = _environment_home_dir(env_id)
+    workspace_root = _environment_workspace_root_dir(env_id)
+    templates_root = _environment_templates_dir(env_id)
+    projects_root = _environment_projects_dir(env_id)
+
+    home.mkdir(parents=True, exist_ok=True)
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    templates_root.mkdir(parents=True, exist_ok=True)
+    projects_root.mkdir(parents=True, exist_ok=True)
+
+    payload = _collect_new_user_templates()
+    for rel_dir in payload.get("directories") or []:
+        target_dir = (templates_root / rel_dir).resolve()
+        if not _path_within(target_dir, templates_root):
+            continue
+        target_dir.mkdir(parents=True, exist_ok=True)
+    for item in payload.get("files") or []:
+        rel_path = str(item.get("path") or "").strip()
+        if not rel_path:
+            continue
+        target_file = (templates_root / rel_path).resolve()
+        if not _path_within(target_file, templates_root):
+            continue
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        if not target_file.exists():
+            target_file.write_text(str(item.get("content") or ""), encoding="utf-8")
+
+    return {
+        "workspace_root": workspace_root.as_posix(),
+        "templates_root": templates_root.as_posix(),
+        "projects_root": projects_root.as_posix(),
+        "workspace_tree": _render_tree(workspace_root),
+        "template_warnings": payload.get("warnings") or [],
+    }
+
+def _issue_environment_claim_code(
+    conn: sqlite3.Connection,
+    *,
+    env_id: str,
+    ttl_sec: int = ENV_CLAIM_CODE_TTL_SEC,
+    created_by_agent_id: Optional[str] = None,
+) -> Tuple[str, int]:
+    now = int(time.time())
+    ttl = max(60, min(int(ttl_sec or ENV_CLAIM_CODE_TTL_SEC), 60 * 60 * 24))
+    expires_at = now + ttl
+    raw_code = _new_environment_claim_code()
+    conn.execute(
+        """
+        INSERT INTO environment_claim_codes (id, env_id, code_hash, created_at, expires_at, used_at, used_by_user_id, created_by_agent_id)
+        VALUES (?,?,?,?,?,?,?,?)
+        """,
+        (
+            new_id("clm"),
+            env_id,
+            _hash_access_token(raw_code),
+            now,
+            expires_at,
+            None,
+            None,
+            (str(created_by_agent_id or "").strip() or None),
+        ),
+    )
+    return raw_code, expires_at
+
+def _issue_environment_agent_session(
+    conn: sqlite3.Connection,
+    *,
+    env_id: str,
+    agent_id: str,
+    scopes: List[str],
+    ttl_sec: int = ENV_AGENT_SESSION_TTL_SEC,
+) -> Tuple[str, int]:
+    now = int(time.time())
+    ttl = max(60, min(int(ttl_sec or ENV_AGENT_SESSION_TTL_SEC), 60 * 60 * 24 * 7))
+    expires_at = now + ttl
+    raw_token = _new_environment_agent_session_token()
+    cleaned_scopes = [str(s).strip() for s in (scopes or []) if str(s).strip()]
+    if not cleaned_scopes:
+        cleaned_scopes = ["env.read"]
+    conn.execute(
+        """
+        INSERT INTO environment_agent_sessions (
+            id, env_id, agent_id, token_hash, scopes_json, status, created_at, expires_at, revoked_at, last_seen_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            new_id("a2a"),
+            env_id,
+            str(agent_id or "agent").strip() or "agent",
+            _hash_access_token(raw_token),
+            json.dumps(cleaned_scopes, ensure_ascii=False),
+            "active",
+            now,
+            expires_at,
+            None,
+            now,
+        ),
+    )
+    return raw_token, expires_at
+
+def _parse_scopes_json(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(s).strip() for s in raw if str(s).strip()]
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [str(s).strip() for s in parsed if str(s).strip()]
+    except Exception:
+        pass
+    return []
+
+def _resolve_environment_agent_access(
+    request: Request,
+    env_id: str,
+    *,
+    required_scope: Optional[str] = None,
+) -> Dict[str, Any]:
+    token = str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip()
+    if not token:
+        raise HTTPException(401, f"Missing {ENV_AGENT_SESSION_HEADER} header")
+    token_hash = _hash_access_token(token)
+    now = int(time.time())
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT id, env_id, agent_id, scopes_json, status, expires_at
+        FROM environment_agent_sessions
+        WHERE env_id = ? AND token_hash = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (env_id, token_hash),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(401, "Invalid A2A agent session")
+    if str(row["status"] or "").strip().lower() != "active":
+        conn.close()
+        raise HTTPException(403, "A2A agent session is not active")
+    if _to_int(row["expires_at"]) <= now:
+        conn.execute(
+            "UPDATE environment_agent_sessions SET status = ?, revoked_at = ? WHERE id = ?",
+            ("expired", now, row["id"]),
+        )
+        conn.commit()
+        conn.close()
+        raise HTTPException(401, "A2A agent session expired")
+
+    scopes = _parse_scopes_json(row["scopes_json"])
+    if required_scope and (required_scope not in scopes) and ("*" not in scopes):
+        conn.close()
+        raise HTTPException(403, f"Missing required scope: {required_scope}")
+    conn.execute(
+        "UPDATE environment_agent_sessions SET last_seen_at = ? WHERE id = ?",
+        (now, row["id"]),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "session_id": str(row["id"]),
+        "env_id": str(row["env_id"]),
+        "agent_id": str(row["agent_id"]),
+        "scopes": scopes,
+        "expires_at": _to_int(row["expires_at"]),
+    }
+
+def _get_primary_environment_for_user(user_id: str) -> Optional[Dict[str, Any]]:
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT id, owner_user_id, display_name, status, workspace_root, created_at, claimed_at, archived_at
+        FROM environments
+        WHERE owner_user_id = ?
+        ORDER BY
+            CASE
+                WHEN status = ? THEN 0
+                WHEN status = ? THEN 1
+                ELSE 2
+            END,
+            COALESCE(claimed_at, created_at) DESC
+        LIMIT 1
+        """,
+        (user_id, ENV_STATUS_ACTIVE, ENV_STATUS_PENDING_CLAIM),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def _ensure_primary_environment_for_user(user_id: str, *, email: Optional[str] = None) -> Dict[str, Any]:
+    existing = _get_primary_environment_for_user(user_id)
+    workspace = _ensure_user_workspace(user_id)
+    workspace_root = str(workspace.get("workspace_root") or _user_workspace_root_dir(user_id).as_posix())
+    now = int(time.time())
+    if existing:
+        env_id = str(existing.get("id") or "").strip()
+        conn = db()
+        conn.execute(
+            """
+            UPDATE environments
+            SET status = ?, workspace_root = ?, claimed_at = COALESCE(claimed_at, ?)
+            WHERE id = ? AND owner_user_id = ?
+            """,
+            (ENV_STATUS_ACTIVE, workspace_root, now, env_id, user_id),
+        )
+        conn.commit()
+        conn.close()
+        existing["status"] = ENV_STATUS_ACTIVE
+        existing["workspace_root"] = workspace_root
+        existing["claimed_at"] = existing.get("claimed_at") or now
+        return existing
+
+    env_id = new_id("env")
+    display_name = ""
+    if email:
+        display_name = str(email).split("@")[0].strip()[:120]
+    conn = db()
+    conn.execute(
+        """
+        INSERT INTO environments (id, owner_user_id, display_name, status, workspace_root, created_at, claimed_at, archived_at)
+        VALUES (?,?,?,?,?,?,?,?)
+        """,
+        (
+            env_id,
+            user_id,
+            display_name or f"user-{user_id[-6:]}",
+            ENV_STATUS_ACTIVE,
+            workspace_root,
+            now,
+            now,
+            None,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "id": env_id,
+        "owner_user_id": user_id,
+        "display_name": display_name,
+        "status": ENV_STATUS_ACTIVE,
+        "workspace_root": workspace_root,
+        "created_at": now,
+        "claimed_at": now,
+        "archived_at": None,
+    }
+
+def _merge_environment_workspace_into_user_workspace(env_id: str, user_id: str) -> Dict[str, Any]:
+    env_root = _environment_workspace_root_dir(env_id).resolve()
+    if not env_root.exists():
+        return {"copied_files": 0, "copied_dirs": 0}
+    user_root = _user_workspace_root_dir(user_id).resolve()
+    _ensure_user_workspace(user_id)
+    copied_files = 0
+    copied_dirs = 0
+    for node in sorted(env_root.rglob("*"), key=lambda p: p.as_posix()):
+        try:
+            rel = node.relative_to(env_root)
+        except Exception:
+            continue
+        target = (user_root / rel).resolve()
+        if not _path_within(target, user_root):
+            continue
+        if node.is_dir():
+            if not target.exists():
+                target.mkdir(parents=True, exist_ok=True)
+                copied_dirs += 1
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            continue
+        shutil.copy2(node, target)
+        copied_files += 1
+    return {"copied_files": copied_files, "copied_dirs": copied_dirs}
+
 def _project_setup_template_file(user_id: str) -> Path:
     return _user_templates_dir(user_id) / "PROJECT-SETUP.MD"
 
@@ -591,10 +959,15 @@ def _delete_account_with_resources(*, user_id: str) -> Dict[str, Any]:
         "SELECT id FROM openclaw_connections WHERE user_id = ? ORDER BY created_at DESC",
         (user_id,),
     ).fetchall()
+    environment_rows = conn.execute(
+        "SELECT id FROM environments WHERE owner_user_id = ? ORDER BY created_at DESC",
+        (user_id,),
+    ).fetchall()
     conn.close()
 
     project_ids = [str(r["id"]) for r in project_rows]
     connection_ids = [str(r["id"]) for r in connection_rows]
+    environment_ids = [str(r["id"]) for r in environment_rows]
     deleted_projects = 0
     for project_id in project_ids:
         deleted = _delete_project_with_resources(owner_user_id=user_id, project_id=project_id)
@@ -617,6 +990,15 @@ def _delete_account_with_resources(*, user_id: str) -> Dict[str, Any]:
         placeholders = ",".join(["?"] * len(connection_ids))
         conn.execute(f"DELETE FROM connection_policies WHERE connection_id IN ({placeholders})", tuple(connection_ids))
     conn.execute("DELETE FROM openclaw_connections WHERE user_id = ?", (user_id,))
+    conn.execute(
+        "DELETE FROM environment_claim_codes WHERE env_id IN (SELECT id FROM environments WHERE owner_user_id = ?)",
+        (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM environment_agent_sessions WHERE env_id IN (SELECT id FROM environments WHERE owner_user_id = ?)",
+        (user_id,),
+    )
+    conn.execute("DELETE FROM environments WHERE owner_user_id = ?", (user_id,))
     conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
@@ -633,11 +1015,24 @@ def _delete_account_with_resources(*, user_id: str) -> Dict[str, Any]:
     except Exception as e:
         workspace_error = str(e)[:500]
 
+    deleted_env_workspaces = 0
+    for env_id in environment_ids:
+        try:
+            env_home = _environment_home_dir(env_id).resolve()
+            workspaces_root = SERVER_WORKSPACES_DIR.resolve()
+            if env_home.exists() and _path_within(env_home, workspaces_root):
+                shutil.rmtree(env_home)
+                deleted_env_workspaces += 1
+        except Exception:
+            continue
+
     return {
         "ok": True,
         "user_id": user_id,
         "projects_deleted": deleted_projects,
         "connections_deleted": len(connection_ids),
+        "environments_deleted": len(environment_ids),
+        "environment_workspaces_deleted": deleted_env_workspaces,
         "workspace_deleted": workspace_deleted,
         "workspace_error": workspace_error or None,
     }
@@ -5089,6 +5484,29 @@ class ProjectFileWriteIn(BaseModel):
     content: str = ""
     append: bool = False
 
+class A2AEnvironmentBootstrapIn(BaseModel):
+    agent_id: str = Field("bootstrap-agent", min_length=1)
+    display_name: Optional[str] = None
+    claim_ttl_sec: int = ENV_CLAIM_CODE_TTL_SEC
+    session_ttl_sec: int = ENV_AGENT_SESSION_TTL_SEC
+
+class A2AEnvironmentClaimStartIn(BaseModel):
+    claim_ttl_sec: int = ENV_CLAIM_CODE_TTL_SEC
+
+class A2AEnvironmentClaimCompleteIn(BaseModel):
+    environment_id: str = Field(..., min_length=1)
+    code: str = Field(..., min_length=1)
+    mode: str = Field("signup", description="signup | login")
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=4)
+
+class A2AEnvironmentClaimCompleteOut(BaseModel):
+    token: str
+    environment_id: str
+    status: str
+    user_id: str
+    email: str
+
 def _bearer_token(request: Request) -> str:
     auth = request.headers.get("Authorization", "")
     token = auth.replace("Bearer ", "").strip()
@@ -5264,6 +5682,7 @@ async def signup(payload: SignupIn, response: Response):
         raise HTTPException(400, "Email already registered")
     conn.close()
     _ensure_user_workspace(user_id)
+    _ensure_primary_environment_for_user(user_id, email=payload.email.lower().strip())
     _set_session_cookie(response, token)
     return SessionOut(token=token)
 
@@ -5271,7 +5690,7 @@ async def signup(payload: SignupIn, response: Response):
 async def login(payload: LoginIn, response: Response):
     conn = db()
     row = conn.execute(
-        "SELECT id, password FROM users WHERE email = ?",
+        "SELECT id, email, password FROM users WHERE email = ?",
         (payload.email.lower().strip(),),
     ).fetchone()
     if not row or row["password"] != payload.password:
@@ -5285,8 +5704,295 @@ async def login(payload: LoginIn, response: Response):
     conn.commit()
     conn.close()
     _ensure_user_workspace(row["id"])
+    _ensure_primary_environment_for_user(str(row["id"]), email=str(row["email"] or payload.email))
     _set_session_cookie(response, token)
     return SessionOut(token=token)
+
+@app.post("/api/a2a/environments/bootstrap")
+async def bootstrap_a2a_environment(request: Request, payload: A2AEnvironmentBootstrapIn):
+    env_id = new_id("env")
+    now = int(time.time())
+    display_name = str(payload.display_name or "").strip()[:160] or f"env-{env_id[-6:]}"
+    workspace = _ensure_environment_workspace(env_id)
+    conn = db()
+    conn.execute(
+        """
+        INSERT INTO environments (id, owner_user_id, display_name, status, workspace_root, created_at, claimed_at, archived_at)
+        VALUES (?,?,?,?,?,?,?,?)
+        """,
+        (
+            env_id,
+            None,
+            display_name,
+            ENV_STATUS_PENDING_CLAIM,
+            str(workspace.get("workspace_root") or _environment_workspace_root_dir(env_id).as_posix()),
+            now,
+            None,
+            None,
+        ),
+    )
+    agent_id = str(payload.agent_id or "bootstrap-agent").strip() or "bootstrap-agent"
+    agent_token, agent_expires_at = _issue_environment_agent_session(
+        conn,
+        env_id=env_id,
+        agent_id=agent_id,
+        scopes=["env.read", "env.bootstrap", "env.claim.start"],
+        ttl_sec=payload.session_ttl_sec,
+    )
+    claim_code, claim_expires_at = _issue_environment_claim_code(
+        conn,
+        env_id=env_id,
+        ttl_sec=payload.claim_ttl_sec,
+        created_by_agent_id=agent_id,
+    )
+    conn.commit()
+    conn.close()
+    claim_url = _build_claim_url(request, env_id, claim_code)
+    return {
+        "ok": True,
+        "environment_id": env_id,
+        "status": ENV_STATUS_PENDING_CLAIM,
+        "workspace_root": workspace.get("workspace_root"),
+        "templates_root": workspace.get("templates_root"),
+        "agent_session_token": agent_token,
+        "agent_session_expires_at": agent_expires_at,
+        "claim_code": claim_code,
+        "claim_code_expires_at": claim_expires_at,
+        "claim_url": claim_url,
+        "message": "Environment bootstrap complete. Share claim_url with user to claim this environment.",
+    }
+
+@app.post("/api/a2a/environments/{env_id}/claim/start")
+async def start_a2a_environment_claim(request: Request, env_id: str, payload: A2AEnvironmentClaimStartIn):
+    owner_user_id = None
+    session_user = get_optional_session_user(request)
+    agent_access = None
+    if session_user:
+        owner_user_id = str(session_user)
+    else:
+        agent_access = _resolve_environment_agent_access(request, env_id, required_scope="env.claim.start")
+
+    conn = db()
+    env_row = conn.execute(
+        "SELECT id, owner_user_id, status FROM environments WHERE id = ?",
+        (env_id,),
+    ).fetchone()
+    if not env_row:
+        conn.close()
+        raise HTTPException(404, "Environment not found")
+    status = str(env_row["status"] or "").strip() or ENV_STATUS_PENDING_BOOTSTRAP
+    if status == ENV_STATUS_ARCHIVED:
+        conn.close()
+        raise HTTPException(400, "Environment is archived")
+    if owner_user_id and str(env_row["owner_user_id"] or "").strip() != owner_user_id:
+        conn.close()
+        raise HTTPException(403, "Only owner can generate claim link for this environment")
+
+    claim_code, claim_expires_at = _issue_environment_claim_code(
+        conn,
+        env_id=env_id,
+        ttl_sec=payload.claim_ttl_sec,
+        created_by_agent_id=(agent_access.get("agent_id") if agent_access else None),
+    )
+    if status == ENV_STATUS_PENDING_BOOTSTRAP:
+        conn.execute(
+            "UPDATE environments SET status = ? WHERE id = ?",
+            (ENV_STATUS_PENDING_CLAIM, env_id),
+        )
+    conn.commit()
+    conn.close()
+    claim_url = _build_claim_url(request, env_id, claim_code)
+    return {
+        "ok": True,
+        "environment_id": env_id,
+        "status": ENV_STATUS_PENDING_CLAIM if status == ENV_STATUS_PENDING_BOOTSTRAP else status,
+        "claim_code": claim_code,
+        "claim_code_expires_at": claim_expires_at,
+        "claim_url": claim_url,
+    }
+
+@app.post("/api/a2a/environments/claim/complete", response_model=A2AEnvironmentClaimCompleteOut)
+async def complete_a2a_environment_claim(payload: A2AEnvironmentClaimCompleteIn, response: Response):
+    env_id = str(payload.environment_id or "").strip()
+    claim_code = str(payload.code or "").strip()
+    mode = str(payload.mode or "signup").strip().lower()
+    email = str(payload.email or "").lower().strip()
+    password = str(payload.password or "")
+    if mode not in {"signup", "login"}:
+        raise HTTPException(400, "mode must be signup or login")
+    if not env_id or not claim_code:
+        raise HTTPException(400, "environment_id and code are required")
+
+    now = int(time.time())
+    conn = db()
+    env_row = conn.execute(
+        "SELECT id, owner_user_id, status FROM environments WHERE id = ?",
+        (env_id,),
+    ).fetchone()
+    if not env_row:
+        conn.close()
+        raise HTTPException(404, "Environment not found")
+    if str(env_row["status"] or "").strip() == ENV_STATUS_ARCHIVED:
+        conn.close()
+        raise HTTPException(400, "Environment is archived")
+
+    claim_row = conn.execute(
+        """
+        SELECT id, expires_at, used_at
+        FROM environment_claim_codes
+        WHERE env_id = ? AND code_hash = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (env_id, _hash_access_token(claim_code)),
+    ).fetchone()
+    if not claim_row:
+        conn.close()
+        raise HTTPException(400, "Invalid claim code")
+    if _to_int(claim_row["used_at"]) > 0:
+        conn.close()
+        raise HTTPException(400, "Claim code already used")
+    if _to_int(claim_row["expires_at"]) <= now:
+        conn.close()
+        raise HTTPException(400, "Claim code expired")
+
+    user_id = ""
+    if mode == "signup":
+        user_id = new_id("usr")
+        try:
+            conn.execute(
+                "INSERT INTO users (id, email, password, created_at) VALUES (?,?,?,?)",
+                (user_id, email, password, now),
+            )
+        except sqlite3.IntegrityError:
+            conn.close()
+            raise HTTPException(400, "Email already registered")
+    else:
+        user_row = conn.execute(
+            "SELECT id, password FROM users WHERE email = ?",
+            (email,),
+        ).fetchone()
+        if not user_row or str(user_row["password"] or "") != password:
+            conn.close()
+            raise HTTPException(401, "Invalid email/password")
+        user_id = str(user_row["id"])
+
+    owner_user_id = str(env_row["owner_user_id"] or "").strip()
+    if owner_user_id and owner_user_id != user_id:
+        conn.close()
+        raise HTTPException(409, "Environment already claimed by another user")
+
+    token = new_id("sess")
+    conn.execute(
+        "INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)",
+        (token, user_id, now),
+    )
+    user_workspace = _ensure_user_workspace(user_id)
+    _merge_environment_workspace_into_user_workspace(env_id, user_id)
+    conn.execute(
+        """
+        UPDATE environments
+        SET owner_user_id = ?, status = ?, workspace_root = ?, claimed_at = COALESCE(claimed_at, ?)
+        WHERE id = ?
+        """,
+        (
+            user_id,
+            ENV_STATUS_ACTIVE,
+            str(user_workspace.get("workspace_root") or _user_workspace_root_dir(user_id).as_posix()),
+            now,
+            env_id,
+        ),
+    )
+    conn.execute(
+        "UPDATE environment_claim_codes SET used_at = ?, used_by_user_id = ? WHERE id = ?",
+        (now, user_id, claim_row["id"]),
+    )
+    conn.execute(
+        "UPDATE environment_agent_sessions SET status = ?, revoked_at = ? WHERE env_id = ? AND status = ?",
+        ("revoked", now, env_id, "active"),
+    )
+    conn.commit()
+    conn.close()
+
+    _set_session_cookie(response, token)
+    return A2AEnvironmentClaimCompleteOut(
+        token=token,
+        environment_id=env_id,
+        status=ENV_STATUS_ACTIVE,
+        user_id=user_id,
+        email=email,
+    )
+
+@app.get("/api/a2a/environments/{env_id}")
+async def get_a2a_environment_status(request: Request, env_id: str):
+    session_user = get_optional_session_user(request)
+    conn = db()
+    env_row = conn.execute(
+        "SELECT id, owner_user_id, display_name, status, workspace_root, created_at, claimed_at FROM environments WHERE id = ?",
+        (env_id,),
+    ).fetchone()
+    if not env_row:
+        conn.close()
+        raise HTTPException(404, "Environment not found")
+
+    owner_user_id = str(env_row["owner_user_id"] or "").strip()
+    access_mode = ""
+    if session_user and owner_user_id and str(session_user) == owner_user_id:
+        access_mode = "owner"
+    else:
+        conn.close()
+        access = _resolve_environment_agent_access(request, env_id, required_scope="env.read")
+        access_mode = f"agent:{access.get('agent_id')}"
+        conn = db()
+        env_row = conn.execute(
+            "SELECT id, owner_user_id, display_name, status, workspace_root, created_at, claimed_at FROM environments WHERE id = ?",
+            (env_id,),
+        ).fetchone()
+        owner_user_id = str(env_row["owner_user_id"] or "").strip()
+
+    outstanding: List[Dict[str, Any]] = []
+    if owner_user_id:
+        rows = conn.execute(
+            """
+            SELECT id, title, plan_status, execution_status, progress_pct, created_at
+            FROM projects
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT 40
+            """,
+            (owner_user_id,),
+        ).fetchall()
+        for row in rows:
+            exec_status = _coerce_execution_status(row["execution_status"])
+            plan_status = _coerce_plan_status(row["plan_status"])
+            if exec_status == EXEC_STATUS_COMPLETED and plan_status == PLAN_STATUS_APPROVED:
+                continue
+            outstanding.append(
+                {
+                    "project_id": str(row["id"]),
+                    "title": str(row["title"] or ""),
+                    "plan_status": plan_status,
+                    "execution_status": exec_status,
+                    "progress_pct": _clamp_progress(row["progress_pct"]),
+                    "created_at": row["created_at"],
+                }
+            )
+    conn.close()
+    return {
+        "ok": True,
+        "environment": {
+            "id": str(env_row["id"]),
+            "display_name": str(env_row["display_name"] or ""),
+            "status": str(env_row["status"] or ""),
+            "workspace_root": str(env_row["workspace_root"] or ""),
+            "created_at": env_row["created_at"],
+            "claimed_at": env_row["claimed_at"],
+            "owner_user_id": owner_user_id or None,
+        },
+        "access_mode": access_mode,
+        "outstanding_count": len(outstanding),
+        "outstanding_projects": outstanding[:20],
+    }
 
 @app.get("/api/me", response_model=AccountProfileOut)
 async def get_account_profile(request: Request):
@@ -5318,6 +6024,35 @@ async def get_account_profile(request: Request):
         projects_count=int((project_count_row or {"c": 0})["c"] or 0),
         connections_count=int((connection_count_row or {"c": 0})["c"] or 0),
     )
+
+@app.get("/api/me/environments")
+async def list_my_environments(request: Request):
+    user_id = get_session_user(request)
+    conn = db()
+    rows = conn.execute(
+        """
+        SELECT id, display_name, status, workspace_root, created_at, claimed_at
+        FROM environments
+        WHERE owner_user_id = ?
+        ORDER BY COALESCE(claimed_at, created_at) DESC
+        """,
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    return {
+        "ok": True,
+        "environments": [
+            {
+                "id": str(r["id"]),
+                "display_name": str(r["display_name"] or ""),
+                "status": str(r["status"] or ""),
+                "workspace_root": str(r["workspace_root"] or ""),
+                "created_at": r["created_at"],
+                "claimed_at": r["claimed_at"],
+            }
+            for r in rows
+        ],
+    }
 
 @app.post("/api/me/password")
 async def change_account_password(request: Request, payload: AccountPasswordChangeIn):
@@ -5390,6 +6125,8 @@ async def logout(request: Request, response: Response):
 @app.post("/api/openclaw/connect")
 async def connect_openclaw(request: Request, payload: ConnectIn):
     user_id = get_session_user(request)
+    primary_env = _ensure_primary_environment_for_user(user_id)
+    env_id = str(primary_env.get("id") or "").strip() or None
     if not (payload.base_url.startswith("http://") or payload.base_url.startswith("https://")):
         raise HTTPException(400, "base_url must start with http:// or https://")
 
@@ -5410,8 +6147,8 @@ async def connect_openclaw(request: Request, payload: ConnectIn):
     conn = db()
     conn_id = new_id("oc")
     conn.execute(
-        "INSERT INTO openclaw_connections (id, user_id, base_url, api_key, name, created_at) VALUES (?,?,?,?,?,?)",
-        (conn_id, user_id, payload.base_url.rstrip("/"), payload.api_key, payload.name, int(time.time())),
+        "INSERT INTO openclaw_connections (id, user_id, env_id, base_url, api_key, name, created_at) VALUES (?,?,?,?,?,?,?)",
+        (conn_id, user_id, env_id, payload.base_url.rstrip("/"), payload.api_key, payload.name, int(time.time())),
     )
     conn.commit()
     conn.close()
@@ -6272,6 +7009,8 @@ async def project_setup_draft(request: Request, payload: ProjectSetupDraftIn):
 @app.post("/api/projects", response_model=ProjectOut)
 async def create_project(request: Request, payload: ProjectCreateIn):
     user_id = get_session_user(request)
+    primary_env = _ensure_primary_environment_for_user(user_id)
+    env_id = str(primary_env.get("id") or "").strip() or None
 
     conn = db()
     c = conn.execute(
@@ -6305,16 +7044,17 @@ async def create_project(request: Request, payload: ProjectCreateIn):
     conn.execute(
         """
         INSERT INTO projects (
-            id, user_id, title, brief, goal, setup_json, plan_text, plan_status, plan_updated_at, plan_approved_at,
+            id, user_id, env_id, title, brief, goal, setup_json, plan_text, plan_status, plan_updated_at, plan_approved_at,
             execution_status, progress_pct, execution_updated_at,
             usage_prompt_tokens, usage_completion_tokens, usage_total_tokens, usage_updated_at,
             connection_id, workspace_root, project_root, scope_requires_owner_approval, created_at
         )
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
             pid,
             user_id,
+            env_id,
             payload.title,
             payload.brief,
             payload.goal,
