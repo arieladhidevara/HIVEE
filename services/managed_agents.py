@@ -1,0 +1,2537 @@
+from services.project_utils import *
+
+def _upsert_connection_policy(
+    connection_id: str,
+    user_id: str,
+    *,
+    main_agent_id: Optional[str],
+    main_agent_name: Optional[str],
+    bootstrap_status: str,
+    bootstrap_error: Optional[str],
+    workspace_tree: Optional[str] = None,
+    workspace_root: str = HIVEE_ROOT,
+    templates_root: str = HIVEE_TEMPLATES_ROOT,
+) -> None:
+    conn = db()
+    conn.execute(
+        """
+        INSERT INTO connection_policies (
+            connection_id, user_id, main_agent_id, main_agent_name, workspace_root, templates_root, bootstrap_status, bootstrap_error, workspace_tree, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(connection_id) DO UPDATE SET
+            user_id=excluded.user_id,
+            main_agent_id=excluded.main_agent_id,
+            main_agent_name=excluded.main_agent_name,
+            workspace_root=excluded.workspace_root,
+            templates_root=excluded.templates_root,
+            bootstrap_status=excluded.bootstrap_status,
+            bootstrap_error=excluded.bootstrap_error,
+            workspace_tree=excluded.workspace_tree,
+            updated_at=excluded.updated_at
+        """,
+        (
+            connection_id,
+            user_id,
+            main_agent_id,
+            main_agent_name,
+            workspace_root,
+            templates_root,
+            bootstrap_status,
+            bootstrap_error,
+            workspace_tree,
+            int(time.time()),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: str) -> Dict[str, Any]:
+    main_agent_id: Optional[str] = None
+    main_agent_name: Optional[str] = None
+    discovered_agents: List[Dict[str, Any]] = []
+    probe = await openclaw_list_agents(base_url, api_key)
+    if probe.get("ok"):
+        discovered_agents = [dict(a) for a in (probe.get("agents") or []) if isinstance(a, dict)]
+        picked = _pick_main_agent(probe.get("agents") or [])
+        if picked:
+            picked_id = str(picked.get("id") or "").strip()
+            main_agent_id = picked_id or None
+            main_agent_name = str(picked.get("name") or main_agent_id)
+    if (not discovered_agents) and main_agent_id:
+        discovered_agents = [{"id": main_agent_id, "name": main_agent_name or main_agent_id}]
+
+    try:
+        workspace = _ensure_user_workspace(user_id)
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"Failed to provision server workspace: {str(e)}",
+            "main_agent_id": main_agent_id,
+            "main_agent_name": main_agent_name,
+            "agent_probe": probe,
+            "agents": discovered_agents,
+        }
+
+    return {
+        "ok": True,
+        "main_agent_id": main_agent_id,
+        "main_agent_name": main_agent_name,
+        "agent_probe": probe,
+        "agents": discovered_agents,
+        "workspace_tree": workspace["workspace_tree"],
+        "workspace_root": workspace["workspace_root"],
+        "templates_root": workspace["templates_root"],
+        "projects_root": workspace["projects_root"],
+        "template_warnings": workspace.get("template_warnings") or [],
+    }
+
+def _normalize_managed_agent_candidates(
+    raw_agents: Any,
+    *,
+    fallback_agent_id: Optional[str] = None,
+    fallback_agent_name: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    cleaned: List[Dict[str, str]] = []
+    seen: set[str] = set()
+    candidates = raw_agents if isinstance(raw_agents, list) else []
+    for row in candidates:
+        if isinstance(row, str):
+            aid = str(row).strip()
+            nm = aid
+        elif isinstance(row, dict):
+            aid = str(row.get("id") or row.get("agent_id") or row.get("name") or "").strip()
+            nm = str(row.get("name") or row.get("title") or aid).strip()
+        else:
+            continue
+        if not aid:
+            continue
+        if aid in seen:
+            continue
+        seen.add(aid)
+        cleaned.append({"id": aid[:180], "name": (nm or aid)[:220]})
+    fallback_id = str(fallback_agent_id or "").strip()
+    if fallback_id and fallback_id not in seen:
+        cleaned.append(
+            {
+                "id": fallback_id[:180],
+                "name": (str(fallback_agent_name or fallback_id).strip() or fallback_id)[:220],
+            }
+        )
+    return cleaned
+
+def _build_managed_agent_card(
+    *,
+    agent_id: str,
+    agent_name: str,
+    base_url: str,
+    connection_id: str,
+    env_id: Optional[str],
+    root_path: str,
+) -> Dict[str, Any]:
+    now = int(time.time())
+    safe_skill_id = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(agent_id or "").strip()).strip("-") or "agent"
+    return {
+        "schemaVersion": MANAGED_AGENT_CARD_VERSION,
+        "name": str(agent_name or agent_id),
+        "description": f"Hivee managed profile for agent `{agent_id}`.",
+        "version": "1.0.0",
+        "provider": {"organization": "Hivee"},
+        "supportedInterfaces": [
+            {
+                "url": str(base_url or "").rstrip("/"),
+                "protocolBinding": "JSONRPC",
+                "protocolVersion": "1.0",
+            }
+        ],
+        "capabilities": {
+            "streaming": True,
+            "pushNotifications": False,
+            "stateTransitionHistory": True,
+        },
+        "defaultInputModes": ["text"],
+        "defaultOutputModes": ["text"],
+        "skills": [
+            {
+                "id": f"{safe_skill_id}.execute",
+                "name": "Project Execution",
+                "description": "Executes scoped project tasks and reports progress.",
+                "tags": ["execution", "workflow", "collaboration"],
+            }
+        ],
+        "securityRequirements": [{"type": "bearer", "scopes": ["env.read"]}],
+        "metadata": {
+            "managedBy": "hivee",
+            "connectionId": connection_id,
+            "environmentId": env_id,
+            "rootPath": root_path,
+            "provisionedAt": now,
+        },
+    }
+
+def _append_managed_agent_history_record(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    env_id: Optional[str],
+    connection_id: str,
+    agent_id: str,
+    event_kind: str,
+    event_text: str,
+    event_payload: Optional[Dict[str, Any]],
+    history_file: Optional[Path] = None,
+) -> None:
+    payload_json = json.dumps(event_payload or {}, ensure_ascii=False)
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT INTO managed_agent_history (
+            id, user_id, env_id, connection_id, agent_id, event_kind, event_text, event_payload_json, created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            new_id("mgh"),
+            user_id,
+            env_id,
+            connection_id,
+            agent_id,
+            str(event_kind or "event")[:120],
+            str(event_text or "")[:2000],
+            payload_json,
+            now,
+        ),
+    )
+    if history_file:
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": now,
+            "event_kind": str(event_kind or "event")[:120],
+            "event_text": str(event_text or "")[:2000],
+            "payload": event_payload or {},
+        }
+        with history_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+def _refresh_managed_agents_index(user_id: str) -> None:
+    conn = db()
+    rows = conn.execute(
+        """
+        SELECT connection_id, agent_id, agent_name, status, root_path, updated_at
+        FROM managed_agents
+        WHERE user_id = ?
+        ORDER BY updated_at DESC, agent_name ASC
+        """,
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    payload = {
+        "generated_at": int(time.time()),
+        "count": len(rows),
+        "agents": [
+            {
+                "connection_id": str(r["connection_id"] or ""),
+                "agent_id": str(r["agent_id"] or ""),
+                "agent_name": str(r["agent_name"] or ""),
+                "status": str(r["status"] or ""),
+                "root_path": str(r["root_path"] or ""),
+                "updated_at": _to_int(r["updated_at"]),
+            }
+            for r in rows
+        ],
+    }
+    _write_json_file(_user_agents_root_dir(user_id) / "index.json", payload)
+
+def _provision_managed_agents_for_connection(
+    *,
+    user_id: str,
+    env_id: Optional[str],
+    connection_id: str,
+    base_url: str,
+    raw_agents: Any,
+    fallback_agent_id: Optional[str] = None,
+    fallback_agent_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    _ensure_user_workspace(user_id)
+    now = int(time.time())
+    workspace_root = _user_workspace_root_dir(user_id).resolve()
+    normalized_agents = _normalize_managed_agent_candidates(
+        raw_agents,
+        fallback_agent_id=fallback_agent_id,
+        fallback_agent_name=fallback_agent_name,
+    )
+    if not normalized_agents:
+        return {
+            "ok": False,
+            "error": "No agents available for managed provisioning",
+            "provisioned": 0,
+            "updated": 0,
+            "failed": 0,
+            "agents": [],
+            "errors": [],
+        }
+
+    conn = db()
+    provisioned = 0
+    updated = 0
+    failed = 0
+    errors: List[str] = []
+    output_agents: List[Dict[str, Any]] = []
+    for agent in normalized_agents:
+        agent_id = str(agent.get("id") or "").strip()
+        agent_name = str(agent.get("name") or agent_id).strip() or agent_id
+        if not agent_id:
+            failed += 1
+            errors.append("Missing agent id in candidate entry")
+            continue
+        try:
+            parts = _agent_component_paths(user_id, connection_id, agent_id)
+            for path in parts.values():
+                if path == parts["root"]:
+                    path.mkdir(parents=True, exist_ok=True)
+                    continue
+                path.mkdir(parents=True, exist_ok=True)
+
+            root_path = parts["root"].resolve().as_posix()
+            card_payload = _build_managed_agent_card(
+                agent_id=agent_id,
+                agent_name=agent_name,
+                base_url=base_url,
+                connection_id=connection_id,
+                env_id=env_id,
+                root_path=root_path,
+            )
+            memory_payloads = {
+                "working": {
+                    "scope": "working",
+                    "summary": "",
+                    "entries": [],
+                    "updated_at": now,
+                },
+                "project": {
+                    "scope": "project",
+                    "summary": "",
+                    "entries": [],
+                    "updated_at": now,
+                },
+                "long_term": {
+                    "scope": "long_term",
+                    "summary": "",
+                    "entries": [],
+                    "updated_at": now,
+                },
+            }
+            checkpoint_state = {
+                "checkpoint_key": "latest",
+                "status": "ready",
+                "notes": "Auto-generated checkpoint seed.",
+                "updated_at": now,
+            }
+            permissions_payload = {
+                "scopes": ["env.read", "project.read", "project.write"],
+                "tools": ["workspace.read", "workspace.write", "chat.send", "project.control"],
+                "path_allowlist": [workspace_root.as_posix(), root_path],
+                "secrets_policy": {
+                    "mode": "connection-bound",
+                    "connection_id": connection_id,
+                },
+                "approval_required": True,
+                "updated_at": now,
+            }
+            metrics_payload = {
+                "success_count": 0,
+                "failure_count": 0,
+                "total_calls": 0,
+                "total_prompt_tokens": 0,
+                "total_completion_tokens": 0,
+                "total_latency_ms": 0,
+                "last_error": None,
+                "last_seen_at": None,
+                "updated_at": now,
+            }
+            approval_rules = {
+                "destructive_write": {
+                    "description": "Require owner approval for destructive file actions.",
+                    "required": True,
+                    "patterns": ["delete", "remove", "truncate", "reset", "drop table"],
+                },
+                "outside_workspace": {
+                    "description": "Require owner approval for access outside workspace root.",
+                    "required": True,
+                    "workspace_root": workspace_root.as_posix(),
+                },
+                "high_token_budget": {
+                    "description": "Require owner approval for very large token usage.",
+                    "required": True,
+                    "max_total_tokens": 120000,
+                },
+            }
+
+            existing = conn.execute(
+                "SELECT id FROM managed_agents WHERE user_id = ? AND connection_id = ? AND agent_id = ?",
+                (user_id, connection_id, agent_id),
+            ).fetchone()
+            card_json = json.dumps(card_payload, ensure_ascii=False)
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE managed_agents
+                    SET env_id = ?, agent_name = ?, status = ?, card_version = ?, card_json = ?, root_path = ?, updated_at = ?
+                    WHERE user_id = ? AND connection_id = ? AND agent_id = ?
+                    """,
+                    (
+                        env_id,
+                        agent_name,
+                        "active",
+                        MANAGED_AGENT_CARD_VERSION,
+                        card_json,
+                        root_path,
+                        now,
+                        user_id,
+                        connection_id,
+                        agent_id,
+                    ),
+                )
+                updated += 1
+                event_kind = "agent.synced"
+                event_text = "Managed agent resources refreshed."
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO managed_agents (
+                        id, user_id, env_id, connection_id, agent_id, agent_name, status,
+                        card_version, card_json, root_path, provisioned_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        new_id("mga"),
+                        user_id,
+                        env_id,
+                        connection_id,
+                        agent_id,
+                        agent_name,
+                        "active",
+                        MANAGED_AGENT_CARD_VERSION,
+                        card_json,
+                        root_path,
+                        now,
+                        now,
+                    ),
+                )
+                provisioned += 1
+                event_kind = "agent.provisioned"
+                event_text = "Managed agent resources initialized."
+
+            for scope in MANAGED_AGENT_MEMORY_SCOPES:
+                scope_payload = memory_payloads.get(scope, {"scope": scope, "summary": "", "entries": [], "updated_at": now})
+                conn.execute(
+                    """
+                    INSERT INTO managed_agent_memory (
+                        id, user_id, env_id, connection_id, agent_id, memory_scope, summary, payload_json, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(user_id, connection_id, agent_id, memory_scope) DO UPDATE SET
+                        env_id=excluded.env_id,
+                        summary=CASE
+                            WHEN managed_agent_memory.summary IS NULL OR managed_agent_memory.summary = '' THEN excluded.summary
+                            ELSE managed_agent_memory.summary
+                        END,
+                        payload_json=CASE
+                            WHEN managed_agent_memory.payload_json IS NULL OR managed_agent_memory.payload_json = '' THEN excluded.payload_json
+                            ELSE managed_agent_memory.payload_json
+                        END,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        new_id("mgm"),
+                        user_id,
+                        env_id,
+                        connection_id,
+                        agent_id,
+                        scope,
+                        str(scope_payload.get("summary") or ""),
+                        json.dumps(scope_payload, ensure_ascii=False),
+                        now,
+                    ),
+                )
+
+            conn.execute(
+                """
+                INSERT INTO managed_agent_checkpoints (
+                    id, user_id, env_id, connection_id, agent_id, checkpoint_key, state_json, status, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(user_id, connection_id, agent_id, checkpoint_key) DO UPDATE SET
+                    env_id=excluded.env_id,
+                    state_json=excluded.state_json,
+                    status=excluded.status,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    new_id("mgc"),
+                    user_id,
+                    env_id,
+                    connection_id,
+                    agent_id,
+                    "latest",
+                    json.dumps(checkpoint_state, ensure_ascii=False),
+                    "ready",
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO managed_agent_permissions (
+                    id, user_id, env_id, connection_id, agent_id, scopes_json, tools_json, path_allowlist_json, secrets_policy_json, approval_required, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(user_id, connection_id, agent_id) DO UPDATE SET
+                    env_id=excluded.env_id,
+                    scopes_json=excluded.scopes_json,
+                    tools_json=excluded.tools_json,
+                    path_allowlist_json=excluded.path_allowlist_json,
+                    secrets_policy_json=excluded.secrets_policy_json,
+                    approval_required=excluded.approval_required,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    new_id("mgp"),
+                    user_id,
+                    env_id,
+                    connection_id,
+                    agent_id,
+                    json.dumps(permissions_payload.get("scopes") or [], ensure_ascii=False),
+                    json.dumps(permissions_payload.get("tools") or [], ensure_ascii=False),
+                    json.dumps(permissions_payload.get("path_allowlist") or [], ensure_ascii=False),
+                    json.dumps(permissions_payload.get("secrets_policy") or {}, ensure_ascii=False),
+                    1 if _coerce_bool(permissions_payload.get("approval_required")) else 0,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO managed_agent_metrics (
+                    id, user_id, env_id, connection_id, agent_id, success_count, failure_count, total_calls,
+                    total_prompt_tokens, total_completion_tokens, total_latency_ms, last_error, last_seen_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(user_id, connection_id, agent_id) DO UPDATE SET
+                    env_id=excluded.env_id,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    new_id("mgt"),
+                    user_id,
+                    env_id,
+                    connection_id,
+                    agent_id,
+                    _to_int(metrics_payload.get("success_count")),
+                    _to_int(metrics_payload.get("failure_count")),
+                    _to_int(metrics_payload.get("total_calls")),
+                    _to_int(metrics_payload.get("total_prompt_tokens")),
+                    _to_int(metrics_payload.get("total_completion_tokens")),
+                    _to_int(metrics_payload.get("total_latency_ms")),
+                    metrics_payload.get("last_error"),
+                    metrics_payload.get("last_seen_at"),
+                    now,
+                ),
+            )
+            for rule_key, policy in approval_rules.items():
+                conn.execute(
+                    """
+                    INSERT INTO managed_agent_approval_rules (
+                        id, user_id, env_id, connection_id, agent_id, rule_key, policy_json, is_enabled, created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(user_id, connection_id, agent_id, rule_key) DO UPDATE SET
+                        env_id=excluded.env_id,
+                        policy_json=excluded.policy_json,
+                        is_enabled=excluded.is_enabled,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        new_id("mga"),
+                        user_id,
+                        env_id,
+                        connection_id,
+                        agent_id,
+                        rule_key,
+                        json.dumps(policy, ensure_ascii=False),
+                        1 if _coerce_bool(policy.get("required", True)) else 0,
+                        now,
+                        now,
+                    ),
+                )
+
+            _write_json_file(parts["card"] / AGENT_CARD_FILENAME, card_payload)
+            for scope in MANAGED_AGENT_MEMORY_SCOPES:
+                _write_json_file(parts["memory"] / f"{scope}.json", memory_payloads.get(scope, {}))
+            _write_json_file(parts["checkpoints"] / "latest.json", checkpoint_state)
+            _write_json_file(parts["metrics"] / "summary.json", metrics_payload)
+            _write_json_file(parts["approvals"] / "rules.json", approval_rules)
+            _write_json_file(parts["approvals"] / "permissions.json", permissions_payload)
+
+            _append_managed_agent_history_record(
+                conn,
+                user_id=user_id,
+                env_id=env_id,
+                connection_id=connection_id,
+                agent_id=agent_id,
+                event_kind=event_kind,
+                event_text=event_text,
+                event_payload={
+                    "agent_name": agent_name,
+                    "root_path": root_path,
+                    "connection_id": connection_id,
+                },
+                history_file=parts["history"] / "events.jsonl",
+            )
+            output_agents.append(
+                {
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "root_path": root_path,
+                    "status": "active",
+                }
+            )
+        except Exception as e:
+            failed += 1
+            errors.append(f"{agent_id or 'unknown'}: {str(e)[:220]}")
+
+    conn.commit()
+    conn.close()
+    _refresh_managed_agents_index(user_id)
+    return {
+        "ok": failed == 0,
+        "provisioned": provisioned,
+        "updated": updated,
+        "failed": failed,
+        "agents": output_agents,
+        "errors": errors[:20],
+    }
+
+async def try_get_json(
+    client: httpx.AsyncClient, url: str
+) -> Tuple[bool, Optional[Dict[str, Any]], Optional[int], Optional[str]]:
+    try:
+        r = await client.get(url, timeout=10)
+        if r.status_code >= 400:
+            return False, None, r.status_code, r.text[:2000]
+        ct = r.headers.get("content-type", "")
+        if "application/json" in ct:
+            return True, r.json(), r.status_code, None
+        return True, {"raw": r.text[:2000]}, r.status_code, None
+    except Exception as e:
+        return False, None, None, str(e)
+
+def _is_openclaw_login_html(payload: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    raw = payload.get("raw")
+    if not isinstance(raw, str):
+        return False
+    marker = raw.lower()
+    return ("welcome to openclaw" in marker) and ('action="/login"' in marker or "gateway token" in marker)
+
+def _response_looks_like_login_html(resp: httpx.Response) -> bool:
+    ctype = (resp.headers.get("content-type") or "").lower()
+    if "text/html" not in ctype:
+        return False
+    text = (resp.text or "").lower()
+    return ("welcome to openclaw" in text) and ('action="/login"' in text or "gateway token" in text)
+
+def _safe_json_response(resp: httpx.Response) -> Tuple[Optional[Any], Optional[str]]:
+    text = (resp.text or "").strip()
+    if not text:
+        return None, None
+    try:
+        return resp.json(), None
+    except Exception as e:
+        return None, str(e)
+
+def _extract_agents_list(data: Any) -> Optional[List[Any]]:
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return None
+
+    for key in ["agents", "subagents", "list", "data", "items", "results", "models"]:
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            # Support map-style config payloads, e.g. {"agents": {"main": {...}, "qa": {...}}}
+            if key in {"agents", "subagents"} and value:
+                if all(isinstance(v, dict) for v in value.values()):
+                    mapped: List[Dict[str, Any]] = []
+                    for map_key, map_val in value.items():
+                        row = dict(map_val)
+                        row.setdefault("id", str(map_key))
+                        row.setdefault("name", row.get("id") or str(map_key))
+                        mapped.append(row)
+                    return mapped
+            for nested_key in ["agents", "subagents", "list", "items", "results", "models", "data"]:
+                nested_value = value.get(nested_key)
+                if isinstance(nested_value, list):
+                    return nested_value
+
+    if any(k in data for k in ["id", "agent_id", "name", "slug", "model"]):
+        return [data]
+    return None
+
+def _normalize_agents(agents: List[Any]) -> List[Dict[str, Any]]:
+    norm: List[Dict[str, Any]] = []
+    for a in agents:
+        if isinstance(a, str):
+            norm.append({"id": a, "name": a})
+        elif isinstance(a, dict):
+            aid = (
+                a.get("id")
+                or a.get("agent_id")
+                or a.get("name")
+                or a.get("slug")
+                or a.get("model")
+                or "unknown"
+            )
+            nm = a.get("name") or a.get("title") or a.get("label") or aid
+            norm.append({"id": str(aid), "name": str(nm), "raw": a})
+    return norm
+
+async def _request_openclaw_with_auth(
+    client: httpx.AsyncClient,
+    method: str,
+    base_url: str,
+    path: str,
+    api_key: str,
+    *,
+    timeout: int = 15,
+    json_body: Optional[Dict[str, Any]] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> httpx.Response:
+    url = base_url.rstrip("/") + path
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if extra_headers:
+        headers.update(extra_headers)
+    res = await client.request(
+        method=method,
+        url=url,
+        headers=headers,
+        json=json_body,
+        timeout=timeout,
+    )
+
+    if res.status_code in (401, 403) or _response_looks_like_login_html(res):
+        login = await client.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=timeout)
+        if login.status_code < 400:
+            res = await client.request(method=method, url=url, headers=headers, json=json_body, timeout=timeout)
+    return res
+
+async def openclaw_health(base_url: str, api_key: str) -> Dict[str, Any]:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        for p in HEALTH_PATHS:
+            r = await _request_openclaw_with_auth(client, "GET", base_url, p, api_key, timeout=10)
+            if r.status_code >= 400:
+                continue
+            ct = r.headers.get("content-type", "")
+            if "application/json" in ct:
+                payload = r.json()
+            else:
+                payload = {"raw": r.text[:2000]}
+            status = r.status_code
+            ok = True
+            if ok:
+                if _is_openclaw_login_html(payload):
+                    return {
+                        "ok": False,
+                        "error": "OpenClaw returned login page. Use the correct OpenClaw gateway token in api_key.",
+                        "path": p,
+                        "status": status,
+                    }
+                return {"ok": True, "path": p, "status": status, "payload": payload}
+        return {
+            "ok": False,
+            "error": "Could not reach health endpoint on common paths. Check base_url/port/firewall/path prefix.",
+        }
+
+async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        last_err = None
+        for p in AGENTS_PATHS:
+            try:
+                r = await _request_openclaw_with_auth(client, "GET", base_url, p, api_key, timeout=15)
+                if _response_looks_like_login_html(r):
+                    return {"ok": False, "error": "OpenClaw returned login page. Gateway token is invalid or missing.", "path": p}
+                if r.status_code == 401:
+                    return {"ok": False, "error": "Unauthorized (401). Token/API key invalid.", "path": p}
+                if r.status_code == 403:
+                    return {"ok": False, "error": "Forbidden (403). Token/API key invalid or lacks permission.", "path": p}
+                if r.status_code >= 400:
+                    last_err = f"{r.status_code}: {r.text[:500]}"
+                    continue
+
+                data, parse_err = _safe_json_response(r)
+                if data is None:
+                    raw = (r.text or "").strip()
+                    if not raw:
+                        return {"ok": True, "path": p, "agents": []}
+                    ctype = r.headers.get("content-type") or "unknown"
+                    last_err = f"{p}: expected JSON but got {ctype}; body={raw[:300]}"
+                    if parse_err:
+                        last_err = f"{last_err}; parse_error={parse_err}"
+                    continue
+
+                agents = _extract_agents_list(data) or []
+                norm = _normalize_agents(agents)
+                return {"ok": True, "path": p, "agents": norm}
+            except Exception as e:
+                last_err = str(e)
+
+        ws_res = await openclaw_ws_list_agents(base_url, api_key)
+        if ws_res.get("ok"):
+            return ws_res
+        return {
+            "ok": False,
+            "error": f"Could not list agents on common paths. Last error: {last_err}",
+            "ws_fallback_error": ws_res.get("error"),
+            "ws_fallback_details": ws_res.get("details"),
+            "hint": "This OpenClaw likely does not expose REST JSON agent listing on your base_url path. WS fallback was attempted.",
+        }
+
+def _extract_chat_text(payload: Any) -> Optional[str]:
+    if isinstance(payload, str):
+        return payload
+    if not isinstance(payload, dict):
+        return None
+
+    # OpenAI-style chat completions
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+            return msg["content"]
+
+    # OpenAI responses-style
+    output = payload.get("output")
+    if isinstance(output, list):
+        chunks: List[str] = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                for c in content:
+                    if isinstance(c, dict) and isinstance(c.get("text"), str):
+                        chunks.append(c["text"])
+        if chunks:
+            return "\n".join(chunks)
+
+    # Generic fallback fields
+    for key in ["text", "message", "response", "answer", "content"]:
+        val = payload.get(key)
+        if isinstance(val, str):
+            return val
+    return None
+
+def _is_credit_or_max_token_error(detail: Any) -> bool:
+    low = detail_to_text(detail).lower()
+    if not low:
+        return False
+    markers = [
+        "requires more credits",
+        "fewer max_tokens",
+        "requested up to",
+        "can only afford",
+        "insufficient credits",
+        "max_tokens",
+        "monthly limit",
+    ]
+    return any(m in low for m in markers)
+
+async def openclaw_chat(
+    base_url: str,
+    api_key: str,
+    message: str,
+    agent_id: Optional[str] = None,
+    max_output_tokens: Optional[int] = None,
+) -> Dict[str, Any]:
+    cap = _to_int(max_output_tokens) if max_output_tokens is not None else 0
+    if cap <= 0:
+        cap = 0
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        last_err = None
+        saw_405 = False
+        for p in CHAT_PATHS:
+            model_hint = f"openclaw:{agent_id}" if agent_id else "openclaw"
+            extra_headers: Dict[str, str] = {}
+            if agent_id:
+                extra_headers["x-openclaw-agent-id"] = agent_id
+            if p.endswith("/responses"):
+                body: Dict[str, Any] = {"model": model_hint, "input": message}
+                if agent_id:
+                    body["agent_id"] = agent_id
+                if cap > 0:
+                    body["max_output_tokens"] = cap
+                    # Compatibility fallback for providers/gateways expecting chat-completions naming.
+                    body["max_tokens"] = cap
+            elif "chat/completions" in p:
+                body = {
+                    "model": model_hint,
+                    "messages": [{"role": "user", "content": message}],
+                }
+                if cap > 0:
+                    body["max_tokens"] = cap
+            else:
+                body = {"model": model_hint, "message": message, "prompt": message, "input": message}
+                if agent_id:
+                    body["agent_id"] = agent_id
+                if cap > 0:
+                    body["max_output_tokens"] = cap
+                    body["max_tokens"] = cap
+
+            try:
+                r = await _request_openclaw_with_auth(
+                    client,
+                    "POST",
+                    base_url,
+                    p,
+                    api_key,
+                    json_body=body,
+                    timeout=30,
+                    extra_headers=extra_headers,
+                )
+                if _response_looks_like_login_html(r):
+                    return {"ok": False, "error": "OpenClaw returned login page. Gateway token is invalid or missing.", "path": p}
+                if r.status_code == 401:
+                    return {"ok": False, "error": "Unauthorized (401). Token/API key invalid.", "path": p}
+                if r.status_code == 405:
+                    saw_405 = True
+                if r.status_code >= 400:
+                    last_err = f"{p}: {r.status_code} {r.text[:300]}"
+                    continue
+
+                ctype = r.headers.get("content-type", "")
+                if "application/json" in ctype:
+                    data: Any = r.json()
+                else:
+                    data = {"raw": r.text[:4000]}
+                return {"ok": True, "path": p, "response": data, "text": _extract_chat_text(data)}
+            except Exception as e:
+                last_err = f"{p}: {str(e)}"
+
+    if saw_405:
+        return {
+            "ok": False,
+            "error": "Chat endpoint returned 405 Method Not Allowed. On OpenClaw, enable gateway.http.endpoints.chatCompletions.enabled=true (or use WS gateway protocol).",
+            "hint": "OpenClaw docs: OpenAI Chat Completions endpoint is disabled by default.",
+        }
+    return {
+        "ok": False,
+        "error": f"Could not call chat endpoint on common paths. Last error: {last_err}",
+        "hint": "Your OpenClaw may use different chat path(s). Update CHAT_PATHS in main.py.",
+    }
+
+def _as_ws_base(base_url: str) -> str:
+    parsed = urlparse(base_url.rstrip("/"))
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    path = parsed.path.rstrip("/")
+    return urlunparse((scheme, parsed.netloc, path or "", "", "", ""))
+
+def _candidate_ws_urls(base_url: str) -> List[str]:
+    ws_base = _as_ws_base(base_url)
+    parsed = urlparse(ws_base)
+    base_path = parsed.path.rstrip("/")
+    candidate_paths = [
+        base_path or "",
+        (base_path + "/ws") if base_path else "/ws",
+        (base_path + "/gateway/ws") if base_path else "/gateway/ws",
+        (base_path + "/__openclaw__/ws") if base_path else "/__openclaw__/ws",
+    ]
+    seen: set[str] = set()
+    urls: List[str] = []
+    for p in candidate_paths:
+        path = p or "/"
+        url = urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+def _gateway_origin(base_url: str) -> str:
+    parsed = urlparse(base_url.rstrip("/"))
+    scheme = "https" if parsed.scheme == "https" else "http"
+    return urlunparse((scheme, parsed.netloc, "", "", "", ""))
+
+def _collect_text_fields(node: Any, out: List[str]) -> None:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            lk = key.lower()
+            if lk in {"text", "content", "delta", "response", "answer"} and isinstance(value, str):
+                text = value.strip()
+                if text:
+                    out.append(text)
+            elif isinstance(value, (dict, list)):
+                _collect_text_fields(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_text_fields(item, out)
+
+def _join_delta_chunks(chunks: List[str]) -> str:
+    out = ""
+    no_space_before = {".", ",", "!", "?", ";", ":", ")", "]", "}", "%"}
+    no_space_after_prev = {"(", "[", "{", "/", "-", "\n"}
+    contractions = {"'s", "'re", "'ve", "'m", "'ll", "'d", "n't"}
+    for raw in chunks:
+        part = raw.strip()
+        if not part:
+            continue
+        if not out:
+            out = part
+            continue
+        if part in no_space_before or part in contractions or part.startswith("'"):
+            out += part
+            continue
+        if out.endswith(tuple(no_space_after_prev)):
+            out += part
+            continue
+        out += " " + part
+    return out.strip()
+
+def _derive_ws_session_key(session_key: str, agent_id: Optional[str]) -> str:
+    base = (session_key or "main").strip() or "main"
+    aid = (agent_id or "").strip()
+    if not aid:
+        return base
+    if base.startswith("agent:"):
+        return base
+    return f"agent:{aid}:{base}"
+
+async def openclaw_ws_chat(
+    base_url: str,
+    api_key: str,
+    message: str,
+    agent_id: Optional[str] = None,
+    session_key: str = "main",
+    timeout_sec: int = 25,
+) -> Dict[str, Any]:
+    try:
+        import websockets
+    except Exception:
+        return {
+            "ok": False,
+            "error": "Python package 'websockets' is missing. Install with: pip install websockets",
+        }
+
+    async def _to_json(raw: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    ws_urls = _candidate_ws_urls(base_url)
+    ws_origin = _gateway_origin(base_url)
+    errors: List[str] = []
+
+    async def _retry_http_on_budget_error(reason: Any, ws_path: str) -> Optional[Dict[str, Any]]:
+        if not _is_credit_or_max_token_error(reason):
+            return None
+        http_res = await openclaw_chat(
+            base_url=base_url,
+            api_key=api_key,
+            message=message,
+            agent_id=agent_id,
+            max_output_tokens=SAFE_PROVIDER_MAX_OUTPUT_TOKENS,
+        )
+        if http_res.get("ok"):
+            return {
+                "ok": True,
+                "transport": "http-fallback",
+                "path": str(http_res.get("path") or ws_path),
+                "text": http_res.get("text"),
+                "response": http_res.get("response"),
+                "fallback_reason": detail_to_text(reason)[:1000],
+                "max_output_tokens": SAFE_PROVIDER_MAX_OUTPUT_TOKENS,
+            }
+        return {
+            "ok": False,
+            "path": ws_path,
+            "error": detail_to_text(reason)[:1500],
+            "details": http_res.get("error") or http_res.get("details"),
+            "hint": (
+                f"Retry via HTTP with max_output_tokens={SAFE_PROVIDER_MAX_OUTPUT_TOKENS} failed. "
+                "Check key budget caps on provider and OpenRouter key settings."
+            ),
+        }
+
+    async with httpx.AsyncClient(follow_redirects=True) as http:
+        try:
+            await http.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=10)
+        except Exception:
+            pass
+
+        cookie = "; ".join([f"{k}={v}" for k, v in http.cookies.items()]) if http.cookies else ""
+        extra_headers: Dict[str, str] = {"User-Agent": "hivee/0.1.0"}
+        if cookie:
+            extra_headers["Cookie"] = cookie
+
+    for ws_url in ws_urls:
+        frames: List[Dict[str, Any]] = []
+        text_best = ""
+        delta_parts: List[str] = []
+        runtime_error: Optional[str] = None
+        deadline = time.time() + max(8, min(timeout_sec, 90))
+        connect_id = f"connect_{uuid.uuid4().hex[:10]}"
+        chat_id = f"chat_{uuid.uuid4().hex[:10]}"
+        connect_payload = {
+            "type": "req",
+            "id": connect_id,
+            "method": "connect",
+            "params": {
+                "minProtocol": 3,
+                "maxProtocol": 3,
+                # Match OpenClaw webchat client schema expected by gateway
+                "client": {
+                    "id": "openclaw-control-ui",
+                    "version": "vdev",
+                    "platform": "web",
+                    "mode": "webchat",
+                },
+                "auth": {"token": api_key},
+                "role": "operator",
+                "scopes": ["operator.read", "operator.write"],
+                "caps": [],
+                "commands": [],
+                "permissions": {},
+                "locale": "en-US",
+                "userAgent": "hivee/0.1.0",
+            },
+        }
+        routed_session_key = _derive_ws_session_key(session_key=session_key, agent_id=agent_id)
+        chat_params: Dict[str, Any] = {
+            "sessionKey": routed_session_key,
+            "message": message,
+            "idempotencyKey": uuid.uuid4().hex,
+            "timeoutMs": 120000,
+        }
+        # Keep WS payload strict to protocol schema; route by session key.
+        chat_payload = {
+            "type": "req",
+            "id": chat_id,
+            "method": "chat.send",
+            "params": chat_params,
+        }
+
+        try:
+            async with websockets.connect(
+                ws_url,
+                open_timeout=12,
+                max_size=4 * 1024 * 1024,
+                origin=ws_origin,
+                extra_headers=extra_headers,
+            ) as ws:
+                # Some deployments emit connect.challenge first; capture if present.
+                try:
+                    peek = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    msg = await _to_json(peek)
+                    if msg:
+                        frames.append(msg)
+                except asyncio.TimeoutError:
+                    pass
+
+                await ws.send(json.dumps(connect_payload))
+                connected = False
+                while time.time() < deadline:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
+                    payload = await _to_json(raw)
+                    if not payload:
+                        continue
+                    frames.append(payload)
+                    if payload.get("type") == "res" and payload.get("id") == connect_id:
+                        if payload.get("ok") is False or payload.get("error"):
+                            return {
+                                "ok": False,
+                                "path": ws_url,
+                                "error": f"WS connect rejected: {payload.get('error') or payload}",
+                            }
+                        connected = True
+                        break
+                    if payload.get("type") == "err" and payload.get("id") == connect_id:
+                        return {"ok": False, "path": ws_url, "error": f"WS connect error: {payload}"}
+                if not connected:
+                    errors.append(f"{ws_url}: no connect ack")
+                    continue
+
+                await ws.send(json.dumps(chat_payload))
+                accepted = False
+                first_text_at: Optional[float] = None
+                idle_grace_sec = 2.0
+                while time.time() < deadline:
+                    wait_for = min(2.0, max(0.1, deadline - time.time()))
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=wait_for)
+                    except asyncio.TimeoutError:
+                        if first_text_at and (time.time() - first_text_at) >= idle_grace_sec:
+                            break
+                        continue
+                    payload = await _to_json(raw)
+                    if not payload:
+                        continue
+                    frames.append(payload)
+
+                    if payload.get("type") == "res" and payload.get("id") == chat_id:
+                        if payload.get("ok") is False or payload.get("error"):
+                            retry = await _retry_http_on_budget_error(payload.get("error") or payload, ws_url)
+                            if retry:
+                                return retry
+                            return {"ok": False, "path": ws_url, "error": f"chat.send rejected: {payload.get('error') or payload}"}
+                        accepted = True
+                    if payload.get("type") == "err" and payload.get("id") == chat_id:
+                        retry = await _retry_http_on_budget_error(payload, ws_url)
+                        if retry:
+                            return retry
+                        return {"ok": False, "path": ws_url, "error": f"chat.send error: {payload}"}
+
+                    # Detect runtime failures emitted as events so UI gets a concise error.
+                    if payload.get("type") == "event":
+                        ev = payload.get("event")
+                        evp = payload.get("payload")
+                        if ev == "chat" and isinstance(evp, dict) and evp.get("state") == "error":
+                            runtime_error = str(evp.get("errorMessage") or evp.get("error") or "Chat failed")
+                        elif ev == "agent" and isinstance(evp, dict):
+                            data = evp.get("data")
+                            if isinstance(data, dict) and data.get("phase") == "error":
+                                runtime_error = str(data.get("error") or runtime_error or "Agent failed")
+
+                    picks: List[str] = []
+                    _collect_text_fields(payload, picks)
+                    for p in picks:
+                        candidate = p.strip()
+                        if not candidate:
+                            continue
+                        looks_like_sentence = (" " in candidate) or ("\n" in candidate) or len(candidate) >= 24
+                        if looks_like_sentence:
+                            if (
+                                not text_best
+                                or candidate.startswith(text_best)
+                                or len(candidate) > (len(text_best) + 6)
+                            ):
+                                text_best = candidate
+                                first_text_at = time.time()
+                                continue
+                        if not delta_parts or delta_parts[-1] != candidate:
+                            delta_parts.append(candidate)
+                            first_text_at = time.time()
+
+                text = text_best or _join_delta_chunks(delta_parts) or None
+                if runtime_error:
+                    retry = await _retry_http_on_budget_error(runtime_error, ws_url)
+                    if retry:
+                        return retry
+                    return {
+                        "ok": False,
+                        "path": ws_url,
+                        "error": runtime_error[:1500],
+                        "accepted": accepted,
+                        "frames": frames[-8:],
+                    }
+                return {
+                    "ok": True,
+                    "transport": "ws",
+                    "path": ws_url,
+                    "accepted": accepted,
+                    "text": text,
+                    "frames": frames[-12:],
+                }
+        except Exception as e:
+            errors.append(f"{ws_url}: {str(e)}")
+            continue
+
+    if errors and _is_credit_or_max_token_error(errors[-1]):
+        retry = await _retry_http_on_budget_error(errors[-1], ws_urls[-1] if ws_urls else "ws")
+        if retry:
+            return retry
+
+    return {
+        "ok": False,
+        "error": "WS chat failed across all candidate WS paths.",
+        "details": errors[-5:],
+        "hint": "OpenClaw may require device identity/pairing or a specific WS path behind the provider proxy.",
+    }
+
+async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int = 12) -> Dict[str, Any]:
+    try:
+        import websockets
+    except Exception:
+        return {"ok": False, "error": "Python package 'websockets' is missing.", "details": ["Install with: pip install websockets"]}
+
+    async def _to_json(raw: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _extract_from_ws_result(result: Any) -> List[Any]:
+        direct = _extract_agents_list(result)
+        if direct is not None:
+            return direct
+        if isinstance(result, dict):
+            value = result.get("value")
+            nested = _extract_agents_list(value)
+            if nested is not None:
+                return nested
+            if isinstance(value, list):
+                return value
+        if isinstance(result, list):
+            return result
+        return []
+
+    ws_urls = _candidate_ws_urls(base_url)
+    ws_origin = _gateway_origin(base_url)
+    errors: List[str] = []
+
+    async with httpx.AsyncClient(follow_redirects=True) as http:
+        try:
+            await http.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=10)
+        except Exception:
+            pass
+        cookie = "; ".join([f"{k}={v}" for k, v in http.cookies.items()]) if http.cookies else ""
+        extra_headers: Dict[str, str] = {"User-Agent": "hivee/0.1.0"}
+        if cookie:
+            extra_headers["Cookie"] = cookie
+
+    ws_methods: List[Tuple[str, Dict[str, Any], bool]] = [
+        ("agents.list", {}, True),
+        ("config.get", {"path": "agents.list"}, True),
+        ("config.get", {"path": "agents"}, True),
+        ("config.get", {"path": "subagents"}, True),
+        ("config.get", {"path": "gateway.agents"}, True),
+        ("models.list", {}, False),
+    ]
+    saw_models_only = False
+
+    for ws_url in ws_urls:
+        try:
+            async with websockets.connect(
+                ws_url,
+                open_timeout=12,
+                max_size=4 * 1024 * 1024,
+                origin=ws_origin,
+                extra_headers=extra_headers,
+            ) as ws:
+                connect_id = f"connect_{uuid.uuid4().hex[:10]}"
+                connect_payload = {
+                    "type": "req",
+                    "id": connect_id,
+                    "method": "connect",
+                    "params": {
+                        "minProtocol": 3,
+                        "maxProtocol": 3,
+                        "client": {"id": "openclaw-control-ui", "version": "vdev", "platform": "web", "mode": "webchat"},
+                        "auth": {"token": api_key},
+                        "role": "operator",
+                        "scopes": ["operator.read", "operator.write"],
+                        "caps": [],
+                        "commands": [],
+                        "permissions": {},
+                        "locale": "en-US",
+                        "userAgent": "hivee/0.1.0",
+                    },
+                }
+
+                try:
+                    peek = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    _ = await _to_json(peek)
+                except asyncio.TimeoutError:
+                    pass
+
+                await ws.send(json.dumps(connect_payload))
+                deadline = time.time() + max(6, min(timeout_sec, 30))
+                connected = False
+                while time.time() < deadline:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
+                    msg = await _to_json(raw)
+                    if not msg:
+                        continue
+                    if msg.get("type") == "res" and msg.get("id") == connect_id:
+                        if msg.get("ok") is False or msg.get("error"):
+                            errors.append(f"{ws_url}: connect rejected: {msg.get('error') or msg}")
+                            break
+                        connected = True
+                        break
+                    if msg.get("type") == "err" and msg.get("id") == connect_id:
+                        errors.append(f"{ws_url}: connect error: {msg}")
+                        break
+                if not connected:
+                    continue
+
+                for method, params, is_agent_method in ws_methods:
+                    req_id = f"req_{uuid.uuid4().hex[:10]}"
+                    await ws.send(json.dumps({"type": "req", "id": req_id, "method": method, "params": params}))
+                    m_deadline = time.time() + max(4, min(timeout_sec, 20))
+                    while time.time() < m_deadline:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, m_deadline - time.time()))
+                        msg = await _to_json(raw)
+                        if not msg:
+                            continue
+                        if msg.get("type") == "res" and msg.get("id") == req_id:
+                            if msg.get("ok") is False or msg.get("error"):
+                                errors.append(f"{ws_url} {method}: rejected: {msg.get('error') or msg}")
+                                break
+                            result = msg.get("result")
+                            if result is None:
+                                result = msg.get("payload")
+                            raw_agents = _extract_from_ws_result(result)
+                            norm = _normalize_agents(raw_agents)
+                            if not is_agent_method:
+                                if norm:
+                                    saw_models_only = True
+                                break
+                            return {"ok": True, "transport": "ws", "path": ws_url, "method": method, "agents": norm}
+                        if msg.get("type") == "err" and msg.get("id") == req_id:
+                            errors.append(f"{ws_url} {method}: error: {msg}")
+                            break
+        except Exception as e:
+            errors.append(f"{ws_url}: {str(e)}")
+            continue
+
+    return {
+        "ok": False,
+        "error": "WS agent listing failed across all candidate WS paths/methods.",
+        "details": errors[-8:],
+        "hint": "If only models.list is available, this gateway may expose model registry but not sub-agent registry on current credentials/path.",
+        "models_detected": saw_models_only,
+    }
+
+async def _ensure_project_info_document(project_id: str, *, force: bool = False) -> Dict[str, Any]:
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id,
+               c.base_url, c.api_key, cp.main_agent_id
+        FROM projects p
+        JOIN openclaw_connections c ON c.id = p.connection_id
+        LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
+        WHERE p.id = ?
+        """,
+        (project_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return {"ok": False, "error": "Project not found"}
+    role_rows = _project_agent_rows(conn, project_id)
+    conn.close()
+    if not role_rows:
+        return {"ok": False, "error": "No invited agents configured"}
+
+    setup_details = _normalize_setup_details(_parse_setup_json(row["setup_json"]))
+    primary_agent_id = None
+    for r in role_rows:
+        if bool(r.get("is_primary")):
+            primary_agent_id = str(r.get("agent_id") or "").strip() or None
+            break
+    if not primary_agent_id:
+        primary_agent_id = str(row["main_agent_id"] or "").strip() or None
+    if not primary_agent_id:
+        return {"ok": False, "error": "Primary agent is not configured"}
+
+    try:
+        project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
+    except Exception as e:
+        return {"ok": False, "error": detail_to_text(e)[:300]}
+
+    _initialize_project_folder(
+        project_dir,
+        str(row["title"] or ""),
+        str(row["brief"] or ""),
+        str(row["goal"] or ""),
+        setup_details=setup_details,
+    )
+    info_path = project_dir / PROJECT_INFO_FILE
+    existing_info = ""
+    if info_path.exists():
+        try:
+            existing_info = info_path.read_text(encoding="utf-8")
+        except Exception:
+            existing_info = ""
+    if (
+        existing_info.strip()
+        and (not force)
+        and "pending primary agent completion" not in existing_info.lower()
+        and len(existing_info.strip()) >= 160
+    ):
+        return {"ok": True, "text": existing_info.strip(), "source": "existing", "agent_id": primary_agent_id}
+
+    context = _project_context_instruction(
+        title=str(row["title"] or ""),
+        brief=str(row["brief"] or ""),
+        goal=str(row["goal"] or ""),
+        setup_details=setup_details,
+        role_rows=role_rows,
+        plan_status=PLAN_STATUS_PENDING,
+    )
+    roster = _agent_roster_markdown(role_rows)
+    task = (
+        f"{context}\n\n"
+        f"{roster}\n\n"
+        "Task:\n"
+        f"1) Read `{SETUP_CHAT_HISTORY_FILE}` and `agents/ROLES.md`.\n"
+        f"2) Write or replace `{PROJECT_INFO_FILE}` with complete project context.\n"
+        "3) Include: project summary, user requirements, constraints, assumptions, role responsibilities, execution prerequisites, and open questions.\n"
+        "4) If some information is missing, make reasonable assumptions and clearly mark them under `Assumptions`.\n"
+        "5) Return JSON only with `chat_update`, `output_files`, optional `notes`, and pause fields.\n"
+        "6) Keep language concise and human-readable.\n"
+    )
+    info_context = _build_project_file_context(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        include_paths=[
+            PROJECT_INFO_FILE,
+            "agents/ROLES.md",
+            OVERVIEW_FILE,
+            PROJECT_SETUP_FILE,
+            SETUP_CHAT_HISTORY_FILE,
+            SETUP_CHAT_HISTORY_COMPAT_FILE,
+        ],
+        request_text=str(setup_details.get("setup_chat_summary") or ""),
+        max_total_chars=8_500,
+        max_files=8,
+    )
+    if info_context:
+        task = f"{task}\n\n{info_context}"
+
+    await emit(project_id, "project.info.generating", {"project_id": project_id})
+    res = await openclaw_ws_chat(
+        base_url=str(row["base_url"]),
+        api_key=str(row["api_key"]),
+        message=task,
+        agent_id=primary_agent_id,
+        session_key=f"{project_id}:project-info",
+        timeout_sec=55,
+    )
+    p_tokens, c_tokens, _ = _extract_usage_counts(res)
+    if p_tokens <= 0:
+        p_tokens = _estimate_tokens_from_text(task)
+    if c_tokens <= 0:
+        c_tokens = _estimate_tokens_from_text(res.get("text"))
+    _update_project_usage_metrics(project_id, prompt_tokens=p_tokens, completion_tokens=c_tokens)
+
+    if not res.get("ok"):
+        fallback = _python_project_info_markdown(
+            title=str(row["title"] or ""),
+            brief=str(row["brief"] or ""),
+            goal=str(row["goal"] or ""),
+            setup_details=setup_details,
+            role_rows=role_rows,
+        )
+        try:
+            info_path.write_text(fallback, encoding="utf-8")
+        except Exception:
+            return {"ok": False, "error": detail_to_text(res.get("error") or res.get("details"))[:1200]}
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="project.info.fallback",
+            text=detail_to_text(res.get("error") or res.get("details"))[:1200],
+        )
+        await emit(project_id, "project.info.ready", {"status": "fallback", "preview": fallback[:900]})
+        return {"ok": True, "text": fallback, "source": "fallback", "agent_id": primary_agent_id}
+
+    raw_text = str(res.get("text") or "").strip()
+    parsed = _extract_agent_report_payload(raw_text)
+    writes = parsed.get("output_files") if isinstance(parsed.get("output_files"), list) else []
+    has_info_write = False
+    for item in writes:
+        rel = _clean_relative_project_path(str(item.get("path") or ""))
+        if rel and rel.lower() in {PROJECT_INFO_FILE.lower(), "project-info.md"}:
+            has_info_write = True
+            break
+    if not has_info_write:
+        fallback_content = raw_text.strip()
+        if not fallback_content:
+            fallback_content = _python_project_info_markdown(
+                title=str(row["title"] or ""),
+                brief=str(row["brief"] or ""),
+                goal=str(row["goal"] or ""),
+                setup_details=setup_details,
+                role_rows=role_rows,
+            )
+        elif not fallback_content.lstrip().startswith("#"):
+            fallback_content = (
+                _seed_project_info_markdown(
+                    title=str(row["title"] or ""),
+                    brief=str(row["brief"] or ""),
+                    goal=str(row["goal"] or ""),
+                ).strip()
+                + "\n\n## Primary Agent Notes\n"
+                + fallback_content
+            )
+        writes = [{"path": PROJECT_INFO_FILE, "content": fallback_content, "append": False}, *writes]
+    write_result = _apply_project_file_writes(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        writes=writes,
+        default_prefix=f"{USER_OUTPUTS_DIRNAME}/project-info",
+    )
+    saved = write_result.get("saved") or []
+    if not any(str(item.get("path") or "").strip().lower() == PROJECT_INFO_FILE.lower() for item in saved):
+        info_path.write_text(
+            _python_project_info_markdown(
+                title=str(row["title"] or ""),
+                brief=str(row["brief"] or ""),
+                goal=str(row["goal"] or ""),
+                setup_details=setup_details,
+                role_rows=role_rows,
+            ),
+            encoding="utf-8",
+        )
+    try:
+        text = info_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        text = ""
+    if not text:
+        text = _python_project_info_markdown(
+            title=str(row["title"] or ""),
+            brief=str(row["brief"] or ""),
+            goal=str(row["goal"] or ""),
+            setup_details=setup_details,
+            role_rows=role_rows,
+        )
+        info_path.write_text(text, encoding="utf-8")
+    _append_project_daily_log(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        kind="project.info.ready",
+        text=(parsed.get("chat_update") or raw_text or "Project info updated.")[:1500],
+        payload={"saved_files": saved[:12]},
+    )
+    await emit(
+        project_id,
+        "project.info.ready",
+        {"status": "ok", "agent_id": primary_agent_id, "preview": text[:900], "saved_files": saved[:12]},
+    )
+    return {"ok": True, "text": text, "source": "agent", "agent_id": primary_agent_id}
+
+async def _generate_project_plan(project_id: str, *, force: bool = False) -> None:
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id, p.plan_status,
+               c.base_url, c.api_key, cp.main_agent_id
+        FROM projects p
+        JOIN openclaw_connections c ON c.id = p.connection_id
+        LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
+        WHERE p.id = ?
+        """,
+        (project_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return
+    if (not force) and _coerce_plan_status(row["plan_status"]) == PLAN_STATUS_APPROVED:
+        conn.close()
+        return
+
+    role_rows = _project_agent_rows(conn, project_id)
+    if not role_rows:
+        now = int(time.time())
+        msg = "Invite at least one project agent (and select a primary) before generating plan."
+        conn.execute(
+            "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
+            (PLAN_STATUS_FAILED, msg, now, project_id),
+        )
+        conn.commit()
+        conn.close()
+        _refresh_project_documents(project_id)
+        await emit(project_id, "project.plan.failed", {"error": msg})
+        return
+    conn.execute(
+        "UPDATE projects SET plan_status = ?, plan_updated_at = ? WHERE id = ?",
+        (PLAN_STATUS_GENERATING, int(time.time()), project_id),
+    )
+    conn.commit()
+    conn.close()
+    await emit(project_id, "project.plan.generating", {"project_id": project_id})
+    _append_project_daily_log(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        kind="plan.generating",
+        text="Primary agent is generating project plan.",
+    )
+
+    setup_details = _normalize_setup_details(_parse_setup_json(row["setup_json"]))
+    primary_agent_id = None
+    for r in role_rows:
+        if bool(r.get("is_primary")):
+            primary_agent_id = str(r.get("agent_id") or "").strip() or None
+            break
+    if not primary_agent_id:
+        primary_agent_id = str(row["main_agent_id"] or "").strip() or None
+
+    info_result = await _ensure_project_info_document(project_id, force=force)
+    project_info_excerpt = str(info_result.get("text") or "").strip()[:10_000]
+    instruction = _plan_prompt_from_project(
+        title=str(row["title"] or ""),
+        brief=str(row["brief"] or ""),
+        goal=str(row["goal"] or ""),
+        setup_details=setup_details,
+        role_rows=role_rows,
+        project_info_excerpt=project_info_excerpt,
+    )
+    plan_file_context = _build_project_file_context(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        include_paths=[
+            PROJECT_INFO_FILE,
+            OVERVIEW_FILE,
+            PROJECT_SETUP_FILE,
+            "agents/ROLES.md",
+            SETUP_CHAT_HISTORY_FILE,
+            SETUP_CHAT_HISTORY_COMPAT_FILE,
+        ],
+        request_text=f"{str(row['brief'] or '')}\n{str(row['goal'] or '')}",
+        max_total_chars=7_000,
+        max_files=8,
+    )
+    if plan_file_context:
+        instruction = f"{instruction}\n\n{plan_file_context}"
+    res = await openclaw_ws_chat(
+        base_url=str(row["base_url"]),
+        api_key=str(row["api_key"]),
+        message=instruction,
+        agent_id=primary_agent_id,
+        session_key=f"{project_id}:plan",
+        timeout_sec=55,
+    )
+    prompt_tokens, completion_tokens, _ = _extract_usage_counts(res)
+    if prompt_tokens <= 0:
+        prompt_tokens = _estimate_tokens_from_text(instruction)
+    if completion_tokens <= 0:
+        completion_tokens = _estimate_tokens_from_text(res.get("text"))
+    _update_project_usage_metrics(project_id, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+
+    now = int(time.time())
+    conn = db()
+    if not res.get("ok"):
+        error_text = detail_to_text(res.get("error") or res.get("details") or "Failed to generate project plan")
+        conn.execute(
+            "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
+            (PLAN_STATUS_FAILED, error_text[:5000], now, project_id),
+        )
+        conn.commit()
+        conn.close()
+        _refresh_project_documents(project_id)
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="plan.failed",
+            text=error_text[:1200],
+        )
+        await emit(project_id, "project.plan.failed", {"error": error_text[:1200]})
+        return
+
+    plan_text = str(res.get("text") or "").strip()
+    if not plan_text:
+        plan_text = detail_to_text(res.get("frames") or "Plan generated with empty text")
+    conn.execute(
+        "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
+        (PLAN_STATUS_AWAITING_APPROVAL, plan_text[:20000], now, project_id),
+    )
+    conn.commit()
+    conn.close()
+    _refresh_project_documents(project_id)
+    _append_project_daily_log(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        kind="plan.ready",
+        text=(plan_text or "")[:1600],
+    )
+    await emit(project_id, "project.plan.ready", {"status": PLAN_STATUS_AWAITING_APPROVAL, "preview": plan_text[:1000]})
+
+async def _delegate_project_tasks(project_id: str) -> None:
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id,
+               p.plan_text, p.plan_status, c.base_url, c.api_key, cp.main_agent_id
+        FROM projects p
+        JOIN openclaw_connections c ON c.id = p.connection_id
+        LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
+        WHERE p.id = ?
+        """,
+        (project_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return
+    role_rows = _project_agent_rows(conn, project_id)
+    conn.close()
+
+    if _coerce_plan_status(row["plan_status"]) != PLAN_STATUS_APPROVED:
+        await emit(project_id, "project.delegation.skipped", {"reason": "Plan not approved"})
+        return
+    if not role_rows:
+        _set_project_execution_state(project_id, status=EXEC_STATUS_IDLE, progress_pct=0)
+        _refresh_project_documents(project_id)
+        await emit(project_id, "project.delegation.skipped", {"reason": "No invited agents yet"})
+        return
+
+    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=15)
+    _refresh_project_documents(project_id)
+    _append_project_daily_log(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        kind="delegation.started",
+        text="Primary agent started delegation planning after plan approval.",
+        payload={"agents": [str(r.get("agent_id") or "") for r in role_rows]},
+    )
+    await emit(project_id, "project.delegation.started", {"agents": [r.get("agent_id") for r in role_rows]})
+    setup_details = _normalize_setup_details(_parse_setup_json(row["setup_json"]))
+    primary_agent_id = None
+    for r in role_rows:
+        if bool(r.get("is_primary")):
+            primary_agent_id = str(r.get("agent_id") or "").strip() or None
+            break
+    if not primary_agent_id:
+        primary_agent_id = str(row["main_agent_id"] or "").strip() or None
+
+    info_result = await _ensure_project_info_document(project_id, force=False)
+    project_info_excerpt = str(info_result.get("text") or "").strip()[:10_000]
+    instruction = _delegate_prompt_from_project(
+        title=str(row["title"] or ""),
+        brief=str(row["brief"] or ""),
+        goal=str(row["goal"] or ""),
+        setup_details=setup_details,
+        role_rows=role_rows,
+        plan_text=str(row["plan_text"] or ""),
+        project_info_excerpt=project_info_excerpt,
+    )
+    delegate_file_context = _build_project_file_context(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        include_paths=[
+            PROJECT_INFO_FILE,
+            OVERVIEW_FILE,
+            PROJECT_PLAN_FILE,
+            PROJECT_SETUP_FILE,
+            "agents/ROLES.md",
+            SETUP_CHAT_HISTORY_FILE,
+            SETUP_CHAT_HISTORY_COMPAT_FILE,
+        ],
+        request_text=str(row["plan_text"] or ""),
+        max_total_chars=8_000,
+        max_files=8,
+    )
+    if delegate_file_context:
+        instruction = f"{instruction}\n\n{delegate_file_context}"
+    res = await openclaw_ws_chat(
+        base_url=str(row["base_url"]),
+        api_key=str(row["api_key"]),
+        message=instruction,
+        agent_id=primary_agent_id,
+        session_key=f"{project_id}:delegate",
+        timeout_sec=55,
+    )
+    prompt_tokens, completion_tokens, _ = _extract_usage_counts(res)
+    if prompt_tokens <= 0:
+        prompt_tokens = _estimate_tokens_from_text(instruction)
+    if completion_tokens <= 0:
+        completion_tokens = _estimate_tokens_from_text(res.get("text"))
+    _update_project_usage_metrics(project_id, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+
+    if not res.get("ok"):
+        _set_project_execution_state(project_id, status=EXEC_STATUS_STOPPED)
+        _refresh_project_documents(project_id)
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="delegation.failed",
+            text=detail_to_text(res.get("error") or res.get("details"))[:1200],
+        )
+        await emit(project_id, "project.delegation.failed", {"error": detail_to_text(res.get("error") or res.get("details"))[:1200]})
+        return
+
+    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=55)
+    primary_reply = str(res.get("text") or "").strip()
+    payload = _parse_delegation_payload(primary_reply)
+    by_id = {str(r.get("agent_id") or "").strip(): r for r in role_rows}
+    project_md = str(payload.get("project_delegation_md") or payload.get("project_md") or "").strip()
+    if not project_md:
+        project_md = str(row["plan_text"] or "").strip() or "Delegation initialized."
+    if primary_reply:
+        await emit(
+            project_id,
+            "agent.primary.update",
+            {
+                "agent_id": primary_agent_id,
+                "agent_name": next((str(r.get("agent_name") or r.get("agent_id") or "") for r in role_rows if str(r.get("agent_id") or "") == str(primary_agent_id or "")), ""),
+                "text": primary_reply[:1200],
+            },
+        )
+    for note in _summarize_ws_frames(res.get("frames"), limit=10):
+        await emit(project_id, "agent.primary.live", {"agent_id": primary_agent_id, "note": note})
+    _append_project_daily_log(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        kind="agent.primary.update",
+        text=primary_reply[:1800] if primary_reply else "Primary agent returned delegation payload.",
+    )
+
+    try:
+        project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
+    except Exception:
+        await emit(project_id, "project.delegation.failed", {"error": "Project directory unavailable"})
+        return
+    project_dir.mkdir(parents=True, exist_ok=True)
+    agents_dir = project_dir / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+
+    (project_dir / PROJECT_DELEGATION_FILE).write_text(project_md + "\n", encoding="utf-8")
+    legacy_delegation = (project_dir / "project-delegation.md").resolve()
+    if _path_within(legacy_delegation, project_dir) and legacy_delegation.exists():
+        try:
+            legacy_delegation.unlink()
+        except Exception:
+            pass
+    assigned_count = 0
+    raw_tasks = payload.get("agent_tasks")
+    task_map: Dict[str, str] = {}
+    if isinstance(raw_tasks, list):
+        for item in raw_tasks:
+            if not isinstance(item, dict):
+                continue
+            aid = str(item.get("agent_id") or "").strip()
+            task_md = str(item.get("task_md") or "").strip()
+            if aid and task_md and aid in by_id:
+                task_map[aid] = task_md
+
+    agent_order = list(by_id.keys())
+    assigned_task_map: Dict[str, str] = {}
+    assigned_mentions_map: Dict[str, List[str]] = {}
+    for pos, aid in enumerate(agent_order):
+        row_item = by_id.get(aid) or {}
+        role = str(row_item.get("role") or "").strip() or "Collaborate based on project plan."
+        default_task = (
+            f"Read {PROJECT_INFO_FILE}, {OVERVIEW_FILE}, {PROJECT_PLAN_FILE}, and {PROJECT_DELEGATION_FILE}, then execute assigned scope and report progress in chat.\n"
+            f"- Follow dependency order from {PROJECT_DELEGATION_FILE}.\n"
+            "- If your output unblocks another agent, mention them explicitly as @agent_id in chat_update so handoff happens in chat.\n"
+            "- Save concrete artifacts into project files using output_files.\n"
+            "- If blocked by missing user approval/input (credentials, API key, sign-off, pit stop), set requires_user_input=true with pause_reason and resume_hint.\n"
+            "- If user answers SKIP, decide assumptions responsibly and continue.\n"
+        )
+        next_aid = agent_order[pos + 1] if (pos + 1) < len(agent_order) else None
+        task_text = _normalize_task_markdown_for_agent(
+            agent_id=aid,
+            role=role,
+            task_md=task_map.get(aid, default_task),
+            next_agent_id=next_aid,
+        )
+        assigned_task_map[aid] = task_text
+        fname = _safe_agent_filename(aid) + ".md"
+        (agents_dir / fname).write_text(task_text.strip() + "\n", encoding="utf-8")
+        assigned_count += 1
+        mention_targets = sorted({m for m in re.findall(r"@([a-zA-Z0-9._-]+)", task_text) if m and m != aid})[:8]
+        assigned_mentions_map[aid] = mention_targets
+        await emit(
+            project_id,
+            "agent.task.assigned",
+            {
+                "agent_id": aid,
+                "agent_name": str(row_item.get("agent_name") or aid),
+                "role": role,
+                "task_file": f"agents/{fname}",
+                "task_preview": task_text[:500],
+                "mentions": mention_targets,
+            },
+        )
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="agent.task.assigned",
+            text=f"{aid}: {task_text[:800]}",
+            payload={"task_file": f"agents/{fname}", "mentions": mention_targets},
+        )
+
+    _write_project_agent_roles_file(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        agents=role_rows,
+    )
+    outputs_dir = project_dir / USER_OUTPUTS_DIRNAME
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    processed_agents = 0
+    failed_agents = 0
+    agent_total = max(1, len(agent_order))
+    team_roster_text = _agent_roster_markdown(role_rows)
+    primary_agent_name = next(
+        (
+            str(r.get("agent_name") or r.get("agent_id") or "")
+            for r in role_rows
+            if str(r.get("agent_id") or "").strip() == str(primary_agent_id or "").strip()
+        ),
+        str(primary_agent_id or "primary"),
+    )
+    primary_last_chat_update = ""
+    primary_last_notes = ""
+    primary_last_pause_reason = ""
+    primary_last_resume_hint = ""
+    primary_pause_resolved = False
+
+    for idx, aid in enumerate(agent_order, start=1):
+        row_item = by_id.get(aid) or {}
+        while True:
+            state, _ = _read_project_execution_state(project_id)
+            if state == EXEC_STATUS_PAUSED:
+                await asyncio.sleep(0.7)
+                continue
+            if state == EXEC_STATUS_STOPPED:
+                _refresh_project_documents(project_id)
+                _append_project_daily_log(
+                    owner_user_id=str(row["user_id"]),
+                    project_root=str(row["project_root"] or ""),
+                    kind="delegation.stopped",
+                    text="Delegation run stopped by user before all agents reported.",
+                )
+                await emit(
+                    project_id,
+                    "project.delegation.stopped",
+                    {"processed_agents": processed_agents, "failed_agents": failed_agents, "total_agents": len(agent_order)},
+                )
+                return
+            break
+
+        role = str(row_item.get("role") or "").strip() or "Collaborate based on project plan."
+        agent_name = str(row_item.get("agent_name") or aid)
+        task_text = assigned_task_map.get(aid) or f"# Task for {aid}\n\nRole: {role}\n"
+        task_rel = f"agents/{_safe_agent_filename(aid)}.md"
+        agent_file_context = _build_project_file_context(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            include_paths=[
+                task_rel,
+                PROJECT_INFO_FILE,
+                PROJECT_DELEGATION_FILE,
+                PROJECT_PLAN_FILE,
+                OVERVIEW_FILE,
+                "agents/ROLES.md",
+                SETUP_CHAT_HISTORY_FILE,
+            ],
+            request_text=task_text,
+            max_total_chars=7_500,
+            max_files=8,
+        )
+        await emit(
+            project_id,
+            "agent.task.started",
+            {"agent_id": aid, "agent_name": agent_name, "role": role},
+        )
+
+        agent_instruction = (
+            _project_context_instruction(
+                title=str(row["title"] or ""),
+                brief=str(row["brief"] or ""),
+                goal=str(row["goal"] or ""),
+                setup_details=setup_details,
+                role_rows=role_rows,
+                plan_status=PLAN_STATUS_APPROVED,
+            )
+            + "\n\n"
+            + f"You are invited agent `{aid}` with role `{role}`.\n"
+            + team_roster_text
+            + "\n"
+            + "Execute your assigned task and return JSON object only:\n"
+            + "{\n"
+            + "  \"chat_update\": \"Human-friendly update sentence to show in chat\",\n"
+            + "  \"output_files\": [{\"path\":\"relative/path.ext\",\"content\":\"file content\",\"append\":false}],\n"
+            + "  \"notes\": \"optional technical notes\",\n"
+            + "  \"requires_user_input\": false,\n"
+            + "  \"pause_reason\": \"\",\n"
+            + "  \"resume_hint\": \"\"\n"
+            + "}\n"
+            + "Rules:\n"
+            + "- chat_update must read like normal conversation.\n"
+            + "- Put every created/updated artifact in output_files.\n"
+            + "- Use relative paths inside this project only.\n"
+            + "- Use exact IDs from roster when mentioning other agents.\n"
+            + "- Mention handoff needs in chat_update with @agent_id if needed.\n\n"
+            + "- If blocked by user approval/input or planned pit stop, set requires_user_input=true and explain pause_reason.\n"
+            + "- If user says SKIP for missing info, proceed with assumptions and state them briefly in chat_update.\n"
+            + "Assigned task:\n"
+            + task_text.strip()
+        )
+        if agent_file_context:
+            agent_instruction = f"{agent_instruction}\n\n{agent_file_context}"
+        agent_res = await openclaw_ws_chat(
+            base_url=str(row["base_url"]),
+            api_key=str(row["api_key"]),
+            message=agent_instruction,
+            agent_id=aid,
+            session_key=f"{project_id}:agent:{aid}",
+            timeout_sec=50,
+        )
+        p_tokens, c_tokens, _ = _extract_usage_counts(agent_res)
+        if p_tokens <= 0:
+            p_tokens = _estimate_tokens_from_text(agent_instruction)
+        if c_tokens <= 0:
+            c_tokens = _estimate_tokens_from_text(agent_res.get("text"))
+        _update_project_usage_metrics(project_id, prompt_tokens=p_tokens, completion_tokens=c_tokens)
+
+        if not agent_res.get("ok"):
+            failed_agents += 1
+            err_text = detail_to_text(agent_res.get("error") or agent_res.get("details") or "Agent task failed")[:1200]
+            await emit(
+                project_id,
+                "agent.task.failed",
+                {"agent_id": aid, "agent_name": agent_name, "error": err_text},
+            )
+            _append_project_daily_log(
+                owner_user_id=str(row["user_id"]),
+                project_root=str(row["project_root"] or ""),
+                kind="agent.task.failed",
+                text=f"{aid}: {err_text}",
+            )
+            continue
+
+        report_text = str(agent_res.get("text") or "").strip()
+        if not report_text:
+            report_text = detail_to_text(agent_res.get("frames") or "No text response.")
+        parsed_report = _extract_agent_report_payload(report_text)
+        chat_update = str(parsed_report.get("chat_update") or "").strip() or "I have completed this task step."
+        report_notes = str(parsed_report.get("notes") or "").strip()
+        requires_user_input = bool(parsed_report.get("requires_user_input"))
+        pause_reason = str(parsed_report.get("pause_reason") or "").strip()
+        resume_hint = str(parsed_report.get("resume_hint") or "").strip()
+        output_files_raw = parsed_report.get("output_files") or []
+        write_result = _apply_project_file_writes(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            writes=output_files_raw if isinstance(output_files_raw, list) else [],
+            default_prefix=f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+        )
+        saved_files = write_result.get("saved") or []
+        skipped_files = write_result.get("skipped") or []
+        artifact_followup_used = False
+        artifact_rescue_used = False
+        artifact_like_task = _looks_like_artifact_request(task_text)
+        if _should_request_artifact_followup(
+            user_message=task_text,
+            raw_response=report_text,
+            parsed_payload=parsed_report,
+            saved_files=saved_files,
+        ):
+            artifact_followup_used = True
+            await emit(
+                project_id,
+                "agent.task.live",
+                {
+                    "agent_id": aid,
+                    "agent_name": agent_name,
+                    "note": "No synced files detected yet. Requesting explicit output_files payload.",
+                },
+            )
+            followup_prompt = _build_artifact_followup_prompt(
+                user_message=task_text,
+                previous_response=report_text,
+            )
+            followup_res = await openclaw_ws_chat(
+                base_url=str(row["base_url"]),
+                api_key=str(row["api_key"]),
+                message=followup_prompt,
+                agent_id=aid,
+                session_key=f"{project_id}:agent:{aid}",
+                timeout_sec=45,
+            )
+            if followup_res.get("ok"):
+                fp, fc, _ = _extract_usage_counts(followup_res)
+                if fp <= 0:
+                    fp = _estimate_tokens_from_text(followup_prompt)
+                if fc <= 0:
+                    fc = _estimate_tokens_from_text(followup_res.get("text"))
+                _update_project_usage_metrics(project_id, prompt_tokens=fp, completion_tokens=fc)
+                followup_text = str(followup_res.get("text") or "").strip()
+                parsed_followup = _extract_agent_report_payload(followup_text)
+                followup_chat = str(parsed_followup.get("chat_update") or "").strip()
+                followup_writes = parsed_followup.get("output_files") or []
+                requires_user_input = requires_user_input or bool(parsed_followup.get("requires_user_input"))
+                if not pause_reason:
+                    pause_reason = str(parsed_followup.get("pause_reason") or "").strip()
+                if not resume_hint:
+                    resume_hint = str(parsed_followup.get("resume_hint") or "").strip()
+                if not report_notes:
+                    report_notes = str(parsed_followup.get("notes") or "").strip()
+                followup_write_result = _apply_project_file_writes(
+                    owner_user_id=str(row["user_id"]),
+                    project_root=str(row["project_root"] or ""),
+                    writes=followup_writes if isinstance(followup_writes, list) else [],
+                    default_prefix=f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+                )
+                followup_saved = followup_write_result.get("saved") or []
+                followup_skipped = followup_write_result.get("skipped") or []
+                if followup_saved:
+                    saved_files.extend(followup_saved)
+                if followup_skipped:
+                    skipped_files.extend(followup_skipped)
+                if followup_chat:
+                    chat_update = followup_chat
+                if followup_text:
+                    report_text = (report_text + "\n\n[ARTIFACT FOLLOW-UP]\n" + followup_text).strip()
+                for note in _summarize_ws_frames(followup_res.get("frames"), limit=6):
+                    await emit(project_id, "agent.task.live", {"agent_id": aid, "agent_name": agent_name, "note": note})
+            else:
+                skipped_files.append(
+                    "artifact follow-up failed: "
+                    + detail_to_text(followup_res.get("error") or followup_res.get("details") or "unknown")
+                )
+
+        if not saved_files and not requires_user_input and artifact_like_task:
+            artifact_rescue_used = True
+            await emit(
+                project_id,
+                "agent.task.live",
+                {
+                    "agent_id": aid,
+                    "agent_name": agent_name,
+                    "note": "Still no synced files. Forcing concrete deliverables payload.",
+                },
+            )
+            rescue_prompt = _build_artifact_recovery_prompt(
+                agent_id=aid,
+                role=role,
+                task_text=task_text,
+                previous_response=report_text,
+            )
+            rescue_res = await openclaw_ws_chat(
+                base_url=str(row["base_url"]),
+                api_key=str(row["api_key"]),
+                message=rescue_prompt,
+                agent_id=aid,
+                session_key=f"{project_id}:agent:{aid}",
+                timeout_sec=45,
+            )
+            if rescue_res.get("ok"):
+                rp, rc, _ = _extract_usage_counts(rescue_res)
+                if rp <= 0:
+                    rp = _estimate_tokens_from_text(rescue_prompt)
+                if rc <= 0:
+                    rc = _estimate_tokens_from_text(rescue_res.get("text"))
+                _update_project_usage_metrics(project_id, prompt_tokens=rp, completion_tokens=rc)
+                rescue_text = str(rescue_res.get("text") or "").strip()
+                parsed_rescue = _extract_agent_report_payload(rescue_text)
+                rescue_chat = str(parsed_rescue.get("chat_update") or "").strip()
+                rescue_writes = parsed_rescue.get("output_files") or []
+                if not rescue_writes:
+                    rescue_writes = _extract_artifacts_from_fenced_code(rescue_text)
+                rescue_write_result = _apply_project_file_writes(
+                    owner_user_id=str(row["user_id"]),
+                    project_root=str(row["project_root"] or ""),
+                    writes=rescue_writes if isinstance(rescue_writes, list) else [],
+                    default_prefix=f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+                )
+                rescue_saved = rescue_write_result.get("saved") or []
+                rescue_skipped = rescue_write_result.get("skipped") or []
+                if rescue_saved:
+                    saved_files.extend(rescue_saved)
+                if rescue_skipped:
+                    skipped_files.extend(rescue_skipped)
+                requires_user_input = requires_user_input or bool(parsed_rescue.get("requires_user_input"))
+                if not pause_reason:
+                    pause_reason = str(parsed_rescue.get("pause_reason") or "").strip()
+                if not resume_hint:
+                    resume_hint = str(parsed_rescue.get("resume_hint") or "").strip()
+                if not report_notes:
+                    report_notes = str(parsed_rescue.get("notes") or "").strip()
+                if rescue_chat:
+                    chat_update = rescue_chat
+                if rescue_text:
+                    report_text = (report_text + "\n\n[ARTIFACT RESCUE]\n" + rescue_text).strip()
+                for note in _summarize_ws_frames(rescue_res.get("frames"), limit=6):
+                    await emit(project_id, "agent.task.live", {"agent_id": aid, "agent_name": agent_name, "note": note})
+            else:
+                skipped_files.append(
+                    "artifact rescue failed: "
+                    + detail_to_text(rescue_res.get("error") or rescue_res.get("details") or "unknown")
+                )
+
+        if not saved_files and not requires_user_input and artifact_like_task:
+            fallback_rel = f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}-deliverable.md"
+            fallback_content = (
+                f"# Deliverable Snapshot: {agent_name}\n\n"
+                f"- agent_id: {aid}\n"
+                f"- role: {role}\n"
+                f"- generated_at: {format_ts(int(time.time()))}\n\n"
+                f"## Chat Update\n{chat_update}\n\n"
+                f"## Raw Response\n{report_text.strip()}\n"
+            )
+            fallback_write_result = _apply_project_file_writes(
+                owner_user_id=str(row["user_id"]),
+                project_root=str(row["project_root"] or ""),
+                writes=[{"path": fallback_rel, "content": fallback_content, "append": False}],
+                default_prefix=f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+            )
+            fallback_saved = fallback_write_result.get("saved") or []
+            fallback_skipped = fallback_write_result.get("skipped") or []
+            if fallback_saved:
+                saved_files.extend(fallback_saved)
+                skipped_files.append("No explicit output_files from agent; saved fallback markdown deliverable.")
+            if fallback_skipped:
+                skipped_files.extend(fallback_skipped)
+
+        pause_decision = _infer_pause_request(
+            chat_update=chat_update,
+            notes=report_notes,
+            explicit_requires_user_input=requires_user_input,
+            explicit_pause_reason=pause_reason,
+            explicit_resume_hint=resume_hint,
+        )
+        if pause_decision.get("pause"):
+            pause_reason = str(pause_decision.get("reason") or pause_reason or chat_update).strip()
+            resume_hint = str(pause_decision.get("resume_hint") or resume_hint).strip()
+            chat_update = _ensure_owner_mention(chat_update)
+        else:
+            chat_update = _ensure_chat_handoff_mentions(chat_update, assigned_mentions_map.get(aid) or [])
+
+        if str(aid).strip() == str(primary_agent_id or "").strip():
+            primary_last_chat_update = chat_update
+            primary_last_notes = report_notes
+            primary_last_pause_reason = pause_reason
+            primary_last_resume_hint = resume_hint
+
+        report_file = outputs_dir / f"{_safe_agent_filename(aid)}-latest.md"
+        report_file.write_text(
+            f"# Agent Report: {agent_name}\n\n"
+            f"- agent_id: {aid}\n"
+            f"- role: {role}\n"
+            f"- generated_at: {format_ts(int(time.time()))}\n"
+            f"- files_saved: {len(saved_files)}\n\n"
+            f"- artifact_followup_used: {'yes' if artifact_followup_used else 'no'}\n\n"
+            f"- artifact_rescue_used: {'yes' if artifact_rescue_used else 'no'}\n\n"
+            f"- requires_user_input: {'yes' if pause_decision.get('pause') else 'no'}\n"
+            f"- pause_reason: {pause_reason or '-'}\n"
+            f"- resume_hint: {resume_hint or '-'}\n\n"
+            f"## Chat Update\n{chat_update}\n\n"
+            f"## Raw Response\n{report_text.strip()}\n",
+            encoding="utf-8",
+        )
+        processed_agents += 1
+        pct = min(95, 55 + int((idx / agent_total) * 40))
+        _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=pct)
+        for note in _summarize_ws_frames(agent_res.get("frames"), limit=8):
+            await emit(project_id, "agent.task.live", {"agent_id": aid, "agent_name": agent_name, "note": note})
+        for item in saved_files:
+            await emit(
+                project_id,
+                "project.file.written",
+                {
+                    "path": str(item.get("path") or ""),
+                    "mode": str(item.get("mode") or "w"),
+                    "bytes": int(item.get("bytes") or 0),
+                    "actor": f"agent:{aid}",
+                },
+            )
+        await emit(
+            project_id,
+            "agent.task.reported",
+            {
+                "agent_id": aid,
+                "agent_name": agent_name,
+                "text": chat_update[:1200],
+                "output_file": f"{USER_OUTPUTS_DIRNAME}/{report_file.name}",
+                "saved_files": saved_files[:20],
+                "skipped_files": skipped_files[:10],
+                "requires_user_input": bool(pause_decision.get("pause")),
+                "pause_reason": pause_reason[:500],
+                "resume_hint": resume_hint[:300],
+            },
+        )
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="agent.task.reported",
+            text=f"{aid}: {chat_update[:1600]}",
+            payload={
+                "output_file": f"{USER_OUTPUTS_DIRNAME}/{report_file.name}",
+                "saved_files": saved_files[:20],
+                "skipped_files": skipped_files[:10],
+                "requires_user_input": bool(pause_decision.get("pause")),
+                "pause_reason": pause_reason[:500],
+                "resume_hint": resume_hint[:300],
+            },
+        )
+        _refresh_project_documents(project_id)
+        if pause_decision.get("pause"):
+            state_now, pct_now = _read_project_execution_state(project_id)
+            if state_now not in {EXEC_STATUS_STOPPED, EXEC_STATUS_COMPLETED}:
+                pause_pct = max(5, _clamp_progress(pct_now if pct_now > 0 else pct))
+                _set_project_execution_state(project_id, status=EXEC_STATUS_PAUSED, progress_pct=pause_pct)
+                _refresh_project_documents(project_id)
+                summary = pause_reason or "Execution paused. Waiting for owner input."
+                await emit(
+                    project_id,
+                    "project.execution.auto_paused",
+                    {
+                        "status": EXEC_STATUS_PAUSED,
+                        "progress_pct": pause_pct,
+                        "agent_id": aid,
+                        "agent_name": agent_name,
+                        "reason": summary[:900],
+                        "resume_hint": (resume_hint or "Reply with required input, then say CONTINUE or press Resume.")[:300],
+                    },
+                )
+                _append_project_daily_log(
+                    owner_user_id=str(row["user_id"]),
+                    project_root=str(row["project_root"] or ""),
+                    kind="execution.auto_paused",
+                    text=f"{aid}: {summary[:1200]}",
+                    payload={"agent_id": aid, "resume_hint": resume_hint[:300]},
+                )
+                while True:
+                    wait_state, _ = _read_project_execution_state(project_id)
+                    if wait_state == EXEC_STATUS_PAUSED:
+                        await asyncio.sleep(0.7)
+                        continue
+                    if wait_state == EXEC_STATUS_STOPPED:
+                        _refresh_project_documents(project_id)
+                        _append_project_daily_log(
+                            owner_user_id=str(row["user_id"]),
+                            project_root=str(row["project_root"] or ""),
+                            kind="delegation.stopped",
+                            text="Delegation run stopped by user while waiting for resume.",
+                        )
+                        await emit(
+                            project_id,
+                            "project.delegation.stopped",
+                            {"processed_agents": processed_agents, "failed_agents": failed_agents, "total_agents": len(agent_order)},
+                        )
+                        return
+                    break
+                _append_project_daily_log(
+                    owner_user_id=str(row["user_id"]),
+                    project_root=str(row["project_root"] or ""),
+                    kind="execution.resumed",
+                    text=f"Execution resumed after pause request from {aid}.",
+                )
+                await emit(
+                    project_id,
+                    "project.execution.resumed_after_pause",
+                    {"status": EXEC_STATUS_RUNNING, "agent_id": aid, "agent_name": agent_name},
+                )
+                if str(aid).strip() == str(primary_agent_id or "").strip():
+                    primary_pause_resolved = True
+
+    final_primary_pause = _infer_pause_request(
+        chat_update=primary_last_chat_update,
+        notes=primary_last_notes,
+        explicit_requires_user_input=False,
+        explicit_pause_reason=primary_last_pause_reason,
+        explicit_resume_hint=primary_last_resume_hint,
+    )
+    if (
+        str(primary_agent_id or "").strip()
+        and not primary_pause_resolved
+        and final_primary_pause.get("pause")
+    ):
+        state_now, pct_now = _read_project_execution_state(project_id)
+        if state_now not in {EXEC_STATUS_STOPPED, EXEC_STATUS_COMPLETED}:
+            pause_pct = max(5, _clamp_progress(pct_now if pct_now > 0 else 95))
+            _set_project_execution_state(project_id, status=EXEC_STATUS_PAUSED, progress_pct=pause_pct)
+            _refresh_project_documents(project_id)
+            summary = str(
+                final_primary_pause.get("reason")
+                or "Primary agent still needs owner input before finishing."
+            ).strip()
+            hint = str(
+                final_primary_pause.get("resume_hint")
+                or "Reply with required information, then say CONTINUE (or press Resume)."
+            ).strip()
+            await emit(
+                project_id,
+                "project.execution.auto_paused",
+                {
+                    "status": EXEC_STATUS_PAUSED,
+                    "progress_pct": pause_pct,
+                    "agent_id": primary_agent_id,
+                    "agent_name": primary_agent_name,
+                    "reason": summary[:900],
+                    "resume_hint": hint[:300],
+                },
+            )
+            _append_project_daily_log(
+                owner_user_id=str(row["user_id"]),
+                project_root=str(row["project_root"] or ""),
+                kind="execution.auto_paused",
+                text=f"{primary_agent_id}: {summary[:1200]}",
+                payload={"agent_id": primary_agent_id, "resume_hint": hint[:300]},
+            )
+            return
+
+    _set_project_execution_state(project_id, status=EXEC_STATUS_COMPLETED, progress_pct=100)
+    _refresh_project_documents(project_id)
+    project_files_link = f"/api/projects/{project_id}/files"
+    outputs_folder_link = f"/api/projects/{project_id}/files?path={url_quote(USER_OUTPUTS_DIRNAME, safe='')}"
+    latest_output_rel = _latest_file_relative_path(outputs_dir, project_dir)
+    latest_preview_link = (
+        f"/api/projects/{project_id}/preview/{_encode_rel_path_for_url_path(latest_output_rel)}"
+        if latest_output_rel
+        else ""
+    )
+    owner_notice_parts = [
+        f"@owner project `{str(row['title'] or project_id)}` is completed.",
+        f"Open project files: {project_files_link}",
+        f"Outputs folder: {outputs_folder_link}",
+    ]
+    if latest_preview_link:
+        owner_notice_parts.append(f"Latest file preview: {latest_preview_link}")
+    primary_done_update = " ".join(owner_notice_parts).strip()
+    await emit(
+        project_id,
+        "agent.primary.update",
+        {
+            "agent_id": primary_agent_id or "primary",
+            "agent_name": primary_agent_name,
+            "text": primary_done_update[:1200],
+            "project_files_link": project_files_link,
+            "outputs_folder_link": outputs_folder_link,
+            "latest_preview_link": latest_preview_link,
+        },
+    )
+    _append_project_daily_log(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        kind="delegation.ready",
+        text=f"Delegation documents generated for {assigned_count} invited agents. Reports: {processed_agents}, failed: {failed_agents}. {primary_done_update}",
+        payload={
+            "agents": assigned_count,
+            "processed_agents": processed_agents,
+            "failed_agents": failed_agents,
+            "notes": str(payload.get("notes") or "")[:1000],
+            "project_files_link": project_files_link,
+            "outputs_folder_link": outputs_folder_link,
+            "latest_preview_link": latest_preview_link,
+        },
+    )
+    await emit(
+        project_id,
+        "project.delegation.ready",
+        {
+            "agents": assigned_count,
+            "processed_agents": processed_agents,
+            "failed_agents": failed_agents,
+            "notes": str(payload.get("notes") or "")[:1000],
+            "project_files_link": project_files_link,
+            "outputs_folder_link": outputs_folder_link,
+            "latest_preview_link": latest_preview_link,
+            "owner_message": primary_done_update[:1200],
+        },
+    )
+
+
+def _read_project_execution_state(project_id: str) -> Tuple[str, int]:
+    conn = db()
+    row = conn.execute(
+        "SELECT execution_status, progress_pct FROM projects WHERE id = ?",
+        (project_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return EXEC_STATUS_IDLE, 0
+    return _coerce_execution_status(row["execution_status"]), _clamp_progress(row["progress_pct"])
+
+__all__ = [name for name in globals() if not name.startswith('__')]
