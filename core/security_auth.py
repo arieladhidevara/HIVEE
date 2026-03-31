@@ -100,7 +100,7 @@ def _request_origin(request: Request) -> str:
     return f"{proto}://{host}"
 
 def _oauth_callback_url(request: Request, provider: str) -> str:
-    return f"{_request_origin(request)}{app.url_path_for('oauth_callback', provider=provider)}"
+    return str(request.url_for('oauth_callback', provider=provider))
 
 def _new_oauth_state_token() -> str:
     return f"oas_{secrets.token_urlsafe(24)}"
