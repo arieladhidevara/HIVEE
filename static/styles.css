@@ -394,6 +394,7 @@ label {
 .social-btn {
   border: 1px solid rgba(90, 100, 116, 0.74);
   background: rgba(25, 30, 37, 0.95);
+  border-radius: 10px;
   color: #eef2fb;
   display: inline-flex;
   align-items: center;
@@ -401,6 +402,7 @@ label {
   gap: 8px;
   font-size: 13px;
   padding: 9px 12px;
+  min-height: 40px;
 }
 
 .social-btn:hover {
@@ -413,6 +415,36 @@ label {
   width: 18px;
   height: 18px;
   flex: 0 0 18px;
+}
+
+.social-btn:focus-visible {
+  outline: 1px solid rgba(159, 199, 255, 0.9);
+  outline-offset: 2px;
+}
+
+.social-btn span {
+  font-weight: 700;
+}
+
+.social-btn.is-disabled,
+.social-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: rgba(25, 30, 37, 0.6);
+  border-color: rgba(90, 100, 116, 0.45);
+}
+
+.social-btn.is-disabled:hover,
+.social-btn:disabled:hover {
+  transform: none;
+  background: rgba(25, 30, 37, 0.6);
+  border-color: rgba(90, 100, 116, 0.45);
+}
+
+.social-auth-hint {
+  margin-top: 0;
+  text-align: left;
+  min-height: 16px;
 }
 
 .agent-guide {

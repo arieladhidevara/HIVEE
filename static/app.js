@@ -63,6 +63,7 @@ let claimAuthContext = {
   environmentId: "",
   code: "",
 };
+let oauthProvidersState = new Map();
 
 function readStoredSessionToken() {
   try {
@@ -145,6 +146,62 @@ function clearOauthErrorParamFromUrl() {
   window.history.replaceState({}, "", next);
 }
 
+function oauthDisplayName(provider) {
+  const key = String(provider || "").trim().toLowerCase();
+  if (key === "google") return "Google";
+  if (key === "github") return "GitHub";
+  return key || "OAuth";
+}
+
+function applyOAuthProvidersUI() {
+  const buttons = Array.from(document.querySelectorAll("[data-oauth-provider]"));
+  let configuredCount = 0;
+  for (const btn of buttons) {
+    const provider = String(btn.dataset.oauthProvider || "").trim().toLowerCase();
+    const configured = Boolean(oauthProvidersState.get(provider));
+    if (configured) configuredCount += 1;
+    btn.disabled = !configured;
+    btn.classList.toggle("is-disabled", !configured);
+    const label = String(btn.dataset.oauthLabel || oauthDisplayName(provider));
+    btn.title = configured ? `Continue with ${label}` : `${label} login is not configured yet`;
+  }
+  const hint = $("social_auth_hint");
+  if (!hint) return;
+  if (!buttons.length) {
+    hint.textContent = "";
+    return;
+  }
+  if (configuredCount === 0) {
+    hint.textContent = "Social login belum aktif di server.";
+    return;
+  }
+  if (configuredCount < buttons.length) {
+    hint.textContent = "Sebagian provider belum aktif.";
+    return;
+  }
+  hint.textContent = "";
+}
+
+async function loadOAuthProviders() {
+  oauthProvidersState = new Map();
+  try {
+    const res = await api("/api/oauth/providers");
+    const providers = Array.isArray(res?.providers) ? res.providers : [];
+    for (const item of providers) {
+      const key = String(item?.provider || "").trim().toLowerCase();
+      if (!key) continue;
+      oauthProvidersState.set(key, Boolean(item?.configured));
+    }
+  } catch {
+    for (const btn of document.querySelectorAll("[data-oauth-provider]")) {
+      const key = String(btn.dataset.oauthProvider || "").trim().toLowerCase();
+      if (!key) continue;
+      oauthProvidersState.set(key, false);
+    }
+  }
+  applyOAuthProvidersUI();
+}
+
 function applyClaimAuthUI() {
   const notice = $("claim_notice");
   const methodAgent = $("method_agent");
@@ -164,6 +221,7 @@ function applyClaimAuthUI() {
     if (btnLogin) btnLogin.textContent = "Continue";
     if (btnSignup) btnSignup.textContent = "Create Account";
     if (socialAuthBlock) socialAuthBlock.classList.remove("hidden");
+    applyOAuthProvidersUI();
     claimOnlyBlocks.forEach((el) => el.classList.add("hidden"));
     return;
   }
@@ -2734,6 +2792,10 @@ async function startOAuth(provider) {
   }
   const providerKey = String(provider || "").trim().toLowerCase();
   if (!providerKey) throw new Error("Invalid OAuth provider.");
+  const configured = oauthProvidersState.get(providerKey);
+  if (!configured) {
+    throw new Error(`${oauthDisplayName(providerKey)} login belum aktif di server.`);
+  }
   const res = await api(`/api/oauth/${encodeURIComponent(providerKey)}/start`, "POST", {
     next_path: window.location.pathname || "/",
   });
@@ -3126,6 +3188,7 @@ bindAuthMethods();
 bindActions();
 sessionToken = readStoredSessionToken();
 setView("auth");
+loadOAuthProviders().catch(() => {});
 const oauthError = readOauthErrorFromUrl();
 if (oauthError) {
   setMessage("auth_msg", oauthError, "error");

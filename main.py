@@ -101,14 +101,6 @@ OAUTH_PROVIDERS: Dict[str, Dict[str, str]] = {
         "token_url": "https://github.com/login/oauth/access_token",
         "scope": "read:user user:email",
     },
-    "facebook": {
-        "display": "Facebook",
-        "client_id_env": "FACEBOOK_OAUTH_CLIENT_ID",
-        "client_secret_env": "FACEBOOK_OAUTH_CLIENT_SECRET",
-        "authorize_url": "https://www.facebook.com/v22.0/dialog/oauth",
-        "token_url": "https://graph.facebook.com/v22.0/oauth/access_token",
-        "scope": "email public_profile",
-    },
 }
 DEFAULT_PROJECT_SETUP_MD = """# PROJECT-SETUP
 Ask these questions one by one before creating a project:
@@ -519,6 +511,20 @@ def _oauth_provider_config(provider: str) -> Dict[str, str]:
         "client_secret": client_secret,
     }
 
+def _oauth_providers_public_status() -> List["OAuthProviderOut"]:
+    providers: List["OAuthProviderOut"] = []
+    for key, cfg in OAUTH_PROVIDERS.items():
+        client_id = str(os.getenv(str(cfg.get("client_id_env") or ""), "")).strip()
+        client_secret = str(os.getenv(str(cfg.get("client_secret_env") or ""), "")).strip()
+        providers.append(
+            OAuthProviderOut(
+                provider=key,
+                display_name=str(cfg.get("display") or key.title()),
+                configured=bool(client_id and client_secret),
+            )
+        )
+    return providers
+
 def _build_oauth_authorize_url(provider_cfg: Dict[str, str], *, redirect_uri: str, state: str) -> str:
     provider = str(provider_cfg.get("provider") or "").strip().lower()
     params: Dict[str, str] = {
@@ -546,7 +552,7 @@ async def _oauth_exchange_code_for_token(
         "code": code,
         "redirect_uri": redirect_uri,
     }
-    if provider in {"google", "facebook"}:
+    if provider == "google":
         payload["grant_type"] = "authorization_code"
     headers = {"Accept": "application/json"}
     async with httpx.AsyncClient(timeout=20) as client:
@@ -610,18 +616,6 @@ async def _oauth_fetch_profile(provider_cfg: Dict[str, str], *, access_token: st
                                 picked = str(item.get("email"))
                                 break
                     email = _normalize_email(picked)
-        elif provider == "facebook":
-            profile_resp = await client.get(
-                "https://graph.facebook.com/me",
-                params={"fields": "id,name,email"},
-                headers=headers,
-            )
-            if profile_resp.status_code >= 400:
-                raise HTTPException(400, f"{display_name} OAuth user profile failed ({profile_resp.status_code}).")
-            payload = profile_resp.json()
-            provider_user_id = str(payload.get("id") or "").strip()
-            email = _normalize_email(str(payload.get("email") or ""))
-            name = str(payload.get("name") or "").strip()
         else:
             raise HTTPException(404, "OAuth provider not supported")
     if not provider_user_id:
@@ -5660,6 +5654,14 @@ class OAuthStartOut(BaseModel):
     provider: str
     auth_url: str
 
+class OAuthProviderOut(BaseModel):
+    provider: str
+    display_name: str
+    configured: bool
+
+class OAuthProvidersOut(BaseModel):
+    providers: List[OAuthProviderOut]
+
 class SessionOut(BaseModel):
     token: str
 
@@ -6079,6 +6081,10 @@ async def oauth_start(request: Request, provider: str, payload: OAuthStartIn):
     redirect_uri = _oauth_callback_url(request, provider_key)
     auth_url = _build_oauth_authorize_url(provider_cfg, redirect_uri=redirect_uri, state=state)
     return OAuthStartOut(provider=provider_key, auth_url=auth_url)
+
+@app.get("/api/oauth/providers", response_model=OAuthProvidersOut)
+async def oauth_providers():
+    return OAuthProvidersOut(providers=_oauth_providers_public_status())
 
 @app.get("/api/oauth/{provider}/callback", name="oauth_callback")
 async def oauth_callback(
