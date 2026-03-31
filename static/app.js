@@ -54,6 +54,13 @@ const DEFAULT_OWNER_FILES_PATH = "";
 const SESSION_TOKEN_KEY = "hivee_session_token_v2";
 const AGENT_SETUP_DOC_PATH = "/new-user/NEW-ACCOUNT-SETUP.MD";
 const AGENT_SECURITY_DOC_PATH = "/new-user/AGENT-SECURITY-RULES.MD";
+const CLAIM_ENV_PARAM = "claim_env_id";
+const CLAIM_CODE_PARAM = "claim_code";
+let claimAuthContext = {
+  active: false,
+  environmentId: "",
+  code: "",
+};
 
 function readStoredSessionToken() {
   try {
@@ -99,6 +106,59 @@ function setMessage(id, text, tone = "") {
   el.textContent = text || "";
   el.classList.remove("error", "ok");
   if (tone) el.classList.add(tone);
+}
+
+function parseClaimAuthFromUrl() {
+  const params = new URLSearchParams(window.location.search || "");
+  const envId = String(params.get(CLAIM_ENV_PARAM) || "").trim();
+  const code = String(params.get(CLAIM_CODE_PARAM) || "").trim();
+  claimAuthContext = {
+    active: Boolean(envId && code),
+    environmentId: envId,
+    code,
+  };
+}
+
+function clearClaimParamsFromUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete(CLAIM_ENV_PARAM);
+  url.searchParams.delete(CLAIM_CODE_PARAM);
+  const next = url.pathname + (url.search ? url.search : "") + (url.hash ? url.hash : "");
+  window.history.replaceState({}, "", next);
+}
+
+function applyClaimAuthUI() {
+  const notice = $("claim_notice");
+  const methodAgent = $("method_agent");
+  const btnLogin = $("btn_login");
+  const btnSignup = $("btn_signup");
+  if (!claimAuthContext.active) {
+    if (notice) {
+      notice.classList.add("hidden");
+      notice.textContent = "";
+    }
+    if (methodAgent) {
+      methodAgent.disabled = false;
+      methodAgent.classList.remove("hidden");
+    }
+    if (btnLogin) btnLogin.textContent = "Continue";
+    if (btnSignup) btnSignup.textContent = "Create Account";
+    return;
+  }
+  activeAuthMethod = "hooman";
+  if (methodAgent) {
+    methodAgent.disabled = true;
+    methodAgent.classList.add("hidden");
+  }
+  if (notice) {
+    const shortEnv = claimAuthContext.environmentId.length > 18
+      ? claimAuthContext.environmentId.slice(0, 18) + "..."
+      : claimAuthContext.environmentId;
+    notice.textContent = `Claim link detected for environment ${shortEnv}. Login or sign up to claim it.`;
+    notice.classList.remove("hidden");
+  }
+  if (btnLogin) btnLogin.textContent = "Login and Claim";
+  if (btnSignup) btnSignup.textContent = "Create Account and Claim";
 }
 
 function detailToText(detail) {
@@ -2496,26 +2556,64 @@ async function connectOpenClaw(ev) {
 async function login(ev) {
   ev.preventDefault();
   setMessage("auth_msg", "");
-  const res = await api("/api/login", "POST", {
-    email: $("li_email").value.trim(),
-    password: $("li_pass").value,
-  });
+  const email = $("li_email").value.trim();
+  const password = $("li_pass").value;
+  const endpoint = claimAuthContext.active ? "/api/a2a/environments/claim/complete" : "/api/login";
+  const body = claimAuthContext.active
+    ? {
+      environment_id: claimAuthContext.environmentId,
+      code: claimAuthContext.code,
+      mode: "login",
+      email,
+      password,
+    }
+    : {
+      email,
+      password,
+    };
+  const res = await api(endpoint, "POST", body);
   sessionToken = res.token;
   persistSessionToken(sessionToken);
-  setMessage("auth_msg", "Login success", "ok");
+  if (claimAuthContext.active) {
+    setMessage("auth_msg", "Login success. Environment claimed.", "ok");
+    clearClaimParamsFromUrl();
+    claimAuthContext = { active: false, environmentId: "", code: "" };
+    applyClaimAuthUI();
+  } else {
+    setMessage("auth_msg", "Login success", "ok");
+  }
   await fetchInitial();
 }
 
 async function signup(ev) {
   ev.preventDefault();
   setMessage("auth_msg", "");
-  const res = await api("/api/signup", "POST", {
-    email: $("su_email").value.trim(),
-    password: $("su_pass").value,
-  });
+  const email = $("su_email").value.trim();
+  const password = $("su_pass").value;
+  const endpoint = claimAuthContext.active ? "/api/a2a/environments/claim/complete" : "/api/signup";
+  const body = claimAuthContext.active
+    ? {
+      environment_id: claimAuthContext.environmentId,
+      code: claimAuthContext.code,
+      mode: "signup",
+      email,
+      password,
+    }
+    : {
+      email,
+      password,
+    };
+  const res = await api(endpoint, "POST", body);
   sessionToken = res.token;
   persistSessionToken(sessionToken);
-  setMessage("auth_msg", "Account created", "ok");
+  if (claimAuthContext.active) {
+    setMessage("auth_msg", "Account created. Environment claimed.", "ok");
+    clearClaimParamsFromUrl();
+    claimAuthContext = { active: false, environmentId: "", code: "" };
+    applyClaimAuthUI();
+  } else {
+    setMessage("auth_msg", "Account created", "ok");
+  }
   await fetchInitial();
 }
 
@@ -2572,6 +2670,7 @@ function bindAuthMethods() {
   $("method_agent").onclick = () => setAuthMethod("agent");
   $("btn_copy_agent_url").onclick = () => copyAgentUrl().catch(() => {});
   refreshAgentGuideUrls();
+  applyClaimAuthUI();
   setAuthMethod(activeAuthMethod);
 }
 
@@ -2890,6 +2989,7 @@ function bindActions() {
 }
 
 bindTabs();
+parseClaimAuthFromUrl();
 bindAuthMethods();
 bindActions();
 sessionToken = readStoredSessionToken();
