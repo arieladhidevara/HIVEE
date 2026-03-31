@@ -1,5 +1,9 @@
 from .security_auth import *
 
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{secrets.token_urlsafe(10)}"
+
+
 def _environment_home_dir(env_id: str) -> Path:
     safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(env_id or "").strip()).strip("-") or "env"
     return SERVER_WORKSPACES_DIR / f"env_{safe}"
@@ -217,6 +221,53 @@ def _render_tree(root: Path, *, max_depth: int = 4, max_entries: int = MAX_TREE_
 
     _walk(root, "  ", 1)
     return "\n".join(lines)[:MAX_WORKSPACE_TREE_CHARS]
+def _collect_new_user_templates() -> Dict[str, Any]:
+    directories: List[str] = []
+    files: List[Dict[str, str]] = []
+    warnings: List[str] = []
+    total_payload_bytes = 0
+
+    if not NEW_USER_ASSETS_DIR.exists():
+        warnings.append(f"Directory not found: {NEW_USER_ASSETS_DIR.as_posix()}")
+    else:
+        for node in sorted(NEW_USER_ASSETS_DIR.rglob("*"), key=lambda p: p.as_posix()):
+            rel = node.relative_to(NEW_USER_ASSETS_DIR).as_posix()
+            if not rel:
+                continue
+            if node.is_dir():
+                directories.append(rel)
+                continue
+
+            if len(files) >= MAX_TEMPLATE_FILES:
+                warnings.append(f"Skipped remaining files after {MAX_TEMPLATE_FILES} items.")
+                break
+
+            try:
+                raw = node.read_bytes()
+            except Exception as e:
+                warnings.append(f"Skipped {rel}: {str(e)}")
+                continue
+            if len(raw) > MAX_TEMPLATE_FILE_BYTES:
+                warnings.append(f"Skipped {rel}: {len(raw)} bytes exceeds max {MAX_TEMPLATE_FILE_BYTES}.")
+                continue
+            if (total_payload_bytes + len(raw)) > MAX_TEMPLATE_PAYLOAD_BYTES:
+                warnings.append(f"Skipped {rel}: aggregate payload exceeds {MAX_TEMPLATE_PAYLOAD_BYTES} bytes.")
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                warnings.append(f"Skipped {rel}: non UTF-8 file.")
+                continue
+            files.append({"path": rel, "content": text})
+            total_payload_bytes += len(raw)
+
+    has_setup = any((f.get("path") or "").upper() == "PROJECT-SETUP.MD" for f in files)
+    if not has_setup:
+        files.append({"path": "PROJECT-SETUP.MD", "content": DEFAULT_PROJECT_SETUP_MD})
+        warnings.append("PROJECT-SETUP.MD missing in assets/new_user; fallback template was injected.")
+
+    return {"directories": directories, "files": files, "warnings": warnings}
+
 
 def _ensure_user_workspace(user_id: str) -> Dict[str, Any]:
     SERVER_WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
