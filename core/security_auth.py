@@ -25,6 +25,9 @@ def format_ts(ts: Optional[int]) -> str:
 def _hash_access_token(token: str) -> str:
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{secrets.token_urlsafe(10)}"
+
 def _normalize_email(raw_email: str) -> str:
     return str(raw_email or "").strip().lower()
 

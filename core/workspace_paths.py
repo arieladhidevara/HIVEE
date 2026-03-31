@@ -80,6 +80,37 @@ def _path_within(child: Path, parent: Path) -> bool:
     except Exception:
         return False
 
+def _to_int(value: Any) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return 0
+
+def _clean_relative_project_path(raw_path: Optional[str]) -> str:
+    raw = str(raw_path or "").strip().replace("\\", "/")
+    while raw.startswith("/"):
+        raw = raw[1:]
+    return raw
+
+def _resolve_project_relative_path(
+    owner_user_id: str,
+    project_root: str,
+    relative_path: Optional[str],
+    *,
+    require_exists: bool = True,
+    require_dir: bool = False,
+) -> Path:
+    project_dir = _resolve_owner_project_dir(owner_user_id, project_root).resolve()
+    rel = _clean_relative_project_path(relative_path)
+    target = (project_dir / rel).resolve() if rel else project_dir
+    if not _path_within(target, project_dir):
+        raise HTTPException(400, "Path is outside project root")
+    if require_exists and not target.exists():
+        raise HTTPException(404, "Path not found")
+    if require_dir and target.exists() and not target.is_dir():
+        raise HTTPException(400, "Path is not a directory")
+    return target
+
 def _build_claim_url(request: Request, env_id: str, code: str) -> str:
     base = str(request.base_url).rstrip("/")
     return (
