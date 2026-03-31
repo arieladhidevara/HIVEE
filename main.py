@@ -5673,6 +5673,9 @@ class AccountProfileOut(BaseModel):
     projects_count: int = 0
     connections_count: int = 0
 
+class AccountOAuthProvidersOut(BaseModel):
+    providers: List[str]
+
 class AccountPasswordChangeIn(BaseModel):
     current_password: str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
@@ -6546,6 +6549,24 @@ async def get_account_profile(request: Request):
         projects_count=int((project_count_row or {"c": 0})["c"] or 0),
         connections_count=int((connection_count_row or {"c": 0})["c"] or 0),
     )
+
+@app.get("/api/me/oauth-providers", response_model=AccountOAuthProvidersOut)
+async def get_account_oauth_providers(request: Request):
+    user_id = get_session_user(request)
+    conn = db()
+    rows = conn.execute(
+        "SELECT DISTINCT provider FROM oauth_identities WHERE user_id = ? ORDER BY provider ASC",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    pretty: List[str] = []
+    for row in rows:
+        key = str(row["provider"] or "").strip().lower()
+        if not key:
+            continue
+        cfg = OAUTH_PROVIDERS.get(key)
+        pretty.append(str((cfg or {}).get("display") or key.title()))
+    return AccountOAuthProvidersOut(providers=pretty)
 
 @app.get("/api/me/environments")
 async def list_my_environments(request: Request):

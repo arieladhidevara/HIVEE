@@ -51,13 +51,20 @@
               </button>
             </div>
             <p id="claim_notice" class="helper hidden"></p>
+            <div id="claim_connected_card" class="claim-connected-card hidden">
+              <p class="claim-connected-title">Connected With</p>
+              <p id="claim_connected_identity" class="claim-connected-identity">-</p>
+              <p id="claim_connected_provider" class="helper claim-connected-provider"></p>
+            </div>
 
             <div id="hooman_auth" class="auth-method-panel">
               <form id="form_login" class="stack">
-                <label>Email</label>
-                <input id="li_email" type="email" placeholder="you@company.com" autocomplete="email" required>
-                <label>Password</label>
-                <input id="li_pass" type="password" placeholder="Your password" autocomplete="current-password" required>
+                <div class="credential-only">
+                  <label>Email</label>
+                  <input id="li_email" type="email" placeholder="you@company.com" autocomplete="email" required>
+                  <label>Password</label>
+                  <input id="li_pass" type="password" placeholder="Your password" autocomplete="current-password" required>
+                </div>
                 <div class="claim-only hidden">
                   <label>OpenClaw Base URL</label>
                   <input id="li_oc_base" type="text" placeholder="https://claw.example.com">
@@ -70,26 +77,28 @@
               </form>
 
               <form id="form_signup" class="stack hidden">
-                <label>Email</label>
-                <input id="su_email" type="email" placeholder="you@company.com" autocomplete="email" required>
-                <label>Password</label>
-                <input
-                  id="su_pass"
-                  type="password"
-                  placeholder="Min 10 chars, include UPPER/lower/number/symbol"
-                  minlength="10"
-                  autocomplete="new-password"
-                  required
-                >
-                <label>Confirm Password</label>
-                <input
-                  id="su_pass_confirm"
-                  type="password"
-                  placeholder="Repeat your password"
-                  minlength="10"
-                  autocomplete="new-password"
-                  required
-                >
+                <div class="credential-only">
+                  <label>Email</label>
+                  <input id="su_email" type="email" placeholder="you@company.com" autocomplete="email" required>
+                  <label>Password</label>
+                  <input
+                    id="su_pass"
+                    type="password"
+                    placeholder="Min 10 chars, include UPPER/lower/number/symbol"
+                    minlength="10"
+                    autocomplete="new-password"
+                    required
+                  >
+                  <label>Confirm Password</label>
+                  <input
+                    id="su_pass_confirm"
+                    type="password"
+                    placeholder="Repeat your password"
+                    minlength="10"
+                    autocomplete="new-password"
+                    required
+                  >
+                </div>
                 <div class="claim-only hidden">
                   <label>OpenClaw Base URL</label>
                   <input id="su_oc_base" type="text" placeholder="https://claw.example.com">
@@ -101,7 +110,7 @@
                 <button id="btn_signup" type="submit">Create Account</button>
               </form>
 
-              <div class="auth-switch-row">
+              <div id="auth_switch_row" class="auth-switch-row">
                 <button id="tab_login" class="tab-link active" type="button">Login</button>
                 <span class="separator-dot"></span>
                 <button id="tab_signup" class="tab-link" type="button">Sign up</button>

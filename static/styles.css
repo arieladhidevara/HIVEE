@@ -355,6 +355,35 @@ label {
   background: rgba(171, 179, 194, 0.7);
 }
 
+.claim-connected-card {
+  margin-top: 8px;
+  margin-bottom: 10px;
+  border: 1px solid rgba(88, 97, 113, 0.58);
+  border-radius: 10px;
+  background: rgba(36, 41, 49, 0.84);
+  padding: 10px 12px;
+}
+
+.claim-connected-title {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.claim-connected-identity {
+  margin: 3px 0 0;
+  font-weight: 700;
+  color: #e9eefb;
+  font-size: 14px;
+  word-break: break-all;
+}
+
+.claim-connected-provider {
+  margin-top: 4px;
+}
+
 .social-auth-block {
   margin-top: 8px;
   display: grid;
