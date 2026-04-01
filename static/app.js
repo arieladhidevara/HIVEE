@@ -1,4 +1,4 @@
-let sessionToken = null;
+﻿let sessionToken = null;
 let activeConnectionId = null;
 let selectedProjectId = null;
 let selectedProjectData = null;
@@ -37,6 +37,7 @@ let wizardSuggestedRoles = new Map();
 let wizardExternalInvites = [];
 let wizardExternalMemberships = [];
 let wizardAgentPermissions = [];
+let wizardProjectAgents = [];
 let wizardLatestExternalInvite = null;
 let runtimePollHandle = null;
 let projectFilesCurrentPath = "";
@@ -73,6 +74,21 @@ const PROJECT_DEEPLINK_PREVIEW_PARAM = "project_preview";
 const OAUTH_ERROR_PARAM = "oauth_error";
 const PASSWORD_POLICY_MIN_LENGTH = 10;
 const SUMMARY_AGENT_DEFAULT_AVATAR = "/static/default-agent-avatar.svg";
+const AGENT_MASCOT_PATH = "/static/mascot.svg";
+const AGENT_COLOR_STORAGE_KEY = "hivee_agent_colors_v1";
+const AGENT_COLOR_SWATCHES = [
+  "#F97316",
+  "#22D3EE",
+  "#3B82F6",
+  "#EF4444",
+  "#FACC15",
+  "#14B8A6",
+  "#F59E0B",
+  "#10B981",
+  "#EAB308",
+  "#38BDF8",
+];
+const AGENT_MASCOT_TEMPLATE = String.raw`<?xml version="1.0" encoding="UTF-8"?><svg id="Layer_2" data-name="Layer 2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 274.94 276.67"><defs><style>.cls-1{fill:#fff}.cls-2{fill:#fee612}</style></defs><g id="Layer_1-2" data-name="Layer 1"><path class="cls-2" d="M228.34,100.05c4.05,12.55,5.86,27.55,1.64,40.25-5.97,5.91-16.03,10.38-24.04,13.08-18.4,6.18-37.42,9.21-56.82,10.03-22.82.97-44.56-.73-66.75-6.02-10.9-2.6-29.5-8.9-37.31-17.08-5.8-14.26-1.16-36.87,5.36-50.58,10.94-23.01,30.12-41.12,54.75-49.24-3.73-10.52-9.76-22.26-18.95-28.83-3.07,6.05-10.13,8.15-15.22,4.27-3.41-2.59-4.89-7.12-2.67-10.92,1.78-3.05,5.12-4.7,8.7-4.95,4.1-.28,8.1,1.22,11.59,3.41,12.16,7.63,19.84,21.52,24.13,34.94,17.07-3.98,31.34-3.9,48.59-.11,3.54-10.38,8.36-19.82,15.66-27.8,6.17-6.74,18.15-14.57,26.71-8.1,3.98,3,4.36,8.15,1.29,12-2.07,2.59-5.35,3.8-8.62,3.32-5.82-.84-7.44-6.01-8.01-5.93-1.13.15-6.04,5.33-7.09,6.58-5.46,6.48-9.19,13.92-11.77,22.12,10.23,3.29,19.05,8.26,27.29,14.72,14.73,11.56,25.77,26.93,31.55,44.82ZM114.86,100.53c.31-7.34-4.01-14.16-10.51-17.05s-14.13-1.4-19.21,3.34-6.7,12.06-4.47,18.72c1.97,5.88,6.96,10.02,12.4,11.33,6.34,1.53,12.96-.46,17.1-5.09,2.81-3.14,4.51-6.78,4.69-11.25ZM191.56,89.13c-6.16-8.57-18.37-9.52-26.13-2.52-6.22,5.61-7.43,14.95-3.15,22.03,5.34,8.83,16.48,11.3,24.88,5.8s10.55-16.76,4.4-25.31Z"/><path class="cls-2" d="M43.78,164.38c8.88,5.81,18.67,8.88,28.75,11.97,15.33,4.7,30.9,7.36,46.88,8.59,7.81.6,27.76.63,35.43-.02,10.64-.91,20.93-2.19,31.37-4.4,15.84-3.36,34.93-9.35,48.51-18.8.3,20.9-7.88,41.78-21.45,58.35-24.73,30.2-66.1,41.1-103.35,31.15-22.76-6.08-42.06-20.02-54.86-39.73-9.47-14.58-15.4-31.87-15.14-49.64l3.86,2.53Z"/><path class="cls-2" d="M266.23,152.45c-7.97,7.02-18.02,8.11-26.49,1.43-.87-5.86-2.4-11.25-5.11-16.35l2.31-10.77c8.28-6.18,19.04-8.44,28.9-4.75,5.88,2.2,9.52,7.45,9.08,13.92-.44,6.5-3.82,12.24-8.68,16.52Z"/><path class="cls-2" d="M34.96,153.65c-7.06,6.2-16.89,6.1-24.26.57-4.4-3.3-7.81-7.61-9.66-12.86-.72-2.05-.9-4.13-1.01-6.3-.59-11,10.75-15.67,20.06-14.75,6.46.64,12.43,2.57,17.74,6.5l1.61,8.43c.13.68.78,2.22.43,2.86-1.99,3.69-3.36,7.56-4.15,11.64l-.75,3.91Z"/><path class="cls-2" d="M182.37,269.4c-3.29,5.77-9.94,8.58-16.12,6.68-7.64-2.35-10.55-9.98-10.13-17.43,10.66-1.88,20.47-4.84,30-9.92l-.55,8.82c-.26,4.1-1.08,8.15-3.2,11.86Z"/><path class="cls-2" d="M101.63,276.3c-8.77-2.01-11.96-10.53-12.53-18.71l-.6-8.67c9.69,4.79,19.2,8.04,29.79,9.68,0,1.95,0,3.79-.23,5.7-.98,8.11-8.42,13.84-16.44,12.01Z"/><path class="cls-2" d="M257.99,179.85c-3.59,3.93-8.95,5.07-14,3.95-2.32-.57-4.33-1.73-5.68-3.68,1.51-7.28,1.93-14.21,1.62-21.95,4.52,2.38,9.01,3.23,13.84,4.12,3.79.7,6.58,4.48,7.15,8.03.34,3.67-.39,6.75-2.93,9.53Z"/><path class="cls-2" d="M36.22,180.61c-4.02,4.85-13.32,4.83-18.35.2-2.91-2.68-4.67-6.24-3.92-10.36.58-3.17,2.85-7.29,6.63-8.08,4.85-1.02,9.4-1.62,14.1-4.14l-.12,5.68c-.12,5.6.88,11.03,1.67,16.71Z"/><path d="M114.86,100.53c-.19,4.47-1.88,8.11-4.69,11.25-4.14,4.63-10.77,6.62-17.1,5.09-5.43-1.31-10.42-5.45-12.4-11.33-2.23-6.65-.58-14.01,4.47-18.72s12.6-6.28,19.21-3.34,10.82,9.71,10.51,17.05ZM101.82,99.14c2.9-.35,4.71-2.44,5.11-4.61.5-2.71-.84-5.07-2.91-6.21-2.31-1.28-5.08-.95-6.9,1.06-1.61,1.78-1.92,4.4-.84,6.67.82,1.74,3.04,3.38,5.54,3.08Z"/><path d="M191.56,89.13c6.15,8.56,3.95,19.84-4.4,25.31s-19.54,3.03-24.88-5.8c-4.28-7.08-3.07-16.42,3.15-22.03,7.76-7,19.97-6.06,26.13,2.52ZM184.93,97.74c2.78-2.36,2.44-6.6-.06-8.7-2.63-2.2-6.73-1.96-8.67,1.01-1.66,2.53-1.06,5.89,1.13,7.75,2.06,1.74,5.19,1.99,7.6-.06Z"/><path class="cls-1" d="M101.82,99.14c-2.5.3-4.72-1.34-5.54-3.08-1.07-2.27-.77-4.89.84-6.67,1.82-2.01,4.59-2.34,6.9-1.06,2.06,1.14,3.41,3.5,2.91,6.21-.4,2.17-2.21,4.26-5.11,4.61Z"/><path class="cls-1" d="M184.93,97.74c-2.41,2.04-5.55,1.79-7.6.06-2.19-1.85-2.79-5.21-1.13-7.75,1.95-2.97,6.05-3.21,8.67-1.01s2.84,6.34.06,8.7Z"/></g></svg>`;
 const CLAIM_SOCIAL_CTX_KEY = "hivee_claim_social_ctx_v1";
 let claimAuthContext = {
   active: false,
@@ -102,6 +118,8 @@ let summaryAgents = [];
 let summaryAgentsLoading = false;
 let summaryAgentsError = "";
 let oauthProvidersState = new Map();
+let agentColorAssignments = {};
+const agentMascotUriCache = new Map();
 
 function readStoredSessionToken() {
   try {
@@ -121,6 +139,86 @@ function persistSessionToken(token) {
     localStorage.setItem(SESSION_TOKEN_KEY, clean);
   } catch {}
 }
+
+function isHexColor(value) {
+  return /^#[0-9a-f]{6}$/i.test(String(value || "").trim());
+}
+
+function readStoredAgentColors() {
+  try {
+    const raw = localStorage.getItem(AGENT_COLOR_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      const id = String(k || "").trim();
+      const hex = String(v || "").trim();
+      if (!id || !isHexColor(hex)) continue;
+      out[id] = hex.toUpperCase();
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function persistAgentColors() {
+  try {
+    localStorage.setItem(AGENT_COLOR_STORAGE_KEY, JSON.stringify(agentColorAssignments || {}));
+  } catch {}
+}
+
+function hashText(value) {
+  const base = String(value || "");
+  let hash = 0;
+  for (let i = 0; i < base.length; i++) {
+    hash = ((hash << 5) - hash + base.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
+function colorHexForAgent(agentId) {
+  const id = String(agentId || "").trim() || "agent";
+  const remembered = String(agentColorAssignments[id] || "").trim();
+  if (isHexColor(remembered)) return remembered.toUpperCase();
+  const pick = AGENT_COLOR_SWATCHES[Math.abs(hashText(id)) % AGENT_COLOR_SWATCHES.length] || "#F97316";
+  const normalized = String(pick || "#F97316").toUpperCase();
+  agentColorAssignments[id] = normalized;
+  persistAgentColors();
+  return normalized;
+}
+
+function hexToRgba(hex, alpha = 1) {
+  const clean = String(hex || "").replace("#", "");
+  if (!/^[0-9a-f]{6}$/i.test(clean)) return `rgba(249, 115, 22, ${alpha})`;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  const a = Number.isFinite(Number(alpha)) ? Math.max(0, Math.min(Number(alpha), 1)) : 1;
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+function mascotDataUriForColor(hex) {
+  const cleanHex = isHexColor(hex) ? hex.toUpperCase() : "#F97316";
+  if (agentMascotUriCache.has(cleanHex)) return agentMascotUriCache.get(cleanHex);
+  const svg = AGENT_MASCOT_TEMPLATE.replace(/#fee612/gi, cleanHex);
+  const uri = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+  agentMascotUriCache.set(cleanHex, uri);
+  return uri;
+}
+
+function createAgentAvatarImg(agentId, alt = "Agent mascot") {
+  const img = document.createElement("img");
+  const hex = colorHexForAgent(agentId);
+  img.src = mascotDataUriForColor(hex);
+  img.alt = alt;
+  img.loading = "lazy";
+  img.decoding = "async";
+  return img;
+}
+
+agentColorAssignments = readStoredAgentColors();
 
 function $(id) { return document.getElementById(id); }
 
@@ -1180,7 +1278,7 @@ function renderProjects(projects) {
         card.type = "button";
         card.className = "project-card";
         const needsApproval = projectNeedsApproval(p);
-        card.innerHTML = `<strong>${p.title}</strong><div class="meta">${formatTs(p.created_at)}${needsApproval ? ' · Needs approval' : ''}</div>`;
+        card.innerHTML = `<strong>${p.title}</strong><div class="meta">${formatTs(p.created_at)}${needsApproval ? ' Â· Needs approval' : ''}</div>`;
         card.onclick = () => selectProject(p.id).catch((e) => showUiError("chat_hint", e));
         grid.appendChild(card);
       }
@@ -1305,7 +1403,7 @@ function syncProjectHeadbar() {
 
     const createdAt = selectedProjectData.created_at ? formatTs(selectedProjectData.created_at) : "-";
     const stage = projectStageLabel(selectedProjectReadiness?.stage || "draft");
-    subline.textContent = `${String(selectedProjectData.title || "").trim()} — Stage ${stage} — ${createdAt}`;
+    subline.textContent = `${String(selectedProjectData.title || "").trim()} â€” Stage ${stage} â€” ${createdAt}`;
     const canRun = Boolean(selectedProjectReadiness?.can_run);
     runBtn.classList.remove("hidden");
     runBtn.disabled = !canRun;
@@ -1469,20 +1567,12 @@ function handleProjectEvent(kind, payload) {
 }
 
 function colorForAgent(agentId) {
-  const base = String(agentId || "agent");
-  let hash = 0;
-  for (let i = 0; i < base.length; i++) {
-    hash = ((hash << 5) - hash + base.charCodeAt(i)) | 0;
-  }
-  // Restrict to project palette — no random hues
-  const palettes = [
-    { bg: "rgba(250, 204, 21, 0.11)",  border: "rgba(250, 204, 21, 0.5)" },  // yellow
-    { bg: "rgba(255, 77,  77,  0.11)", border: "rgba(255, 77,  77,  0.5)" }, // red
-    { bg: "rgba(59,  130, 246, 0.11)", border: "rgba(59,  130, 246, 0.5)" }, // blue
-    { bg: "rgba(34,  211, 238, 0.11)", border: "rgba(34,  211, 238, 0.5)" }, // cyan
-    { bg: "rgba(249, 115, 22,  0.11)", border: "rgba(249, 115, 22,  0.5)" }, // orange
-  ];
-  return palettes[Math.abs(hash) % palettes.length];
+  const hex = colorHexForAgent(agentId);
+  return {
+    hex,
+    bg: hexToRgba(hex, 0.11),
+    border: hexToRgba(hex, 0.5),
+  };
 }
 
 function parseMessageLinks(text) {
@@ -1948,7 +2038,7 @@ function renderDirectHtmlPreview(containerId, scope, path, size = null) {
   const frame = document.createElement("iframe");
   frame.src = directUrl;
   frame.title = path || "preview";
-  frame.sandbox = "allow-same-origin";
+  frame.sandbox = "allow-same-origin allow-scripts allow-forms";
   const sizeText = Number.isFinite(Number(size)) ? formatBytes(Number(size)) : "-";
   mountFilePreviewNode(
     containerId,
@@ -2144,7 +2234,7 @@ async function renderLivePreview(path, { force = false } = {}) {
     const frame = document.createElement("iframe");
     frame.src = buildProjectPreviewUrl(rel);
     frame.title = rel;
-    frame.sandbox = "allow-same-origin";
+    frame.sandbox = "allow-same-origin allow-scripts allow-forms";
     mountLivePreviewNode(frame);
     setLivePreviewMeta(`Live: ${rel} | HTML | ${new Date().toLocaleTimeString()}`);
     return;
@@ -2158,7 +2248,7 @@ async function renderLivePreview(path, { force = false } = {}) {
     const frame = document.createElement("iframe");
     frame.src = buildProjectPreviewUrl(rel);
     frame.title = rel;
-    frame.sandbox = "allow-same-origin";
+    frame.sandbox = "allow-same-origin allow-scripts allow-forms";
     mountLivePreviewNode(frame);
     setLivePreviewMeta(`Live: ${rel} | HTML | ${new Date().toLocaleTimeString()}`);
     return;
@@ -2282,14 +2372,63 @@ function renderProjectExecutionInfo() {
   renderLiveStatus();
 }
 
+function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
+  const refreshBtn = $("btn_refresh_plan");
+  const regenerateBtn = $("btn_regenerate_plan");
+  const approveBtn = $("btn_approve_plan");
+  if (!refreshBtn || !regenerateBtn || !approveBtn) return;
+
+  const buttons = [refreshBtn, regenerateBtn, approveBtn];
+  for (const btn of buttons) {
+    btn.classList.add("hidden");
+    btn.disabled = !selectedProjectData;
+    btn.dataset.planAction = "";
+  }
+  if (!selectedProjectData) return;
+
+  const planStatus = String(status || "").trim().toLowerCase() || "pending";
+  const execStatus = String(selectedProjectData.execution_status || "").trim().toLowerCase() || "idle";
+  const hasPlanText = Boolean(String(text || "").trim());
+
+  let target = null;
+  let action = "";
+  let label = "";
+
+  if (execStatus === "paused") {
+    target = approveBtn;
+    action = "resume";
+    label = "Resume Project";
+  } else if (planStatus === "generating") {
+    target = refreshBtn;
+    action = "refresh";
+    label = "Refresh Plan";
+  } else if (!hasPlanText || planStatus === "failed") {
+    target = regenerateBtn;
+    action = "regenerate";
+    label = "Regenerate Plan";
+  } else if (planStatus === "awaiting_approval" || planStatus === "pending") {
+    target = approveBtn;
+    action = "approve";
+    label = "Approve Plan";
+  } else {
+    target = refreshBtn;
+    action = "refresh";
+    label = "Refresh Plan";
+  }
+
+  target.classList.remove("hidden");
+  target.disabled = false;
+  target.dataset.planAction = action;
+  target.textContent = label;
+}
+
 function renderProjectPlanInfo() {
   const stageEl = $("detail_stage");
   const statusEl = $("detail_plan_status");
   const updatedEl = $("detail_plan_updated");
   const readinessEl = $("detail_readiness");
   const textEl = $("detail_plan_text");
-  const approveBtn = $("btn_approve_plan");
-  if (!statusEl || !updatedEl || !textEl || !approveBtn) return;
+  if (!statusEl || !updatedEl || !textEl) return;
 
   if (!selectedProjectData) {
     if (stageEl) stageEl.textContent = "Lifecycle: -";
@@ -2297,7 +2436,7 @@ function renderProjectPlanInfo() {
     updatedEl.textContent = "";
     if (readinessEl) readinessEl.innerHTML = "";
     textEl.textContent = "No project selected.";
-    approveBtn.disabled = true;
+    updateProjectPlanActionButtons({ status: "", text: "" });
     renderProjectExecutionInfo();
     renderLiveStatus();
     return;
@@ -2334,8 +2473,7 @@ function renderProjectPlanInfo() {
     }
   }
   textEl.textContent = text || "Primary agent has not published a plan yet.";
-  approveBtn.disabled = status === "approved" || status === "generating";
-  approveBtn.textContent = status === "approved" ? "Plan Approved" : "Approve Plan";
+  updateProjectPlanActionButtons({ status, text });
   if (selectedProjectData) selectedProjectData.plan_status = status;
   renderProjectExecutionInfo();
   renderLiveStatus();
@@ -2580,9 +2718,25 @@ function renderChatAgents(agents) {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "agent-mention-chip";
-      chip.textContent = `@${aliases[0] || normalizeAlias(agent.id)}`;
+      const mentionAlias = aliases[0] || normalizeAlias(agent.id);
       chip.title = `${agent.name} (${agent.id})`;
-      chip.onclick = () => applyMention(aliases[0] || normalizeAlias(agent.id));
+      const palette = colorForAgent(agent.id);
+      chip.style.setProperty("--agent-color", palette.hex);
+      chip.style.borderColor = palette.border;
+      chip.style.background = hexToRgba(palette.hex, 0.08);
+
+      const avatar = createAgentAvatarImg(agent.id, `${agent.name || agent.id} mascot`);
+      avatar.className = "agent-mention-avatar";
+      avatar.onerror = () => {
+        avatar.src = AGENT_MASCOT_PATH || SUMMARY_AGENT_DEFAULT_AVATAR;
+      };
+
+      const label = document.createElement("span");
+      label.textContent = `@${mentionAlias}`;
+
+      chip.appendChild(avatar);
+      chip.appendChild(label);
+      chip.onclick = () => applyMention(mentionAlias);
       list.appendChild(chip);
     }
   }
@@ -3179,13 +3333,16 @@ function renderSummaryAgents() {
   for (const agent of summaryAgents) {
     const card = document.createElement("article");
     card.className = "summary-agent-card";
+    const palette = colorForAgent(agent.agent_id);
 
     const avatarWrap = document.createElement("div");
     avatarWrap.className = "summary-agent-avatar";
-    const avatar = document.createElement("img");
-    avatar.src = SUMMARY_AGENT_DEFAULT_AVATAR;
-    avatar.alt = "Agent avatar";
-    avatar.loading = "lazy";
+    avatarWrap.style.borderColor = palette.border;
+    avatarWrap.style.background = hexToRgba(palette.hex, 0.08);
+    const avatar = createAgentAvatarImg(agent.agent_id, "Agent mascot");
+    avatar.onerror = () => {
+      avatar.src = AGENT_MASCOT_PATH || SUMMARY_AGENT_DEFAULT_AVATAR;
+    };
     avatarWrap.appendChild(avatar);
 
     const body = document.createElement("div");
@@ -3281,6 +3438,7 @@ async function loadSummaryAgents({ force = false } = {}) {
   } finally {
     summaryAgentsLoading = false;
     renderSummaryAgents();
+    renderWizardOwnerAgents();
   }
 }
 function setProjectPane(pane) {
@@ -3334,7 +3492,7 @@ function setNavTab(tab) {
     renderFolderBrowsers();
     loadWorkspaceFiles(workspaceFilesCurrentPath || DEFAULT_OWNER_FILES_PATH).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   }
-  if (tab === "summary") {
+  if (tab === "agents") {
     loadSummaryAgents().catch(() => {});
   }
   if (tab === "config") renderConfigConnectionDetails();
@@ -3395,9 +3553,23 @@ async function selectProject(projectId) {
   } else {
     for (const a of selectedAssignedAgents) {
       const chip = document.createElement("span");
-      chip.className = "chip" + (a.is_primary ? " primary" : "");
+      chip.className = "chip agent-chip-inline" + (a.is_primary ? " primary" : "");
+      const palette = colorForAgent(a.id);
+      chip.style.borderColor = palette.border;
+      chip.style.background = hexToRgba(palette.hex, a.is_primary ? 0.16 : 0.09);
+
+      const avatar = createAgentAvatarImg(a.id, `${a.name || a.id} mascot`);
+      avatar.className = "agent-inline-avatar";
+      avatar.onerror = () => {
+        avatar.src = AGENT_MASCOT_PATH || SUMMARY_AGENT_DEFAULT_AVATAR;
+      };
+
       const roleText = a.role ? ` - ${a.role}` : "";
-      chip.textContent = a.is_primary ? `${a.name} (Primary)${roleText}` : `${a.name}${roleText}`;
+      const label = document.createElement("span");
+      label.textContent = a.is_primary ? `${a.name} (Primary)${roleText}` : `${a.name}${roleText}`;
+
+      chip.appendChild(avatar);
+      chip.appendChild(label);
       chips.appendChild(chip);
     }
   }
@@ -3423,34 +3595,206 @@ async function selectProject(projectId) {
 async function loadAgentsForWizard() {
   if (!activeConnectionId) throw new Error("Connect OpenClaw first");
   const res = await api(`/api/openclaw/${activeConnectionId}/agents`);
-  currentAgents = res.agents || [];
+  const rawAgents = Array.isArray(res?.agents) ? res.agents : [];
+  currentAgents = rawAgents
+    .map((item) => {
+      const source = item && typeof item === "object" ? item : {};
+      const raw = (source.raw && typeof source.raw === "object") ? source.raw : source;
+      const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
+      const name = String(source.name || source.title || raw.name || id).trim() || id;
+      if (!id) return null;
+      return { id, name, raw };
+    })
+    .filter(Boolean);
+  renderWizardOwnerAgents();
+}
 
-  const box = $("wizard_agents");
+function _formatAgentSpecialization(agent) {
+  const source = agent && typeof agent === "object" ? agent : {};
+  const raw = source.raw && typeof source.raw === "object" ? source.raw : source;
+  const summary = summaryAgents.find((s) => String(s.agent_id || "").trim() === String(source.id || "").trim());
+  if (summary && Array.isArray(summary.capabilities) && summary.capabilities.length) {
+    return summary.capabilities.slice(0, 2).join(" | ");
+  }
+
+  const direct = [
+    raw.specialty,
+    raw.specialization,
+    raw.role,
+    raw.description,
+    raw.summary,
+  ]
+    .map((v) => String(v || "").trim())
+    .find(Boolean);
+  if (direct) return direct.slice(0, 180);
+
+  const skills = Array.isArray(raw.skills) ? raw.skills : [];
+  const skillNames = skills
+    .map((s) => String(s?.name || s?.id || "").trim())
+    .filter(Boolean)
+    .slice(0, 2);
+  if (skillNames.length) return skillNames.join(" | ");
+
+  const tags = Array.isArray(raw.tags) ? raw.tags.map((v) => String(v || "").trim()).filter(Boolean).slice(0, 2) : [];
+  if (tags.length) return tags.join(" | ");
+
+  return "General collaborator";
+}
+
+function wizardEffectiveProjectAgents() {
+  const base = Array.isArray(wizardProjectAgents) && wizardProjectAgents.length
+    ? wizardProjectAgents
+    : (Array.isArray(selectedAssignedAgents) ? selectedAssignedAgents : []);
+  return base.map((a) => ({
+    id: String(a?.id || "").trim(),
+    name: String(a?.name || a?.agent_name || a?.id || "").trim(),
+    role: String(a?.role || "").trim(),
+    is_primary: Boolean(a?.is_primary),
+    source_type: String(a?.source_type || "owner").trim() || "owner",
+    permissions: a?.permissions || {},
+  })).filter((a) => Boolean(a.id));
+}
+
+function wizardOwnerAgents() {
+  return wizardEffectiveProjectAgents().filter((a) => a.source_type === "owner");
+}
+
+function buildOwnerAgentsPayload(ownerAgents, primaryAgentId = null) {
+  const list = Array.isArray(ownerAgents) ? ownerAgents : [];
+  return {
+    agent_ids: list.map((a) => String(a.id || "").trim()),
+    agent_names: list.map((a) => String(a.name || a.id || "").trim()),
+    agent_roles: list.map((a) => String(a.role || "").trim()),
+    primary_agent_id: String(primaryAgentId || list.find((a) => a.is_primary)?.id || list[0]?.id || "").trim() || null,
+  };
+}
+
+async function saveOwnerAgentsToProject(ownerAgents, primaryAgentId, successMessage = "Project agents updated.") {
+  if (!selectedProjectId) throw new Error("Choose project first");
+  if (!Array.isArray(ownerAgents) || !ownerAgents.length) {
+    throw new Error("At least one owner agent is required in project.");
+  }
+  const payload = buildOwnerAgentsPayload(ownerAgents, primaryAgentId);
+  await api(`/api/projects/${selectedProjectId}/agents`, "POST", payload);
+  await selectProject(selectedProjectId);
+  await loadChatAgents().catch(() => {});
+  await refreshWizardExternalAccess({ silent: true }).catch(() => {});
+  renderWizardOwnerAgents();
+  setMessage("wizard_external_msg", successMessage, "ok");
+}
+
+async function inviteOwnerAgentToProject(agent) {
+  const id = String(agent?.id || "").trim();
+  if (!id) throw new Error("Invalid agent");
+  const existing = wizardOwnerAgents();
+  if (existing.some((a) => a.id === id)) {
+    setMessage("wizard_external_msg", `${agent.name || id} is already in project.`, "ok");
+    return;
+  }
+  const next = [...existing, {
+    id,
+    name: String(agent?.name || id).trim() || id,
+    role: resolveSuggestedRole(agent) || "",
+    is_primary: false,
+    source_type: "owner",
+  }];
+  const primary = selectedPrimaryAgentId && next.some((a) => a.id === selectedPrimaryAgentId)
+    ? selectedPrimaryAgentId
+    : next[0].id;
+  await saveOwnerAgentsToProject(next, primary, `${agent.name || id} invited to project.`);
+}
+
+async function updateOwnerAgentRole(agentId, roleValue, { setPrimary = false } = {}) {
+  const id = String(agentId || "").trim();
+  if (!id) throw new Error("agent_id is required");
+  const owners = wizardOwnerAgents();
+  const target = owners.find((a) => a.id === id);
+  if (!target) throw new Error("Owner agent not found in project");
+  const next = owners.map((a) => (a.id === id ? { ...a, role: String(roleValue || "").trim() } : a));
+  const primary = setPrimary
+    ? id
+    : (selectedPrimaryAgentId && next.some((a) => a.id === selectedPrimaryAgentId) ? selectedPrimaryAgentId : next[0].id);
+  await saveOwnerAgentsToProject(next, primary, setPrimary ? `Primary agent set: ${id}` : `Role updated: ${id}`);
+}
+
+async function removeOwnerAgentFromProject(agentId) {
+  const id = String(agentId || "").trim();
+  if (!id) throw new Error("agent_id is required");
+  const owners = wizardOwnerAgents();
+  if (!owners.some((a) => a.id === id)) return;
+  const next = owners.filter((a) => a.id !== id);
+  if (!next.length) {
+    throw new Error("Project must keep at least one owner agent.");
+  }
+  const primary = selectedPrimaryAgentId === id ? next[0].id : (selectedPrimaryAgentId || next[0].id);
+  await saveOwnerAgentsToProject(next, primary, `Removed owner agent: ${id}`);
+}
+
+async function removeWizardProjectAgent(agent) {
+  const id = String(agent?.id || "").trim();
+  if (!id) throw new Error("agent_id is required");
+  const sourceType = String(agent?.source_type || "owner").trim() || "owner";
+  if (sourceType === "external") {
+    const membership = wizardExternalMemberships.find((m) => String(m?.agent_id || "").trim() === id && String(m?.status || "").toLowerCase() === "active");
+    if (!membership?.id) throw new Error("External membership record not found.");
+    await revokeWizardExternalMembership(membership.id);
+    await selectProject(selectedProjectId);
+    await refreshWizardExternalAccess({ silent: true }).catch(() => {});
+    renderWizardOwnerAgents();
+    return;
+  }
+  await removeOwnerAgentFromProject(id);
+}
+
+function renderWizardOwnerAgents() {
+  const box = $("wizard_owner_agents");
+  if (!box) return;
   box.innerHTML = "";
-  let autoPrimarySet = false;
-  for (const a of currentAgents) {
-    const suggestedRole = resolveSuggestedRole(a);
-    const row = document.createElement("label");
-    row.className = "agent-pick";
-    row.innerHTML = `
-      <input type="checkbox" data-agent-check="${a.id}">
-      <div>
-        <strong>${a.name}</strong>
-        <span class="small">${a.id}</span>
-      </div>
-      <label><input type="radio" name="primary_agent" value="${a.id}"> Primary</label>
-      <input type="text" data-agent-role="${a.id}" placeholder="Role (optional)" value="${suggestedRole}">
-    `;
+
+  const assigned = new Set(wizardEffectiveProjectAgents().map((a) => a.id));
+  const available = (Array.isArray(currentAgents) ? currentAgents : []).filter((a) => a && a.id && !assigned.has(a.id));
+  if (!available.length) {
+    const empty = document.createElement("div");
+    empty.className = "helper";
+    empty.textContent = "No available owner agents to invite.";
+    box.appendChild(empty);
+    return;
+  }
+
+  for (const agent of available) {
+    const row = document.createElement("article");
+    row.className = "owner-agent-row";
+
+    const avatarWrap = document.createElement("div");
+    avatarWrap.className = "wizard-agent-avatar";
+    const palette = colorForAgent(agent.id);
+    avatarWrap.style.borderColor = palette.border;
+    avatarWrap.style.background = hexToRgba(palette.hex, 0.08);
+    avatarWrap.appendChild(createAgentAvatarImg(agent.id, `${agent.name || agent.id} mascot`));
+
+    const body = document.createElement("div");
+    const title = document.createElement("div");
+    title.className = "title";
+    title.textContent = `${agent.name || agent.id} (${agent.id})`;
+    const meta = document.createElement("p");
+    meta.className = "meta";
+    const suggested = resolveSuggestedRole(agent);
+    const specialization = _formatAgentSpecialization(agent);
+    meta.textContent = `Specialization: ${specialization}${suggested ? ` | Suggested role: ${suggested}` : ""}`;
+    body.appendChild(title);
+    body.appendChild(meta);
+
+    const inviteBtn = document.createElement("button");
+    inviteBtn.type = "button";
+    inviteBtn.textContent = "Invite";
+    inviteBtn.addEventListener("click", () => {
+      inviteOwnerAgentToProject(agent).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
+    });
+
+    row.appendChild(avatarWrap);
+    row.appendChild(body);
+    row.appendChild(inviteBtn);
     box.appendChild(row);
-    if (suggestedRole) {
-      const ck = row.querySelector(`[data-agent-check="${a.id}"]`);
-      const pr = row.querySelector(`input[name="primary_agent"][value="${a.id}"]`);
-      if (ck) ck.checked = true;
-      if (pr && !autoPrimarySet) {
-        pr.checked = true;
-        autoPrimarySet = true;
-      }
-    }
   }
 }
 
@@ -3474,6 +3818,9 @@ function openWizard(newProject = true) {
     wizardTranscript = [];
     wizardDraft = null;
     wizardSuggestedRoles = new Map();
+    wizardProjectAgents = [];
+    wizardAgentPermissions = [];
+    currentAgents = [];
     const log = $("wizard_chat_log");
     if (log) log.innerHTML = "";
     const chatInput = $("wizard_chat_input");
@@ -3490,10 +3837,11 @@ function openWizard(newProject = true) {
     $("wizard_step_agents").classList.remove("hidden");
     $("wizard_footer_actions")?.classList.add("hidden");
     $("wizard_external_access")?.classList.remove("hidden");
-    Promise.all([
-      loadAgentsForWizard(),
-      refreshWizardExternalAccess({ silent: true }),
-    ]).catch((e) => setMessage("wizard_msg", detailToText(e), "error"));
+    (async () => {
+      await loadSummaryAgents().catch(() => {});
+      await refreshWizardExternalAccess({ silent: true });
+      await loadAgentsForWizard();
+    })().catch((e) => setMessage("wizard_msg", detailToText(e), "error"));
   }
 }
 
@@ -3595,37 +3943,27 @@ async function sendWizardSetupChat({ autoStart = false } = {}) {
 }
 
 function getSelectedAgents() {
-  const checks = [...document.querySelectorAll("[data-agent-check]")].filter((el) => el.checked);
-  const ids = checks.map((c) => c.getAttribute("data-agent-check"));
-  const names = ids.map((id) => {
-    const found = currentAgents.find((a) => a.id === id);
-    return found ? found.name : id;
-  });
-  const roles = ids.map((id) => {
-    const input = document.querySelector(`[data-agent-role="${id}"]`);
-    return input ? String(input.value || "").trim() : "";
-  });
-  const primary = document.querySelector("input[name='primary_agent']:checked")?.value || ids[0] || null;
-  return { ids, names, roles, primary };
+  const owners = wizardOwnerAgents();
+  const payload = buildOwnerAgentsPayload(owners, selectedPrimaryAgentId || owners[0]?.id || null);
+  return {
+    ids: payload.agent_ids,
+    names: payload.agent_names,
+    roles: payload.agent_roles,
+    primary: payload.primary_agent_id,
+  };
 }
 
 async function saveAgentSetup() {
-  if (!selectedProjectId) throw new Error("Choose project first");
-  const picked = getSelectedAgents();
-  if (!picked.ids.length) throw new Error("Pick at least one agent");
-
-  await api(`/api/projects/${selectedProjectId}/agents`, "POST", {
-    agent_ids: picked.ids,
-    agent_names: picked.names,
-    agent_roles: picked.roles,
-    primary_agent_id: picked.primary,
-  });
-
-  setMessage("wizard_msg", "Agents saved. Primary agent is building project info and plan.", "ok");
-  await selectProject(selectedProjectId);
-  await loadChatAgents().catch(() => {});
-  await refreshWizardExternalAccess({ silent: true }).catch(() => {});
-  setTimeout(closeWizard, 450);
+  const selected = getSelectedAgents();
+  if (!selected.ids.length) throw new Error("Invite at least one owner agent first.");
+  const owners = selected.ids.map((id, idx) => ({
+    id,
+    name: selected.names[idx] || id,
+    role: selected.roles[idx] || "",
+    is_primary: selected.primary === id,
+    source_type: "owner",
+  }));
+  await saveOwnerAgentsToProject(owners, selected.primary, "Agent setup saved.");
 }
 
 function _hoursToInviteTtlSec(rawHours) {
@@ -3871,26 +4209,70 @@ function renderWizardAgentPermissions() {
   const box = $("wizard_agent_permissions");
   if (!box) return;
   box.innerHTML = "";
-  if (!wizardAgentPermissions.length) {
+  const agents = wizardEffectiveProjectAgents();
+  if (!agents.length) {
     const empty = document.createElement("div");
     empty.className = "helper";
-    empty.textContent = "No agent permission data.";
+    empty.textContent = "No agents in project yet. Invite from Your Agents or External Agents first.";
     box.appendChild(empty);
     return;
   }
 
-  for (const item of wizardAgentPermissions) {
-    const agentId = String(item?.agent_id || "").trim();
+  for (const item of agents) {
+    const agentId = String(item?.id || item?.agent_id || "").trim();
     if (!agentId) continue;
-    const row = document.createElement("div");
-    row.className = "perm-row";
+    const row = document.createElement("article");
+    row.className = "wizard-agent-row perm-row";
 
-    const head = document.createElement("div");
-    head.className = "title";
-    const agentName = String(item?.agent_name || agentId).trim();
+    const agentName = String(item?.name || item?.agent_name || agentId).trim();
     const sourceType = String(item?.source_type || "owner").trim();
-    const customBadge = item?.has_custom ? "custom" : "default";
-    head.textContent = `${agentName} (${agentId}) - ${sourceType} - ${customBadge}`;
+    const perms = (item?.permissions && typeof item.permissions === "object") ? item.permissions : item || {};
+    const customBadge = perms?.has_custom ? "custom" : "default";
+
+    const headWrap = document.createElement("div");
+    headWrap.className = "wizard-agent-head";
+    const avatarWrap = document.createElement("div");
+    avatarWrap.className = "wizard-agent-avatar";
+    const palette = colorForAgent(agentId);
+    avatarWrap.style.borderColor = palette.border;
+    avatarWrap.style.background = hexToRgba(palette.hex, 0.08);
+    avatarWrap.appendChild(createAgentAvatarImg(agentId, `${agentName} mascot`));
+
+    const headBody = document.createElement("div");
+    const titleRow = document.createElement("div");
+    titleRow.className = "wizard-agent-title";
+    const title = document.createElement("strong");
+    title.textContent = `${agentName} (${agentId})`;
+    const sourceChip = document.createElement("span");
+    sourceChip.className = "chip";
+    sourceChip.textContent = sourceType === "external" ? "external" : "owner";
+    titleRow.appendChild(title);
+    titleRow.appendChild(sourceChip);
+    if (item?.is_primary) {
+      const primaryChip = document.createElement("span");
+      primaryChip.className = "chip primary";
+      primaryChip.textContent = "primary";
+      titleRow.appendChild(primaryChip);
+    }
+    const meta = document.createElement("p");
+    meta.className = "wizard-agent-meta";
+    meta.textContent = `Permission profile: ${customBadge}`;
+    headBody.appendChild(titleRow);
+    headBody.appendChild(meta);
+    headWrap.appendChild(avatarWrap);
+    headWrap.appendChild(headBody);
+
+    const roleWrap = document.createElement("div");
+    roleWrap.className = "wizard-agent-role";
+    const roleLabel = document.createElement("label");
+    roleLabel.textContent = "Role";
+    const roleInput = document.createElement("input");
+    roleInput.type = "text";
+    roleInput.value = String(item?.role || "").trim();
+    roleInput.placeholder = sourceType === "external" ? "Role from external invite" : "Role in project";
+    roleInput.disabled = sourceType !== "owner";
+    roleWrap.appendChild(roleLabel);
+    roleWrap.appendChild(roleInput);
 
     const toggles = document.createElement("div");
     toggles.className = "perm-toggles";
@@ -3906,18 +4288,42 @@ function renderWizardAgentPermissions() {
       return input;
     };
 
-    const canChatEl = mkCheck("can_chat_project", item?.can_chat_project);
-    const canReadEl = mkCheck("can_read_files", item?.can_read_files);
-    const canWriteEl = mkCheck("can_write_files", item?.can_write_files);
+    const canChatEl = mkCheck("can_chat_project", perms?.can_chat_project);
+    const canReadEl = mkCheck("can_read_files", perms?.can_read_files);
+    const canWriteEl = mkCheck("can_write_files", perms?.can_write_files);
 
     const writePathsLabel = document.createElement("label");
     writePathsLabel.textContent = "write_paths (comma or newline)";
     const writePathsInput = document.createElement("textarea");
     writePathsInput.className = "perm-write-paths";
-    writePathsInput.value = Array.isArray(item?.write_paths) ? item.write_paths.join("\n") : "";
+    writePathsInput.value = Array.isArray(perms?.write_paths) ? perms.write_paths.join("\n") : "";
 
     const actions = document.createElement("div");
     actions.className = "action-row";
+    if (sourceType === "owner") {
+      const saveRoleBtn = document.createElement("button");
+      saveRoleBtn.type = "button";
+      saveRoleBtn.className = "secondary";
+      saveRoleBtn.textContent = "Save Role";
+      saveRoleBtn.addEventListener("click", () => {
+        updateOwnerAgentRole(agentId, roleInput.value, { setPrimary: false })
+          .catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
+      });
+
+      const primaryBtn = document.createElement("button");
+      primaryBtn.type = "button";
+      primaryBtn.className = "secondary";
+      primaryBtn.textContent = item?.is_primary ? "Primary Agent" : "Set Primary";
+      primaryBtn.disabled = Boolean(item?.is_primary);
+      primaryBtn.addEventListener("click", () => {
+        updateOwnerAgentRole(agentId, roleInput.value, { setPrimary: true })
+          .catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
+      });
+
+      actions.appendChild(saveRoleBtn);
+      actions.appendChild(primaryBtn);
+    }
+
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
     saveBtn.textContent = "Save Permission";
@@ -3941,7 +4347,17 @@ function renderWizardAgentPermissions() {
     actions.appendChild(saveBtn);
     actions.appendChild(resetBtn);
 
-    row.appendChild(head);
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "secondary danger";
+    removeBtn.textContent = sourceType === "external" ? "Remove External" : "Remove Agent";
+    removeBtn.addEventListener("click", () => {
+      removeWizardProjectAgent(item).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
+    });
+    actions.appendChild(removeBtn);
+
+    row.appendChild(headWrap);
+    row.appendChild(roleWrap);
     row.appendChild(toggles);
     row.appendChild(writePathsLabel);
     row.appendChild(writePathsInput);
@@ -3959,26 +4375,38 @@ async function refreshWizardExternalAccess({ silent = false } = {}) {
     wizardExternalInvites = [];
     wizardExternalMemberships = [];
     wizardAgentPermissions = [];
+    wizardProjectAgents = [];
     wizardProjectInvitationsPreviewUrl = "";
     wizardLatestExternalInvite = null;
     renderWizardExternalInvites();
     renderWizardExternalMemberships();
     renderWizardAgentPermissions();
+    renderWizardOwnerAgents();
     renderWizardLatestExternalInviteDelivery();
     return;
   }
 
   panel.classList.remove("hidden");
 
-  const [invitesRes, membershipsRes, permissionsRes] = await Promise.all([
+  const [projectAgentsRes, invitesRes, membershipsRes] = await Promise.all([
+    api(`/api/projects/${selectedProjectId}/agents`).catch(() => ({ agents: [], primary_agent: null })),
     api(`/api/projects/${selectedProjectId}/invites/external-agent`).catch(() => ({ invites: [] })),
     api(`/api/projects/${selectedProjectId}/memberships/external-agent`).catch(() => ({ memberships: [] })),
-    api(`/api/projects/${selectedProjectId}/agent-permissions`).catch(() => ({ permissions: [] })),
   ]);
 
+  wizardProjectAgents = Array.isArray(projectAgentsRes?.agents) ? projectAgentsRes.agents : [];
+  wizardAgentPermissions = wizardProjectAgents.map((item) => ({
+    agent_id: item?.id,
+    agent_name: item?.name,
+    source_type: item?.source_type,
+    role: item?.role || "",
+    is_primary: Boolean(item?.is_primary),
+    permissions: item?.permissions || {},
+  }));
+  selectedAssignedAgents = wizardProjectAgents;
+  selectedPrimaryAgentId = String(projectAgentsRes?.primary_agent?.id || "").trim() || null;
   wizardExternalInvites = Array.isArray(invitesRes?.invites) ? invitesRes.invites : [];
   wizardExternalMemberships = Array.isArray(membershipsRes?.memberships) ? membershipsRes.memberships : [];
-  wizardAgentPermissions = Array.isArray(permissionsRes?.permissions) ? permissionsRes.permissions : [];
   wizardProjectInvitationsPreviewUrl = String(invitesRes?.project_invitations_preview_url || "").trim();
 
   const latestInviteProjectId = String(wizardLatestExternalInvite?.project_id || "").trim();
@@ -3989,6 +4417,7 @@ async function refreshWizardExternalAccess({ silent = false } = {}) {
   renderWizardExternalInvites();
   renderWizardExternalMemberships();
   renderWizardAgentPermissions();
+  renderWizardOwnerAgents();
   renderWizardLatestExternalInviteDelivery();
 
   if (!silent) {
@@ -4188,16 +4617,11 @@ async function createProjectRecord({ title, brief, goal, setupDetails, setupChat
   $("wizard_title").textContent = "Invite Agents";
   setMessage("wizard_msg", "Project created. Invite agents and set roles.", "ok");
 
-  await loadAgentsForWizard();
-  for (const a of currentAgents) {
-    const preset = resolveSuggestedRole(a);
-    if (!preset) continue;
-    const roleInput = document.querySelector(`[data-agent-role="${a.id}"]`);
-    if (roleInput && !String(roleInput.value || "").trim()) roleInput.value = preset;
-  }
-  await refreshWizardExternalAccess({ silent: true }).catch(() => {});
   await fetchInitial({ preferredProjectId: created.id });
   await selectProject(created.id);
+  await loadSummaryAgents().catch(() => {});
+  await refreshWizardExternalAccess({ silent: true }).catch(() => {});
+  await loadAgentsForWizard().catch(() => {});
 }
 
 async function createProjectFromManual() {
@@ -4751,7 +5175,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     await applyProjectDeepLinkContext().catch(() => {});
   }
 
-  if (activeNavTab === "summary") {
+  if (activeNavTab === "agents") {
     await loadSummaryAgents({ force: true }).catch(() => {});
   }
 
@@ -4825,7 +5249,23 @@ function bindActions() {
     loadProjectPlan(selectedProjectId).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   };
   $("btn_regenerate_plan").onclick = () => regenerateProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
-  $("btn_approve_plan").onclick = () => approveProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  $("btn_approve_plan").onclick = () => {
+    const mode = String($("btn_approve_plan")?.dataset?.planAction || "approve").trim().toLowerCase();
+    if (mode === "resume") {
+      controlProjectExecution("resume").catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+      return;
+    }
+    if (mode === "refresh") {
+      if (!selectedProjectId) return;
+      loadProjectPlan(selectedProjectId).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+      return;
+    }
+    if (mode === "regenerate") {
+      regenerateProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+      return;
+    }
+    approveProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  };
   $("btn_pause_project").onclick = () => {
     const current = String(selectedProjectData?.execution_status || "").toLowerCase();
     const action = current === "paused" ? "resume" : "pause";
@@ -4837,7 +5277,9 @@ function bindActions() {
     ev.preventDefault();
     createProjectNow().catch((e) => showUiError("wizard_msg", e));
   });
-  $("btn_save_agents").onclick = () => saveAgentSetup().catch((e) => showUiError("wizard_msg", e));
+  $("btn_save_agents")?.addEventListener("click", () => {
+    saveAgentSetup().catch((e) => showUiError("wizard_msg", e));
+  });
   $("form_external_invite")?.addEventListener("submit", (ev) => {
     createWizardExternalInvite(ev).catch((e) => showUiError("wizard_external_msg", e));
   });
@@ -4964,7 +5406,7 @@ function bindActions() {
       if (tab === "projects") {
         setNavTab("projects");
         if (content) content.classList.remove("hidden");
-        // Clicking "Projects" while inside a project → back to grid view
+        // Clicking "Projects" while inside a project â†’ back to grid view
         if (selectedProjectId) showEmptyProject();
         return;
       }
@@ -5001,24 +5443,94 @@ function bindActions() {
     });
   }
 
-  // Cursor-driven aurora on auth view
+  // Canvas brush aurora on auth view
   const authView = document.getElementById("view_auth");
-  if (authView) {
-    const BASE_BG = "linear-gradient(160deg, #04050a 0%, #07090f 40%, #090c15 70%, #05070a 100%)";
+  const auroraCanvas = document.getElementById("aurora-canvas");
+  if (authView && auroraCanvas) {
+    const ctx = auroraCanvas.getContext("2d");
+
+    // Offscreen canvas â€” draw all trail here, then blur ONCE onto main canvas
+    const offCanvas = document.createElement("canvas");
+    const offCtx = offCanvas.getContext("2d");
+
+    let mx = 0, my = 0, lx = 0, ly = 0, auroraMouseActive = false, wasAuthActive = false;
+    const brushTrail = [];
+
+    function resizeAurora() {
+      const rect = authView.getBoundingClientRect();
+      const w = rect.width || window.innerWidth;
+      const h = rect.height || window.innerHeight;
+      auroraCanvas.width = w; auroraCanvas.height = h;
+      offCanvas.width    = w; offCanvas.height    = h;
+    }
+    resizeAurora();
+    window.addEventListener("resize", resizeAurora);
+
     document.addEventListener("mousemove", (e) => {
       if (!authView.classList.contains("active")) return;
-      const x = e.clientX / window.innerWidth;
-      const y = e.clientY / window.innerHeight;
-      const a = (v) => (0.04 + v * 0.24).toFixed(3);
-      authView.style.background = [
-        `radial-gradient(900px at 50% -15%, rgba(250,204,21,${a(1-y)}), transparent 60%)`,
-        `radial-gradient(900px at 115% 50%, rgba(255,77,77,${a(x)}), transparent 60%)`,
-        `radial-gradient(900px at 50% 115%, rgba(34,211,238,${a(y)}), transparent 60%)`,
-        `radial-gradient(900px at -15% 50%, rgba(59,130,246,${a(1-x)}), transparent 60%)`,
-        BASE_BG,
-      ].join(",");
-      authView.style.animation = "none";
+      const rect = authView.getBoundingClientRect();
+      mx = e.clientX - rect.left;
+      my = e.clientY - rect.top;
+      auroraMouseActive = true;
     });
+
+    // Pre-compute Gaussian weights once â€” reused every frame
+    const GAUSS_N = 20;
+    const gaussStops = Array.from({ length: GAUSS_N + 1 }, (_, si) => {
+      const pos = si / GAUSS_N;
+      return { pos, w: Math.exp(-4.8 * pos * pos) };
+    });
+
+    function tickAurora() {
+      requestAnimationFrame(tickAurora);
+      const isActive = authView.classList.contains("active");
+      if (isActive && !wasAuthActive) { brushTrail.length = 0; lx = mx; ly = my; }
+      wasAuthActive = isActive;
+      if (!isActive) return;
+
+      const w = auroraCanvas.width, h = auroraCanvas.height;
+      lx += (mx - lx) * 0.09;
+      ly += (my - ly) * 0.09;
+
+      if (auroraMouseActive) {
+        brushTrail.push({ x: lx, y: ly, alpha: 1 });
+        if (brushTrail.length > 35) brushTrail.shift();
+      }
+
+      // Step 1: draw all trail blobs onto offscreen (no filter)
+      offCtx.clearRect(0, 0, w, h);
+      const rx = 160, ry = 100;
+      for (let i = brushTrail.length - 1; i >= 0; i--) {
+        const t = brushTrail[i];
+        t.alpha *= 0.955;
+        if (t.alpha < 0.015) { brushTrail.splice(i, 1); continue; }
+        const grad = offCtx.createRadialGradient(0, 0, 0, 0, 0, ry);
+        for (const s of gaussStops) {
+          grad.addColorStop(s.pos, `rgba(0,0,0,${(t.alpha * s.w).toFixed(4)})`);
+        }
+        offCtx.save();
+        offCtx.translate(t.x, t.y);
+        offCtx.scale(rx / ry, 1);
+        offCtx.fillStyle = grad;
+        offCtx.beginPath();
+        offCtx.arc(0, 0, ry, 0, Math.PI * 2);
+        offCtx.fill();
+        offCtx.restore();
+      }
+
+      // Step 2: black overlay on main canvas
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, w, h);
+
+      // Step 3: composite offscreen â†’ main with ONE blur call
+      ctx.filter = "blur(10px)";
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.drawImage(offCanvas, 0, 0);
+      ctx.filter = "none";
+      ctx.globalCompositeOperation = "source-over";
+    }
+    tickAurora();
   }
 }
 
@@ -5069,3 +5581,7 @@ if (oauthError) {
       setView("auth");
     });
 })();
+
+
+
+

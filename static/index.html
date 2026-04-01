@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260224b"/>
+  <link rel="stylesheet" href="/static/styles.css?v=20260401a"/>
 </head>
 <body>
   <div class="bg-noise"></div>
@@ -16,6 +16,8 @@
 
   <main class="app-shell">
     <section id="view_auth" class="view active">
+      <div id="aurora-bg"></div>
+      <canvas id="aurora-canvas"></canvas>
       <div class="auth-shell">
         <div class="card auth-modern">
           <aside class="auth-brand">
@@ -289,6 +291,15 @@
           </div>
 
           <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="agents">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="12" rx="2"/><path d="M9 12h6M12 3v4"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
+              <span>Agents</span>
+            </button>
+            <div id="nav_content_agents" class="nav-content hidden">
+            </div>
+          </div>
+
+          <div class="nav-section">
             <button type="button" class="nav-toggle" data-nav-tab="config">
               <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.3.8a7 7 0 0 0-1.8-1l-.3-2.4h-4l-.3 2.4a7 7 0 0 0-1.8 1L6 6l-2 3.5L6 11a7 7 0 0 0 0 2l-2 1.5L6 18l2.3-.8a7 7 0 0 0 1.8 1l.3 2.4h4l.3-2.4a7 7 0 0 0 1.8-1L18 18l2-3.5L18 13a7 7 0 0 0 .1-1z"/></svg>
               <span>Config</span>
@@ -378,7 +389,7 @@
                       <button id="btn_stop_project" class="secondary" type="button">Stop</button>
                     </div>
                   </div>
-                  <div class="action-row">
+                  <div id="detail_plan_actions" class="action-row">
                     <button id="btn_refresh_plan" class="secondary" type="button">Refresh Plan</button>
                     <button id="btn_regenerate_plan" class="secondary" type="button">Regenerate Plan</button>
                     <button id="btn_approve_plan" type="button" class="primary">Approve Plan</button>
@@ -439,9 +450,21 @@
             <div class="summary-grid">
               <section class="summary-card">
                 <div class="title-row">
-                  <h4>Agents</h4>
+                  <h4>Workspace Summary</h4>
                 </div>
-                <p class="helper">Managed agents in your account with their current capabilities.</p>
+                <p class="helper">Project status, progress, and usage are available in the project space. Agent identities are now listed in the dedicated Agents tab.</p>
+              </section>
+            </div>
+          </div>
+
+          <div id="center_agents" class="center-pane hidden" data-center-tab="agents">
+            <h3>Agents</h3>
+            <div class="summary-grid">
+              <section class="summary-card">
+                <div class="title-row">
+                  <h4>Managed Agents</h4>
+                </div>
+                <p class="helper">All agents in your account with mascot identity, status, and specialization metadata.</p>
                 <div id="summary_agents_list" class="summary-agents-grid"></div>
                 <p id="summary_agents_msg" class="helper"></p>
               </section>
@@ -609,14 +632,12 @@
           </div>
 
           <div id="wizard_step_agents" class="hidden">
-            <!-- Top: agents currently in / being assigned to the project -->
-            <p class="agents-section-label">Project Agents</p>
-            <div id="wizard_agents" class="agent-pick-list"></div>
-            <div class="action-row">
-              <button id="btn_save_agents" type="button" class="primary">Save Agent Setup</button>
-            </div>
+            <section class="wizard-mini-card">
+              <h5>Agent Management</h5>
+              <p class="helper">Agents already in project are managed here (role, permissions, and remove).</p>
+              <div id="wizard_agent_permissions" class="wizard-perm-list"></div>
+            </section>
 
-            <!-- Bottom: invite section with Your Agents / External tabs -->
             <div id="wizard_external_access" class="wizard-external-access">
               <p class="agents-section-label">Invite Agents</p>
 
@@ -627,7 +648,7 @@
 
               <!-- Your Agents panel -->
               <div id="invite_panel_yours" class="invite-panel">
-                <div id="wizard_external_memberships" class="wizard-simple-list"></div>
+                <div id="wizard_owner_agents" class="wizard-simple-list"></div>
               </div>
 
               <!-- External Agents panel: two columns -->
@@ -698,12 +719,6 @@
                 </div>
               </div>
 
-              <!-- Agent Permissions -->
-              <section class="wizard-mini-card">
-                <h5>Agent Permissions</h5>
-                <div id="wizard_agent_permissions" class="wizard-perm-list"></div>
-              </section>
-
               <p id="wizard_external_msg" class="helper"></p>
             </div>
           </div>
@@ -718,6 +733,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20260224b"></script>
+  <script src="/static/app.js?v=20260401a"></script>
 </body>
 </html>

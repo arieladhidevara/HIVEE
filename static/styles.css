@@ -1,4 +1,4 @@
-/*
+﻿/*
   Hivee - styles.css
   Stage 1: flat dark, 4-color gradient accent, aurora auth-only
 */
@@ -68,29 +68,31 @@ h1, h2, h3, h4, strong {
   min-height: calc(100dvh - 28px);
   overflow: hidden;
   position: relative;
-  background:
-    radial-gradient(900px 520px at 5%  -5%,  rgba(255, 77,  77,  0.16), transparent 60%),
-    radial-gradient(820px 460px at 96%  16%,  rgba(59,  130, 246, 0.18), transparent 58%),
-    radial-gradient(560px 420px at 52%  96%,  rgba(34,  211, 238, 0.10), transparent 55%),
-    linear-gradient(160deg, #04050a 0%, #07090f 40%, #090c15 70%, #05070a 100%);
-  background-size: 140% 140%, 145% 145%, 130% 130%, 160% 160%;
-  animation: authGradientFlow 6s ease-in-out infinite alternate;
+  background: #04050a;
 }
 
-#view_auth::after {
-  content: "";
+#aurora-bg {
   position: absolute;
-  inset: -30%;
-  pointer-events: none;
+  inset: 0;
+  z-index: 0;
   background:
-    radial-gradient(circle at 12% 18%, rgba(249, 115, 22,  0.14), transparent 36%),
-    radial-gradient(circle at 88% 24%, rgba(59,  130, 246, 0.16), transparent 35%),
-    radial-gradient(circle at 50% 88%, rgba(34,  211, 238, 0.09), transparent 40%);
-  filter: blur(34px);
-  animation: authAuraDrift 7s ease-in-out infinite alternate;
+    radial-gradient(ellipse 90% 45% at 50% 0%,    #facc15 0%, transparent 100%),
+    radial-gradient(ellipse 45% 90% at 100% 50%,   #ff4d4d 0%, transparent 100%),
+    radial-gradient(ellipse 90% 45% at 50% 100%,   #22d3ee 0%, transparent 100%),
+    radial-gradient(ellipse 45% 90% at 0%   50%,   #3b82f6 0%, transparent 100%),
+    #000;
 }
 
-#view_auth > * { position: relative; z-index: 1; }
+#aurora-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+}
+
+#view_auth > .auth-shell { position: relative; z-index: 2; }
 
 #view_auth.active { display: grid; align-items: center; }
 
@@ -803,6 +805,20 @@ label {
   border-color: transparent;
   color: var(--text);
 }
+.agent-chip-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-inline-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  object-fit: contain;
+  display: block;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line-2);
+}
 
 /* ===== PROJECT PANEL ===== */
 .project-panel {
@@ -1066,6 +1082,18 @@ label {
   font-size: 11px;
   cursor: pointer;
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-mention-avatar {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  object-fit: contain;
+  display: block;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line-2);
 }
 .agent-mention-chip:hover { border-color: var(--blue); color: var(--text); background: transparent; opacity: 1; transform: none; }
 
@@ -1183,6 +1211,82 @@ label {
 .agent-pick .small { display: block; color: var(--muted); font-size: 12px; }
 .agent-pick [data-agent-role] { min-height: 34px; }
 
+.wizard-agent-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+.wizard-agent-head {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+.wizard-agent-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 9px;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.wizard-agent-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.wizard-agent-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.wizard-agent-title strong {
+  font-size: 13px;
+}
+.wizard-agent-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.wizard-agent-role {
+  display: grid;
+  gap: 6px;
+}
+.wizard-agent-role label {
+  margin-top: 0;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.wizard-agent-role input {
+  min-height: 34px;
+}
+
+.owner-agent-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 44px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.015);
+}
+.owner-agent-row .meta {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* ===== WIZARD EXTERNAL ACCESS ===== */
 .wizard-external-access { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; display: grid; gap: 10px; }
 .wizard-external-access h4 { font-size: 11px; margin: 0; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
@@ -1213,17 +1317,6 @@ label {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes authGradientFlow {
-  0%   { background-position: 0%   0%,   100% 0%,   50% 100%, 0%   50%; }
-  50%  { background-position: 40%  30%,  55%  20%,  50% 50%,  60%  50%; }
-  100% { background-position: 100% 70%,  0%   100%, 50% 0%,   100% 50%; }
-}
-
-@keyframes authAuraDrift {
-  0%   { transform: translate3d(-2%, -1%, 0) scale(1.02); opacity: 0.72; }
-  50%  { transform: translate3d( 1%,  2%, 0) scale(1.06); opacity: 0.88; }
-  100% { transform: translate3d( 3%, -2%, 0) scale(1.03); opacity: 0.76; }
-}
 
 /* ===== RESPONSIVE ===== */
 @media (max-width: 1420px) {
@@ -1300,17 +1393,20 @@ label {
   background-clip: text;
 }
 
-/* --- New Project button: plain ghost in nav (context links get the gradient treatment) --- */
+/* --- New Project button: transparent fill with gradient outline --- */
 #btn_new_project {
-  background: transparent !important;
-  border: none !important;
-  color: var(--muted) !important;
+  background: linear-gradient(var(--bg), var(--bg)) padding-box,
+              var(--gradient) border-box !important;
+  border: 1px solid transparent !important;
+  color: var(--text) !important;
   font-weight: 600;
 }
 #btn_new_project:hover {
-  background: rgba(255, 255, 255, 0.05) !important;
+  background: linear-gradient(var(--bg), var(--bg)) padding-box,
+              var(--gradient) border-box !important;
   color: var(--text) !important;
   opacity: 1;
+  border-color: transparent !important;
 }
 
 /* --- Center pane h3: secondary label, not competing with section title --- */
@@ -1402,7 +1498,7 @@ label {
 .summary-agent-avatar img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
 }
 .summary-agent-body {
@@ -1441,6 +1537,15 @@ label {
   }
   .summary-agent-avatar {
     margin: 0 auto;
+  }
+  .owner-agent-row {
+    grid-template-columns: 1fr;
+  }
+  .owner-agent-row > button {
+    justify-self: start;
+  }
+  .wizard-agent-head {
+    grid-template-columns: 36px 1fr;
   }
 }
 /* --- Section run/delete buttons: compact in headbar --- */
@@ -1608,17 +1713,32 @@ textarea[readonly]:focus {
   padding: 0;
   display: grid;
   place-items: center;
+  flex-shrink: 0;
+}
+#btn_chat_send {
   background: var(--gradient) !important;
   border: none !important;
   color: #fff !important;
-  flex-shrink: 0;
+}
+#btn_wizard_chat_send {
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  background-image: linear-gradient(var(--bg), var(--bg)), var(--gradient) !important;
+  background-origin: border-box !important;
+  background-clip: padding-box, border-box !important;
+  color: var(--text) !important;
 }
 #btn_chat_send .icon-svg,
 #btn_wizard_chat_send .icon-svg {
   width: 18px;
   height: 18px;
   flex: 0 0 18px;
+}
+#btn_chat_send .icon-svg {
   stroke: #fff;
+}
+#btn_wizard_chat_send .icon-svg {
+  stroke: currentColor;
 }
 
 /* --- Chat approval bubble: gradient outline --- */
@@ -1713,3 +1833,5 @@ textarea[readonly]:focus {
   .external-invite-cols { grid-template-columns: 1fr; }
   #btn_chat_send, #btn_wizard_chat_send { min-height: 44px; }
 }
+
+

@@ -1,4 +1,4 @@
-from hivee_shared import *
+﻿from hivee_shared import *
 from email.message import EmailMessage
 import smtplib
 from services.project_runtime import simulate_run
@@ -1321,13 +1321,23 @@ def register_routes(app: FastAPI) -> None:
         role_values = payload.agent_roles or []
         if role_values and len(role_values) != len(payload.agent_ids):
             raise HTTPException(400, "agent_roles must have same length as agent_ids when provided")
-        if not payload.agent_ids:
+
+        normalized_agent_ids = [str(aid or "").strip() for aid in payload.agent_ids]
+        normalized_agent_names = [
+            (str(name or "").strip()[:220] or normalized_agent_ids[idx] or "agent")
+            for idx, name in enumerate(payload.agent_names)
+        ]
+        if not normalized_agent_ids:
             raise HTTPException(400, "Select at least one agent")
-        if len(set(payload.agent_ids)) != len(payload.agent_ids):
+        if any(not aid for aid in normalized_agent_ids):
+            raise HTTPException(400, "agent_ids cannot be empty")
+        if len(set(normalized_agent_ids)) != len(normalized_agent_ids):
             raise HTTPException(400, "agent_ids must be unique")
-        if payload.primary_agent_id and payload.primary_agent_id not in payload.agent_ids:
+
+        primary_candidate = str(payload.primary_agent_id or "").strip() or None
+        if primary_candidate and primary_candidate not in normalized_agent_ids:
             raise HTTPException(400, "primary_agent_id must be one of selected agent_ids")
-    
+
         conn = db()
         proj = conn.execute(
             "SELECT id, project_root, title, brief, goal, setup_json, plan_text, plan_status FROM projects WHERE id = ? AND user_id = ?",
@@ -1336,39 +1346,47 @@ def register_routes(app: FastAPI) -> None:
         if not proj:
             conn.close()
             raise HTTPException(404, "Project not found")
-    
+
         external_rows = conn.execute(
             "SELECT agent_id FROM project_agents WHERE project_id = ? AND COALESCE(source_type, 'owner') <> 'owner'",
             (project_id,),
         ).fetchall()
         external_ids = {str(r["agent_id"] or "").strip() for r in external_rows if str(r["agent_id"] or "").strip()}
-        conflicting_ids = [aid for aid in payload.agent_ids if aid in external_ids]
+        conflicting_ids = [aid for aid in normalized_agent_ids if aid in external_ids]
         if conflicting_ids:
             conn.close()
             raise HTTPException(409, f"agent_ids conflict with external agents already in project: {', '.join(conflicting_ids[:5])}")
 
-        internal_rows = conn.execute(
+        owner_rows = conn.execute(
             "SELECT agent_id FROM project_agents WHERE project_id = ? AND COALESCE(source_type, 'owner') = 'owner'",
             (project_id,),
         ).fetchall()
-        for r in internal_rows:
+        existing_owner_ids = {
+            str(r["agent_id"] or "").strip()
+            for r in owner_rows
+            if str(r["agent_id"] or "").strip()
+        }
+        next_owner_ids = set(normalized_agent_ids)
+        removed_owner_ids = sorted(existing_owner_ids - next_owner_ids)
+
+        for removed_id in removed_owner_ids:
             conn.execute(
                 "DELETE FROM project_agent_access_tokens WHERE project_id = ? AND agent_id = ?",
-                (project_id, str(r["agent_id"])),
+                (project_id, removed_id),
             )
             conn.execute(
                 "DELETE FROM project_agent_permissions WHERE project_id = ? AND agent_id = ?",
-                (project_id, str(r["agent_id"])),
+                (project_id, removed_id),
             )
-        conn.execute(
-            "DELETE FROM project_agents WHERE project_id = ? AND COALESCE(source_type, 'owner') = 'owner'",
-            (project_id,),
-        )
+            conn.execute(
+                "DELETE FROM project_agents WHERE project_id = ? AND agent_id = ? AND COALESCE(source_type, 'owner') = 'owner'",
+                (project_id, removed_id),
+            )
 
-        primary_id = payload.primary_agent_id or payload.agent_ids[0]
+        primary_id = primary_candidate or normalized_agent_ids[0]
         now = int(time.time())
         issued_tokens: List[Dict[str, Any]] = []
-        for idx, (aid, name) in enumerate(zip(payload.agent_ids, payload.agent_names)):
+        for idx, (aid, name) in enumerate(zip(normalized_agent_ids, normalized_agent_names)):
             role = str(role_values[idx]).strip()[:500] if idx < len(role_values) else ""
             conn.execute(
                 """
@@ -1376,12 +1394,26 @@ def register_routes(app: FastAPI) -> None:
                     project_id, agent_id, agent_name, is_primary, role,
                     source_type, source_user_id, source_connection_id, joined_via_invite_id, added_at
                 ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(project_id, agent_id) DO UPDATE SET
+                    agent_name = excluded.agent_name,
+                    is_primary = excluded.is_primary,
+                    role = excluded.role,
+                    source_type = 'owner',
+                    source_user_id = excluded.source_user_id,
+                    source_connection_id = NULL,
+                    joined_via_invite_id = NULL
                 """,
                 (project_id, aid, name, 1 if aid == primary_id else 0, role, "owner", user_id, None, None, now),
             )
             raw_token = _new_agent_access_token()
             conn.execute(
-                "INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, created_at) VALUES (?,?,?,?)",
+                """
+                INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, created_at)
+                VALUES (?,?,?,?)
+                ON CONFLICT(project_id, agent_id) DO UPDATE SET
+                    token_hash = excluded.token_hash,
+                    created_at = excluded.created_at
+                """,
                 (project_id, aid, _hash_access_token(raw_token), now),
             )
             issued_tokens.append(
@@ -1393,13 +1425,14 @@ def register_routes(app: FastAPI) -> None:
                     "role": role,
                 }
             )
+
         all_rows = conn.execute(
             "SELECT agent_id, agent_name, is_primary, role FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
             (project_id,),
         ).fetchall()
         conn.commit()
         conn.close()
-    
+
         _write_project_agent_roles_file(
             owner_user_id=user_id,
             project_root=str(proj["project_root"] or ""),
@@ -1414,19 +1447,19 @@ def register_routes(app: FastAPI) -> None:
             ],
         )
         _refresh_project_documents(project_id)
-    
+
         _append_project_daily_log(
             owner_user_id=user_id,
             project_root=str(proj["project_root"] or ""),
             kind="agents.updated",
             text=f"Invited agents updated. Primary agent: {primary_id}.",
-            payload={"count": len(payload.agent_ids)},
+            payload={"count": len(normalized_agent_ids)},
         )
-        await emit(project_id, "project.agents_set", {"count": len(payload.agent_ids), "primary_agent_id": primary_id})
+        await emit(project_id, "project.agents_set", {"count": len(normalized_agent_ids), "primary_agent_id": primary_id})
         asyncio.create_task(_generate_project_plan(project_id, force=True))
         await emit(project_id, "project.plan.regenerate_requested", {"project_id": project_id, "source": "agents_set"})
         return {"ok": True, "primary_agent_id": primary_id, "agent_access_tokens": issued_tokens}
-    
+
     @app.get("/api/projects/{project_id}/agents")
     async def get_project_agents(request: Request, project_id: str):
         user_id = get_session_user(request)
@@ -2692,3 +2725,6 @@ def register_routes(app: FastAPI) -> None:
                     yield "event: ping\ndata: {}\n\n"
     
         return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+
