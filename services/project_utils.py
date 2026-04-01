@@ -1421,6 +1421,113 @@ def _clamp_progress(value: Any) -> int:
         pct = 0
     return max(0, min(100, pct))
 
+def _project_lifecycle_stage(
+    *,
+    invited_agents_count: int,
+    primary_agent_id: Optional[str],
+    plan_status: Any,
+) -> str:
+    invited = max(0, int(invited_agents_count or 0))
+    has_primary = bool(str(primary_agent_id or "").strip())
+    normalized_plan = _coerce_plan_status(plan_status)
+    if invited <= 0 or not has_primary:
+        return "draft"
+    if normalized_plan == PLAN_STATUS_APPROVED:
+        return "active"
+    return "planning"
+
+def _project_root_ready(owner_user_id: str, project_root: str) -> bool:
+    try:
+        project_dir = _resolve_owner_project_dir(owner_user_id, project_root).resolve()
+    except Exception:
+        return False
+    try:
+        return project_dir.exists() and project_dir.is_dir()
+    except Exception:
+        return False
+
+def _project_readiness_snapshot(
+    *,
+    owner_user_id: str,
+    project_id: str,
+    project_root: str,
+    plan_status: Any,
+    role_rows: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    normalized_rows: List[Dict[str, Any]] = []
+    if role_rows is None:
+        conn = db()
+        raw_rows = conn.execute(
+            "SELECT agent_id, agent_name, is_primary, role FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
+            (project_id,),
+        ).fetchall()
+        conn.close()
+        normalized_rows = [dict(r) for r in raw_rows]
+    else:
+        normalized_rows = [dict(r) for r in role_rows]
+
+    invited_agents_count = len(normalized_rows)
+    primary_row = next((r for r in normalized_rows if _coerce_bool(r.get("is_primary"))), None)
+    primary_agent_id = str((primary_row or {}).get("agent_id") or "").strip() or None
+    plan_approved = _coerce_plan_status(plan_status) == PLAN_STATUS_APPROVED
+    root_ready = _project_root_ready(owner_user_id, project_root)
+    stage = _project_lifecycle_stage(
+        invited_agents_count=invited_agents_count,
+        primary_agent_id=primary_agent_id,
+        plan_status=plan_status,
+    )
+
+    checks: List[Dict[str, Any]] = [
+        {
+            "key": "invited_agents",
+            "label": "At least one project agent is invited",
+            "ok": invited_agents_count > 0,
+            "required": True,
+            "cta": "Open Manage Agents and invite at least one agent.",
+        },
+        {
+            "key": "primary_agent",
+            "label": "Primary agent is assigned",
+            "ok": bool(primary_agent_id),
+            "required": True,
+            "cta": "Open Manage Agents and set one primary agent.",
+        },
+        {
+            "key": "plan_approved",
+            "label": "Project plan is approved",
+            "ok": plan_approved,
+            "required": True,
+            "cta": "Open Project Plan and click Approve Plan.",
+        },
+        {
+            "key": "project_root",
+            "label": "Project folder exists and is accessible",
+            "ok": root_ready,
+            "required": True,
+            "cta": "Project folder is missing. Recreate project or restore the project root.",
+        },
+    ]
+    can_run = all(bool(c.get("ok")) for c in checks if bool(c.get("required", True)))
+    can_chat_project = invited_agents_count > 0 and bool(primary_agent_id)
+    missing = [c for c in checks if bool(c.get("required", True)) and not bool(c.get("ok"))]
+    if can_run:
+        summary = "Ready to run."
+    elif missing:
+        summary = str(missing[0].get("cta") or missing[0].get("label") or "Project is not ready.").strip()
+    else:
+        summary = "Project is not ready."
+
+    return {
+        "project_id": project_id,
+        "stage": stage,
+        "can_chat_project": bool(can_chat_project),
+        "can_run": bool(can_run),
+        "invited_agents_count": invited_agents_count,
+        "primary_agent_id": primary_agent_id,
+        "checks": checks,
+        "summary": summary[:400],
+    }
+
 def _to_int(value: Any) -> int:
     try:
         return int(value)

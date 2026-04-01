@@ -884,6 +884,26 @@ def register_routes(app: FastAPI) -> None:
         ]
         primary = next((a for a in agents if a["is_primary"]), None)
         return {"ok": True, "agents": agents, "primary_agent": primary}
+
+    @app.get("/api/projects/{project_id}/readiness", response_model=ProjectReadinessOut)
+    async def get_project_readiness(request: Request, project_id: str):
+        user_id = get_session_user(request)
+        conn = db()
+        proj = conn.execute(
+            "SELECT id, user_id, project_root, plan_status FROM projects WHERE id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        conn.close()
+        if not proj:
+            raise HTTPException(404, "Project not found")
+
+        readiness = _project_readiness_snapshot(
+            owner_user_id=str(proj["user_id"]),
+            project_id=project_id,
+            project_root=str(proj["project_root"] or ""),
+            plan_status=proj["plan_status"],
+        )
+        return ProjectReadinessOut(**readiness)
     
 
     @app.post("/api/projects/{project_id}/run")
@@ -904,10 +924,23 @@ def register_routes(app: FastAPI) -> None:
         conn.close()
         if not proj:
             raise HTTPException(404, "Project not found")
-        if _coerce_plan_status(proj["plan_status"]) != PLAN_STATUS_APPROVED:
-            raise HTTPException(400, "Project plan must be approved first")
-        if not agents:
-            raise HTTPException(400, "No agents assigned to this project yet")
+
+        role_rows = [dict(a) for a in agents]
+        readiness = _project_readiness_snapshot(
+            owner_user_id=str(proj["user_id"]),
+            project_id=project_id,
+            project_root=str(proj["project_root"] or ""),
+            plan_status=proj["plan_status"],
+            role_rows=role_rows,
+        )
+        if not bool(readiness.get("can_run")):
+            raise HTTPException(
+                400,
+                {
+                    "message": str(readiness.get("summary") or "Project is not ready to run."),
+                    "readiness": readiness,
+                },
+            )
     
         current_progress = _clamp_progress(proj["progress_pct"])
         start_progress = max(10, current_progress)

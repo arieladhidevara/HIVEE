@@ -108,6 +108,7 @@ class OpenClawChatIn(BaseModel):
 class OpenClawWsChatIn(BaseModel):
     message: str = Field(..., min_length=1)
     agent_id: Optional[str] = None
+    context_mode: str = Field("auto", description="auto | workspace | project")
     session_key: str = "main"
     timeout_sec: int = 25
 
@@ -146,6 +147,23 @@ class ProjectExecutionOut(BaseModel):
 
 class ProjectExecutionControlIn(BaseModel):
     action: str = Field(..., description="pause | resume | stop")
+
+class ProjectReadinessCheckOut(BaseModel):
+    key: str
+    label: str
+    ok: bool
+    required: bool = True
+    cta: Optional[str] = None
+
+class ProjectReadinessOut(BaseModel):
+    project_id: str
+    stage: str
+    can_chat_project: bool
+    can_run: bool
+    invited_agents_count: int
+    primary_agent_id: Optional[str] = None
+    checks: List[ProjectReadinessCheckOut] = Field(default_factory=list)
+    summary: str = ""
 
 class ProjectUsageOut(BaseModel):
     project_id: str

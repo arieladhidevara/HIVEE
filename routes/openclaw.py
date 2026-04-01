@@ -186,7 +186,16 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(404, "Connection not found")
     
         workspace_root = str(policy["workspace_root"]) if (policy and policy["workspace_root"]) else HIVEE_ROOT
-        effective_agent_id = payload.agent_id or (str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else None)
+        main_agent_id = str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else ""
+        main_agent_id = main_agent_id.strip() or None
+        if payload.agent_id:
+            if not main_agent_id:
+                raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
+            if payload.agent_id != main_agent_id:
+                raise HTTPException(403, "Workspace chat can only target your main user agent")
+        effective_agent_id = main_agent_id
+        if not effective_agent_id:
+            raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
         scoped_message = _compose_guardrailed_message(payload.message.strip(), workspace_root=workspace_root)
         res = await openclaw_chat(
             row["base_url"],
@@ -213,39 +222,56 @@ def register_routes(app: FastAPI) -> None:
             "SELECT main_agent_id, workspace_root FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
+        context_mode = str(payload.context_mode or "auto").strip().lower() or "auto"
+        if context_mode not in {"auto", "workspace", "project"}:
+            conn.close()
+            raise HTTPException(400, "Invalid context_mode. Use auto, workspace, or project.")
         session_key = (payload.session_key or "main").strip() or "main"
+        wants_project_context = context_mode == "project" or (context_mode == "auto" and session_key.startswith("prj_"))
+        if context_mode == "project" and not session_key.startswith("prj_"):
+            conn.close()
+            raise HTTPException(400, "Project context requires a project session_key.")
         project_scope = None
         role_rows: List[Dict[str, Any]] = []
         project_primary_agent_id: Optional[str] = None
-        if session_key.startswith("prj_"):
+        if wants_project_context:
             project_scope = conn.execute(
                 "SELECT project_root, title, brief, goal, setup_json, plan_status, execution_status, progress_pct FROM projects WHERE id = ? AND user_id = ?",
                 (session_key, user_id),
             ).fetchone()
-            if project_scope:
-                raw_roles = conn.execute(
-                    "SELECT agent_id, agent_name, is_primary, role FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
-                    (session_key,),
-                ).fetchall()
-                role_rows = [dict(r) for r in raw_roles]
-                if not role_rows:
+            if not project_scope:
+                conn.close()
+                raise HTTPException(404, "Project not found for project chat context")
+            raw_roles = conn.execute(
+                "SELECT agent_id, agent_name, is_primary, role FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
+                (session_key,),
+            ).fetchall()
+            role_rows = [dict(r) for r in raw_roles]
+            if not role_rows:
+                conn.close()
+                raise HTTPException(400, "Invite at least one agent before using project chat")
+            first_primary = next((r for r in role_rows if bool(r.get("is_primary"))), None)
+            if first_primary:
+                project_primary_agent_id = str(first_primary.get("agent_id") or "").strip() or None
+            elif role_rows:
+                project_primary_agent_id = str(role_rows[0].get("agent_id") or "").strip() or None
+            if payload.agent_id:
+                allowed = {str(r.get("agent_id") or "").strip() for r in role_rows}
+                if payload.agent_id not in allowed:
                     conn.close()
-                    raise HTTPException(400, "Invite at least one agent before using project chat")
-                first_primary = next((r for r in role_rows if bool(r.get("is_primary"))), None)
-                if first_primary:
-                    project_primary_agent_id = str(first_primary.get("agent_id") or "").strip() or None
-                elif role_rows:
-                    project_primary_agent_id = str(role_rows[0].get("agent_id") or "").strip() or None
-                if payload.agent_id:
-                    allowed = {str(r.get("agent_id") or "").strip() for r in role_rows}
-                    if payload.agent_id not in allowed:
-                        conn.close()
-                        raise HTTPException(403, "Only invited project agents can be targeted in this project chat")
+                    raise HTTPException(403, "Only invited project agents can be targeted in this project chat")
         conn.close()
         if not row:
             raise HTTPException(404, "Connection not found")
     
         workspace_root = str(policy["workspace_root"]) if (policy and policy["workspace_root"]) else HIVEE_ROOT
+        main_agent_id = str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else ""
+        main_agent_id = main_agent_id.strip() or None
+        if (not project_scope) and payload.agent_id:
+            if not main_agent_id:
+                raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
+            if payload.agent_id != main_agent_id:
+                raise HTTPException(403, "Workspace chat can only target your main user agent")
         project_root = str(project_scope["project_root"]) if (project_scope and project_scope["project_root"]) else None
         project_instruction = None
         if project_scope:
@@ -297,7 +323,10 @@ def register_routes(app: FastAPI) -> None:
             if not effective_agent_id:
                 raise HTTPException(400, "No primary project agent configured")
         else:
-            effective_agent_id = payload.agent_id or (str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else None)
+            effective_agent_id = main_agent_id
+            session_key = "main"
+            if not effective_agent_id:
+                raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
         scoped_message = _compose_guardrailed_message(
             payload.message.strip(),
             workspace_root=workspace_root,
@@ -653,6 +682,8 @@ def register_routes(app: FastAPI) -> None:
             )
         res["resolved_agent_id"] = effective_agent_id
         res["workspace_root"] = workspace_root
+        res["context_mode"] = "project" if project_root else "workspace"
+        res["session_key"] = session_key
         if project_root:
             res["project_root"] = project_root
         return res

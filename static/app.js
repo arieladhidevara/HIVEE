@@ -3,6 +3,7 @@ let activeConnectionId = null;
 let selectedProjectId = null;
 let selectedProjectData = null;
 let selectedProjectPlan = null;
+let selectedProjectReadiness = null;
 let selectedPrimaryAgentId = null;
 let selectedAssignedAgents = [];
 let currentAgents = [];
@@ -19,6 +20,8 @@ let activeAuthMethod = "hooman";
 let workspacePolicy = {
   workspace_root: "HIVEE",
   templates_root: "HIVEE/TEMPLATES",
+  main_agent_id: "",
+  main_agent_name: "",
   bootstrap_status: "unknown",
   workspace_tree: "",
 };
@@ -50,6 +53,7 @@ let chatAliasMap = new Map();
 let chatById = new Map();
 let chatAutocompleteItems = [];
 let chatAutocompleteIndex = 0;
+let chatContextMode = "workspace";
 const DEFAULT_OWNER_FILES_PATH = "";
 const SESSION_TOKEN_KEY = "hivee_session_token_v2";
 const AGENT_SETUP_DOC_PATH = "/new-user/NEW-ACCOUNT-SETUP.MD";
@@ -106,8 +110,10 @@ function clearAuthSession() {
   selectedProjectId = null;
   selectedProjectData = null;
   selectedProjectPlan = null;
+  selectedProjectReadiness = null;
   selectedPrimaryAgentId = null;
   selectedAssignedAgents = [];
+  chatContextMode = "workspace";
 }
 
 function setMessage(id, text, tone = "") {
@@ -633,12 +639,16 @@ function applyWorkspacePolicy(policy) {
   workspacePolicy = {
     workspace_root: "HIVEE",
     templates_root: "HIVEE/TEMPLATES",
+    main_agent_id: "",
+    main_agent_name: "",
     bootstrap_status: "unknown",
     workspace_tree: "",
     ...policy,
   };
   workspaceTreeText = String(workspacePolicy?.workspace_tree || "").trim();
   renderFolderBrowsers();
+  syncChatContextControls();
+  updateChatProjectName();
 }
 
 async function loadConnectionPolicy(connectionId) {
@@ -746,8 +756,10 @@ function showEmptyProject() {
   selectedProjectId = null;
   selectedProjectData = null;
   selectedProjectPlan = null;
+  selectedProjectReadiness = null;
   selectedPrimaryAgentId = null;
   selectedAssignedAgents = [];
+  chatContextMode = "workspace";
   projectTreeText = "";
   projectFilesCurrentPath = "";
   workspaceFilesCurrentPath = "";
@@ -777,6 +789,7 @@ function showEmptyProject() {
   const live = $("overview_live_updates");
   if (live) live.innerHTML = "";
   syncPrimaryNavState();
+  syncChatContextControls();
   updateChatProjectName();
   renderFolderBrowsers();
   renderProjectUsage();
@@ -833,13 +846,21 @@ function syncProjectHeadbar() {
   if (selectedProjectData) {
     title.textContent = selectedProjectData.title;
     const createdAt = selectedProjectData.created_at ? formatTs(selectedProjectData.created_at) : "-";
-    subline.textContent = `${shortText(selectedProjectData.brief)} - Created ${createdAt}`;
-    const approved = String(selectedProjectData.plan_status || selectedProjectPlan?.status || "").toLowerCase() === "approved";
-    runBtn.classList.toggle("hidden", !approved);
+    const stage = projectStageLabel(selectedProjectReadiness?.stage || "draft");
+    subline.textContent = `${shortText(selectedProjectData.brief)} - Created ${createdAt} - Stage ${stage}`;
+    const canRun = Boolean(selectedProjectReadiness?.can_run);
+    runBtn.classList.remove("hidden");
+    runBtn.disabled = !canRun;
+    runBtn.textContent = canRun ? "Run" : "Run (Locked)";
+    runBtn.title = canRun
+      ? "Start project run"
+      : detailToText(selectedProjectReadiness?.summary || "Complete readiness checklist first.");
     deleteBtn.classList.remove("hidden");
   } else {
     bar.classList.add("hidden");
     runBtn.classList.add("hidden");
+    runBtn.disabled = true;
+    runBtn.textContent = "Run";
     deleteBtn.classList.add("hidden");
     return;
   }
@@ -1077,14 +1098,80 @@ function clearChatIfFresh() {
   }
 }
 
+function normalizeChatContextMode(mode) {
+  return String(mode || "").trim().toLowerCase() === "project" ? "project" : "workspace";
+}
+
+function activeChatContextMode() {
+  const requested = normalizeChatContextMode(chatContextMode);
+  if (requested === "project" && selectedProjectId) return "project";
+  return "workspace";
+}
+
+function workspaceMainChatAgent() {
+  const id = String(workspacePolicy?.main_agent_id || "").trim();
+  if (!id) return null;
+  const name = String(workspacePolicy?.main_agent_name || id).trim() || id;
+  return {
+    id,
+    name,
+    role: "owner-main",
+    is_primary: true,
+  };
+}
+
+function syncChatContextControls() {
+  const select = $("chat_context_mode");
+  const note = $("chat_context_note");
+  const hasProject = Boolean(selectedProjectId);
+  const effectiveMode = activeChatContextMode();
+  chatContextMode = effectiveMode;
+
+  if (select) {
+    const projectOption = select.querySelector('option[value="project"]');
+    if (projectOption) projectOption.disabled = !hasProject;
+    if (select.value !== effectiveMode) select.value = effectiveMode;
+  }
+
+  if (note) {
+    note.textContent = effectiveMode === "project"
+      ? "Project context active: invited project agents available."
+      : "Workspace context active: only your main user agent is available.";
+  }
+
+  const input = $("chat_input");
+  if (input) {
+    input.placeholder = effectiveMode === "project"
+      ? "Type message... example: @dailybot make recap"
+      : "Type workspace message... example: review my workspace status";
+  }
+}
+
+function setChatContextMode(mode, { silent = false } = {}) {
+  chatContextMode = normalizeChatContextMode(mode);
+  syncChatContextControls();
+  updateChatProjectName();
+  loadChatAgents().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  if (!silent) {
+    setMessage(
+      "chat_hint",
+      activeChatContextMode() === "project"
+        ? "Project context active."
+        : "Workspace context active (main user agent only).",
+      "ok"
+    );
+  }
+}
+
 function updateChatProjectName() {
   const el = $("chat_project_name");
   if (!el) return;
+  const modeLabel = activeChatContextMode() === "project" ? "Project" : "Workspace";
   if (!selectedProjectData) {
-    el.textContent = "Project: none";
+    el.textContent = `Project: none | Context: ${modeLabel}`;
     return;
   }
-  el.textContent = `Project: ${selectedProjectData.title}`;
+  el.textContent = `Project: ${selectedProjectData.title} | Context: ${modeLabel}`;
 }
 
 function planStatusLabel(status) {
@@ -1094,6 +1181,13 @@ function planStatusLabel(status) {
   if (s === "generating") return "Generating";
   if (s === "failed") return "Failed";
   return "Pending";
+}
+
+function projectStageLabel(stage) {
+  const s = String(stage || "").toLowerCase();
+  if (s === "active") return "Active";
+  if (s === "planning") return "Planning";
+  return "Draft";
 }
 
 function executionStatusLabel(status) {
@@ -1595,15 +1689,19 @@ function renderProjectExecutionInfo() {
 }
 
 function renderProjectPlanInfo() {
+  const stageEl = $("detail_stage");
   const statusEl = $("detail_plan_status");
   const updatedEl = $("detail_plan_updated");
+  const readinessEl = $("detail_readiness");
   const textEl = $("detail_plan_text");
   const approveBtn = $("btn_approve_plan");
   if (!statusEl || !updatedEl || !textEl || !approveBtn) return;
 
   if (!selectedProjectData) {
+    if (stageEl) stageEl.textContent = "Lifecycle: -";
     statusEl.textContent = "Status: -";
     updatedEl.textContent = "";
+    if (readinessEl) readinessEl.innerHTML = "";
     textEl.textContent = "No project selected.";
     approveBtn.disabled = true;
     renderProjectExecutionInfo();
@@ -1614,8 +1712,33 @@ function renderProjectPlanInfo() {
   const status = selectedProjectPlan?.status || selectedProjectData.plan_status || "pending";
   const text = selectedProjectPlan?.text || selectedProjectData.plan_text || "";
   const updatedAt = selectedProjectPlan?.updated_at || selectedProjectData.plan_updated_at || null;
+  const readiness = selectedProjectReadiness;
   statusEl.textContent = `Status: ${planStatusLabel(status)}`;
   updatedEl.textContent = updatedAt ? `Updated: ${formatTs(updatedAt)}` : "";
+  if (stageEl) {
+    const stage = readiness?.stage || "draft";
+    stageEl.textContent = `Lifecycle: ${projectStageLabel(stage)}`;
+  }
+  if (readinessEl) {
+    readinessEl.innerHTML = "";
+    const checks = Array.isArray(readiness?.checks) ? readiness.checks : [];
+    if (!checks.length) {
+      const row = document.createElement("div");
+      row.className = "readiness-item pending";
+      row.textContent = "Readiness: checking project setup...";
+      readinessEl.appendChild(row);
+    } else {
+      for (const check of checks) {
+        const row = document.createElement("div");
+        row.className = `readiness-item ${check?.ok ? "ok" : "pending"}`;
+        const prefix = check?.ok ? "Ready" : "Missing";
+        const label = detailToText(check?.label || check?.key || "check");
+        const cta = (!check?.ok && check?.cta) ? ` | ${detailToText(check.cta)}` : "";
+        row.textContent = `${prefix}: ${label}${cta}`;
+        readinessEl.appendChild(row);
+      }
+    }
+  }
   textEl.textContent = text || "Primary agent has not published a plan yet.";
   approveBtn.disabled = status === "approved" || status === "generating";
   approveBtn.textContent = status === "approved" ? "Plan Approved" : "Approve Plan";
@@ -1623,6 +1746,18 @@ function renderProjectPlanInfo() {
   renderProjectExecutionInfo();
   renderLiveStatus();
   syncProjectHeadbar();
+}
+
+async function loadProjectReadiness(projectId) {
+  if (!projectId) {
+    selectedProjectReadiness = null;
+    renderProjectPlanInfo();
+    return null;
+  }
+  const readiness = await api(`/api/projects/${projectId}/readiness`);
+  selectedProjectReadiness = readiness;
+  renderProjectPlanInfo();
+  return readiness;
 }
 
 async function loadProjectPlan(projectId) {
@@ -1648,6 +1783,7 @@ async function approveProjectPlan() {
   const plan = await api(`/api/projects/${selectedProjectId}/plan/approve`, "POST", { approve: true });
   selectedProjectPlan = plan;
   await refreshSelectedProjectData().catch(() => {});
+  await loadProjectReadiness(selectedProjectId).catch(() => {});
   renderProjectPlanInfo();
   setMessage("chat_hint", "Plan approved. Delegation task started.", "ok");
   addEvent("project.plan.approved", { project_id: selectedProjectId });
@@ -1658,6 +1794,7 @@ async function regenerateProjectPlan() {
   const plan = await api(`/api/projects/${selectedProjectId}/plan/regenerate`, "POST");
   selectedProjectPlan = plan;
   await refreshSelectedProjectData().catch(() => {});
+  await loadProjectReadiness(selectedProjectId).catch(() => {});
   renderProjectPlanInfo();
   setMessage("chat_hint", "Regenerating project plan...", "ok");
   addEvent("project.plan.regenerate_requested", { project_id: selectedProjectId });
@@ -1856,16 +1993,19 @@ function renderChatAgents(agents) {
 }
 
 async function loadChatAgents() {
-  if (selectedProjectId) {
+  syncChatContextControls();
+  const contextMode = activeChatContextMode();
+
+  if (contextMode === "project") {
     const scoped = (selectedAssignedAgents || []).map((a) => ({ id: a.id, name: a.name, role: a.role || "", is_primary: Boolean(a.is_primary) }));
     chatAgents = scoped;
     renderChatAgents(scoped);
     connectionHealthy = Boolean(activeConnectionId);
     applyConnectionStatus();
     if (scoped.length) {
-      setMessage("chat_hint", `Project scope: ${scoped.length} invited agents available for mention.`, "ok");
+      setMessage("chat_hint", `Project context: ${scoped.length} invited agents available for mention.`, "ok");
     } else {
-      setMessage("chat_hint", "No invited agents yet for this project.", "error");
+      setMessage("chat_hint", "Project context active, but no invited agents yet. Open Manage Agents to assign one.", "error");
     }
     return;
   }
@@ -1878,19 +2018,26 @@ async function loadChatAgents() {
     return;
   }
 
-  try {
-    const res = await api(`/api/openclaw/${activeConnectionId}/agents`);
-    chatAgents = res.agents || [];
-    renderChatAgents(chatAgents);
-    connectionHealthy = true;
-    applyConnectionStatus();
-  } catch (e) {
+  let mainAgent = workspaceMainChatAgent();
+  if (!mainAgent) {
+    await loadConnectionPolicy(activeConnectionId).catch(() => null);
+    mainAgent = workspaceMainChatAgent();
+  }
+
+  if (!mainAgent) {
     chatAgents = [];
     renderChatAgents([]);
-    connectionHealthy = false;
+    connectionHealthy = Boolean(activeConnectionId);
     applyConnectionStatus();
-    throw e;
+    setMessage("chat_hint", "Workspace context requires a configured main user agent. Re-bootstrap OpenClaw connection.", "error");
+    return;
   }
+
+  chatAgents = [mainAgent];
+  renderChatAgents(chatAgents);
+  connectionHealthy = true;
+  applyConnectionStatus();
+  setMessage("chat_hint", "Workspace context: chatting with your main user agent only.", "ok");
 }
 
 function parseMention(rawMessage) {
@@ -1917,7 +2064,16 @@ function parseMention(rawMessage) {
 function resolveChatTarget(rawMessage) {
   const parsed = parseMention(rawMessage);
   let chosen = parsed.matchedAgent;
-  if (!chosen && selectedPrimaryAgentId) chosen = chatById.get(selectedPrimaryAgentId) || null;
+  const contextMode = activeChatContextMode();
+  if (!chosen && contextMode === "project" && selectedPrimaryAgentId) {
+    chosen = chatById.get(selectedPrimaryAgentId) || null;
+  }
+  if (!chosen && contextMode === "workspace") {
+    const mainAgent = workspaceMainChatAgent();
+    if (mainAgent) {
+      chosen = chatById.get(mainAgent.id) || mainAgent;
+    }
+  }
   return {
     agent: chosen,
     unknownAlias: parsed.unknownAlias,
@@ -1932,20 +2088,38 @@ async function sendChatPrototype() {
   if (!activeConnectionId) throw new Error("OpenClaw connection not selected");
   if (!raw) throw new Error("Type message first");
 
+  syncChatContextControls();
+  const contextMode = activeChatContextMode();
+  const usingProjectContext = contextMode === "project" && Boolean(selectedProjectId);
+  if (usingProjectContext) {
+    if (!selectedProjectReadiness || selectedProjectReadiness.project_id !== selectedProjectId) {
+      await loadProjectReadiness(selectedProjectId).catch(() => {});
+    }
+    if (!selectedProjectReadiness?.can_chat_project) {
+      throw new Error("Project context is not ready. Open Manage Agents, invite at least one agent, and set a primary agent.");
+    }
+  }
+
   const resolved = resolveChatTarget(raw);
   if (resolved.unknownAlias) {
     const msg = `Unknown mention @${resolved.unknownAlias}.`;
     setMessage("chat_hint", msg, "error");
-    if (selectedProjectId) throw new Error(msg);
+    throw new Error(msg);
+  }
+  if (contextMode === "workspace" && !resolved.agent) {
+    throw new Error("Workspace context requires a configured main user agent.");
   }
 
-  const targetName = resolved.agent ? `${resolved.agent.name} (${resolved.agent.id})` : "auto route";
+  const targetName = resolved.agent
+    ? `${resolved.agent.name} (${resolved.agent.id})`
+    : (usingProjectContext ? "project auto route" : "main workspace agent");
   appendChatMessage("user", resolved.message, `you -> ${targetName}`);
 
   const payload = {
     message: resolved.message,
     agent_id: resolved.agent ? resolved.agent.id : null,
-    session_key: selectedProjectId || "main",
+    context_mode: usingProjectContext ? "project" : "workspace",
+    session_key: usingProjectContext ? selectedProjectId : "main",
     timeout_sec: 25,
   };
 
@@ -1956,19 +2130,21 @@ async function sendChatPrototype() {
   try {
     const res = await api(`/api/openclaw/${activeConnectionId}/ws-chat`, "POST", payload);
     const shown = res.text || detailToText(res.frames) || "(no text response yet)";
-    const resolvedAgentId = String(res.resolved_agent_id || resolved.agent?.id || selectedPrimaryAgentId || "").trim();
+    const workspaceAgentId = workspaceMainChatAgent()?.id || "";
+    const fallbackAgentId = usingProjectContext ? (selectedPrimaryAgentId || "") : workspaceAgentId;
+    const resolvedAgentId = String(res.resolved_agent_id || resolved.agent?.id || fallbackAgentId).trim();
     const resolvedAgent = chatById.get(resolvedAgentId);
-    const canInlineReply = !selectedProjectId || !projectStreamConnected;
+    const canInlineReply = !usingProjectContext || !projectStreamConnected;
     if (canInlineReply) {
-      const role = selectedProjectId ? "agent" : "assistant";
-      const meta = selectedProjectId
+      const role = usingProjectContext ? "agent" : "assistant";
+      const meta = usingProjectContext
         ? (resolvedAgent ? resolvedAgent.name : (resolvedAgentId || "agent"))
         : `${res.transport || "ws"} via ${res.path || "gateway"}`;
       appendChatMessage(role, shown, meta, { agentId: resolvedAgentId });
     }
     setMessage("chat_hint", "Message delivered.", "ok");
-    addEvent("chat.reply", { path: res.path, text: shown });
-    if (selectedProjectId) {
+    addEvent("chat.reply", { path: res.path, text: shown, context_mode: payload.context_mode });
+    if (usingProjectContext) {
       await refreshSelectedProjectData().catch(() => {});
       await loadProjectFiles(projectFilesCurrentPath || "").catch(() => {});
     }
@@ -2428,8 +2604,11 @@ async function selectProject(projectId) {
   };
   selectedAssignedAgents = assigned.agents || [];
   selectedPrimaryAgentId = assigned?.primary_agent?.id || null;
+  selectedProjectReadiness = null;
+  chatContextMode = "project";
   showProjectDetails();
   syncPrimaryNavState();
+  syncChatContextControls();
   updateChatProjectName();
   syncProjectHeadbar();
 
@@ -2457,6 +2636,7 @@ async function selectProject(projectId) {
   renderLiveStatus();
   await loadProjectWorkspaceTree(projectId).catch(() => {});
   await loadProjectPlan(projectId).catch(() => {});
+  await loadProjectReadiness(projectId).catch(() => {});
   await loadProjectFiles("").catch(() => {});
   await loadLatestLiveArtifact({ render: activeProjectPane === "live" }).catch(() => {});
   await loadChatAgents().catch(() => {});
@@ -3182,9 +3362,17 @@ async function subscribeEvents() {
 
 async function runProject() {
   if (!selectedProjectId) throw new Error("Pick project first");
+  if (!selectedProjectReadiness || selectedProjectReadiness.project_id !== selectedProjectId) {
+    await loadProjectReadiness(selectedProjectId).catch(() => {});
+  }
+  if (!selectedProjectReadiness?.can_run) {
+    const reason = detailToText(selectedProjectReadiness?.summary || "Project is not ready to run yet.");
+    throw new Error(reason);
+  }
   await api(`/api/projects/${selectedProjectId}/run`, "POST");
   addEvent("ui.run", "Run started");
   await refreshSelectedProjectData().catch(() => {});
+  await loadProjectReadiness(selectedProjectId).catch(() => {});
 }
 
 async function deleteSelectedProject() {
@@ -3340,13 +3528,17 @@ function bindActions() {
   $("btn_save_agents").onclick = () => saveAgentSetup().catch((e) => showUiError("wizard_msg", e));
 
   $("btn_subscribe").onclick = () => subscribeEvents().catch((e) => addEvent("error", detailToText(e)));
-  $("btn_run").onclick = () => runProject().catch((e) => addEvent("error", detailToText(e)));
+  $("btn_run").onclick = () => runProject().catch((e) => { setMessage("chat_hint", detailToText(e), "error"); addEvent("error", detailToText(e)); });
   $("btn_delete_project").onclick = () => deleteSelectedProject().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   $("btn_clear_events").onclick = () => {
     const evs = $("events");
     if (evs) evs.innerHTML = "";
   };
 
+  $("chat_context_mode")?.addEventListener("change", (ev) => {
+    const nextMode = ev?.target?.value || "workspace";
+    setChatContextMode(nextMode);
+  });
   $("btn_chat_send").onclick = () => sendChatPrototype().catch((e) => showUiError("chat_hint", e));
   $("chat_input").addEventListener("input", () => refreshMentionAutocomplete());
   $("chat_input").addEventListener("click", () => refreshMentionAutocomplete());
@@ -3422,6 +3614,8 @@ bindTabs();
 parseClaimAuthFromUrl();
 bindAuthMethods();
 bindActions();
+syncChatContextControls();
+updateChatProjectName();
 sessionToken = readStoredSessionToken();
 setView("auth");
 loadOAuthProviders().catch(() => {});

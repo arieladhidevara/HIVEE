@@ -1515,12 +1515,48 @@ label {
   background: rgba(18, 22, 28, 0.96);
 }
 
+.chat-head {
+  display: grid;
+  gap: 4px;
+}
+
 .chat-head strong {
   font-size: 17px;
 }
 
 .chat-head .helper {
   margin-top: 2px;
+}
+
+.chat-context-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.chat-context-row label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.chat-context-row select {
+  min-width: 122px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: rgba(35, 40, 47, 0.96);
+  color: #e1e7f4;
+  font-size: 12px;
+}
+
+.chat-context-row select:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+#chat_context_note {
+  margin-top: 0;
 }
 
 .chat-agent-list {
@@ -1798,6 +1834,35 @@ label {
 
 .agent-pick [data-agent-role] {
   min-height: 34px;
+}
+
+#detail_stage {
+  margin-top: 0;
+}
+
+.readiness-list {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+.readiness-item {
+  border-radius: 9px;
+  border: 1px solid var(--line-2);
+  background: rgba(35, 40, 47, 0.92);
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.readiness-item.ok {
+  border-color: rgba(110, 205, 160, 0.58);
+  background: rgba(68, 154, 112, 0.2);
+}
+
+.readiness-item.pending {
+  border-color: rgba(241, 201, 90, 0.58);
+  background: rgba(241, 201, 90, 0.12);
 }
 
 #detail_plan_text {

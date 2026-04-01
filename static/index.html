@@ -349,8 +349,10 @@
                 </div>
                 <div class="agent-summary">
                   <h4>Project Plan</h4>
+                  <p id="detail_stage" class="helper"></p>
                   <p id="detail_plan_status" class="helper"></p>
                   <p id="detail_plan_updated" class="helper"></p>
+                  <div id="detail_readiness" class="readiness-list"></div>
                   <pre id="detail_plan_text" class="text-block"></pre>
                   <div class="progress-card">
                     <div class="progress-meta">
@@ -511,6 +513,14 @@
           <div class="chat-head">
             <strong>Chat</strong>
             <p id="chat_project_name" class="helper">Project: none</p>
+            <div class="chat-context-row">
+              <label for="chat_context_mode">Context</label>
+              <select id="chat_context_mode">
+                <option value="workspace">Workspace</option>
+                <option value="project">Project</option>
+              </select>
+            </div>
+            <p id="chat_context_note" class="helper">Workspace context active.</p>
           </div>
           <p id="chat_hint" class="helper">Mention with @alias to route message.</p>
           <div id="chat_agent_list" class="chat-agent-list"></div>
