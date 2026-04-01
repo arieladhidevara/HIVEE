@@ -326,7 +326,7 @@
         <section class="center-stage">
           <section id="project_headbar" class="project-headbar hidden">
             <div class="project-headmeta">
-              <h2 id="detail_title"></h2>
+              <h2 id="detail_title"><span id="detail_title_text"></span><span id="detail_title_approval_badge" class="approval-indicator hidden">Needs approval</span></h2>
               <p id="detail_subline" class="project-subline"></p>
             </div>
             <div class="project-head-actions">
@@ -436,6 +436,16 @@
 
           <div id="center_summary" class="center-pane hidden" data-center-tab="summary">
             <h3>Summary</h3>
+            <div class="summary-grid">
+              <section class="summary-card">
+                <div class="title-row">
+                  <h4>Agents</h4>
+                </div>
+                <p class="helper">Managed agents in your account with their current capabilities.</p>
+                <div id="summary_agents_list" class="summary-agents-grid"></div>
+                <p id="summary_agents_msg" class="helper"></p>
+              </section>
+            </div>
           </div>
 
           <div id="center_config" class="center-pane hidden" data-center-tab="config">
@@ -533,7 +543,9 @@
           <div class="chat-compose">
             <div class="chat-compose-row">
               <textarea id="chat_input" placeholder="Message... @alias to route"></textarea>
-              <button id="btn_chat_send" type="button">Send</button>
+              <button id="btn_chat_send" type="button" aria-label="Send">
+                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>
+              </button>
             </div>
           </div>
         </aside>
@@ -616,7 +628,7 @@
                 <label>Expires In (hours)</label>
                 <input id="ext_expires_hours" type="number" min="1" max="720" value="72">
                 <div class="action-row">
-                  <button id="btn_create_external_invite" type="submit">Create External Invite</button>
+                  <button id="btn_create_external_invite" type="submit">Send External Invite</button>
                   <button id="btn_refresh_external_access" type="button" class="secondary">Refresh Access Data</button>
                 </div>
               </form>
@@ -695,7 +707,3 @@
   <script src="/static/app.js?v=20260224b"></script>
 </body>
 </html>
-
-
-
-

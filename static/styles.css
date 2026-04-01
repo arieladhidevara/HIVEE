@@ -1,5 +1,5 @@
 /*
-  Hivee – styles.css
+  Hivee - styles.css
   Stage 1: flat dark, 4-color gradient accent, aurora auth-only
 */
 
@@ -12,11 +12,12 @@
   --line-2:   rgba(255, 255, 255, 0.12);
   --text:     #edf1f8;
   --muted:    #4a5468;
+  --yellow:   #facc15;
   --red:      #ff4d4d;
   --orange:   #f97316;
   --cyan:     #22d3ee;
   --blue:     #3b82f6;
-  --gradient: linear-gradient(135deg, #ff4d4d 0%, #f97316 35%, #22d3ee 70%, #3b82f6 100%);
+  --gradient: linear-gradient(135deg, #facc15 0%, #ff4d4d 40%, #22d3ee 70%, #3b82f6 100%);
   --radius:   12px;
   --shadow:   0 24px 56px rgba(0, 0, 0, 0.55);
 }
@@ -39,7 +40,14 @@ h1, h2, h3, h4, strong {
   letter-spacing: 0.01em;
 }
 
-/* bg-halo disabled globally — auth uses its own CSS aurora */
+/* ===== SCROLLBARS ===== */
+::-webkit-scrollbar            { width: 5px; height: 5px; }
+::-webkit-scrollbar-track      { background: transparent; }
+::-webkit-scrollbar-thumb      { background: rgba(255,255,255,0.1); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover{ background: rgba(255,255,255,0.2); }
+*                              { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent; }
+
+/* bg-halo disabled globally - auth uses its own CSS aurora */
 .bg-noise { display: none; }
 .bg-halo  { display: none; }
 
@@ -129,20 +137,29 @@ textarea { resize: vertical; min-height: 92px; }
 
 /* ===== BUTTONS ===== */
 button {
-  border: none;
+  border: 1px solid transparent;
   border-radius: 10px;
   padding: 10px 16px;
   font-size: 13px;
   font-weight: 700;
   font-family: inherit;
-  color: #fff;
-  background: var(--gradient);
+  color: var(--text);
+  background: linear-gradient(var(--bg), var(--bg)) padding-box,
+              var(--gradient) border-box;
   cursor: pointer;
   transition: opacity 150ms ease, transform 120ms ease;
 }
 
 button:hover  { opacity: 0.82; transform: translateY(-1px); }
 button:active { transform: translateY(0); opacity: 1; }
+
+/* Gradient-fill: one primary CTA per context */
+button.primary,
+button[type="submit"]:not(.secondary):not(.danger) {
+  background: var(--gradient);
+  color: #fff;
+  border: none;
+}
 
 button.secondary {
   background: transparent;
@@ -567,12 +584,16 @@ label {
   transform: none;
 }
 .nav-toggle.active {
-  background: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(var(--bg), var(--bg)) padding-box,
+              var(--gradient) border-box;
+  border: 1px solid transparent;
   color: var(--text);
   font-weight: 700;
 }
 .nav-toggle.active[data-nav-tab="projects"].project-selected {
-  background: rgba(255, 255, 255, 0.08);
+  background: linear-gradient(var(--bg), var(--bg)) padding-box,
+              var(--gradient) border-box;
+  border: 1px solid transparent;
   color: var(--text);
 }
 
@@ -620,6 +641,25 @@ label {
   font-weight: 500;
 }
 .project-item .meta { margin-top: 3px; font-size: 11px; color: var(--muted); opacity: 0.65; }
+.project-item-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.project-item-approval-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
+  flex: 0 0 auto;
+}
+.project-item.needs-approval .meta {
+  color: #fecaca;
+  opacity: 0.95;
+}
+
 .project-item.active { background: rgba(255, 255, 255, 0.08); color: var(--text); }
 .project-item:hover  { background: rgba(255, 255, 255, 0.05); color: var(--text); opacity: 1; transform: none; }
 
@@ -690,10 +730,11 @@ label {
   transform: none;
 }
 .context-link.active {
-  background: rgba(255, 255, 255, 0.07);
+  background: linear-gradient(var(--bg), var(--bg)) padding-box,
+              var(--gradient) border-box;
+  border: 1px solid transparent;
   color: var(--text);
   font-weight: 700;
-  border: none;
   box-shadow: none;
 }
 .context-live-link { display: flex; align-items: center; justify-content: space-between; }
@@ -799,9 +840,10 @@ label {
   width: 0%;
   height: 100%;
   border-radius: 999px;
-  background: var(--gradient);
+  background: var(--cyan);
   transition: width 300ms ease;
 }
+.progress-fill.complete { background: var(--gradient); }
 
 /* ===== STATUS PILL ===== */
 .status-pill {
@@ -847,7 +889,7 @@ label {
 
 .file-breadcrumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 8px; }
 
-/* crumb is rendered as <button> by JS — override gradient */
+/* crumb is rendered as <button> by JS - override gradient */
 .crumb {
   border: 1px solid var(--line-2);
   border-radius: 999px;
@@ -1248,27 +1290,25 @@ label {
   .wizard-chat-input-row button { min-height: 44px; }
 }
 
-/* ===== STAGE 4: WORKSPACE POLISH ===== */
+/* ===== STAGE 4/5: WORKSPACE POLISH ===== */
 
-/* --- Section title: gradient text for visual identity --- */
+/* --- Section title: yellow-to-red gradient, project identity --- */
 #workspace_section_title {
-  background: var(--gradient);
+  background: linear-gradient(135deg, #facc15 0%, #ff4d4d 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
-/* --- New Project button: gradient border, stands out in nav --- */
+/* --- New Project button: plain ghost in nav (context links get the gradient treatment) --- */
 #btn_new_project {
-  background: linear-gradient(var(--bg), var(--bg)) padding-box,
-              var(--gradient) border-box !important;
-  border: 1px solid transparent !important;
-  color: var(--text) !important;
-  font-weight: 700;
+  background: transparent !important;
+  border: none !important;
+  color: var(--muted) !important;
+  font-weight: 600;
 }
 #btn_new_project:hover {
-  background: linear-gradient(var(--surface), var(--surface)) padding-box,
-              var(--gradient) border-box !important;
+  background: rgba(255, 255, 255, 0.05) !important;
   color: var(--text) !important;
   opacity: 1;
 }
@@ -1302,12 +1342,107 @@ label {
 
 /* --- Project head title refinement --- */
 #detail_title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+#detail_title_text {
   background: var(--gradient);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
+.approval-indicator {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.14);
+  color: #fca5a5;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  -webkit-text-fill-color: currentColor;
+}
 
+.summary-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+}
+.summary-card {
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  padding: 14px;
+  background: rgba(14, 17, 26, 0.45);
+}
+.summary-agents-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.summary-agent-card {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.summary-agent-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.04);
+}
+.summary-agent-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.summary-agent-body {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+.summary-agent-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.summary-agent-status {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+.summary-agent-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.summary-agent-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.summary-cap-chip {
+  font-size: 11px;
+  color: var(--text);
+}
+@media (max-width: 720px) {
+  .summary-agent-card {
+    grid-template-columns: 1fr;
+  }
+  .summary-agent-avatar {
+    margin: 0 auto;
+  }
+}
 /* --- Section run/delete buttons: compact in headbar --- */
 .project-head-actions button {
   padding: 7px 14px;
@@ -1460,4 +1595,121 @@ textarea[readonly]:focus {
 .agent-guide code {
   cursor: text;
   user-select: all;
+}
+
+/* ===== STAGE 5: REFINEMENTS ===== */
+
+/* --- Chat send button: icon-only, gradient fill --- */
+#btn_chat_send,
+#btn_wizard_chat_send {
+  width: 46px;
+  min-width: 46px;
+  min-height: 80px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: var(--gradient) !important;
+  border: none !important;
+  color: #fff !important;
+  flex-shrink: 0;
+}
+#btn_chat_send .icon-svg,
+#btn_wizard_chat_send .icon-svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  stroke: #fff;
+}
+
+/* --- Chat approval bubble: gradient outline --- */
+.chat-msg.needs-approval .chat-bubble {
+  background: linear-gradient(var(--bg), var(--bg)) padding-box,
+              var(--gradient) border-box !important;
+  border-color: transparent !important;
+}
+
+/* --- Project cards grid (empty state with projects) --- */
+.project-empty-pane {
+  padding: 16px;
+}
+.project-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  padding: 4px;
+}
+.project-card {
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  padding: 16px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text);
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.project-card:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.05);
+  opacity: 1;
+  transform: none;
+}
+.project-card strong { font-size: 14px; font-weight: 700; }
+.project-card .meta { color: var(--muted); font-size: 12px; margin: 0; }
+
+/* --- Agents wizard: two-column external invite --- */
+.agents-section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin: 0 0 8px;
+  opacity: 0.7;
+}
+.invite-tab-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.invite-tab {
+  background: transparent !important;
+  border: 1px solid var(--line-2) !important;
+  color: var(--muted) !important;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 130ms, color 130ms;
+}
+.invite-tab:hover {
+  border-color: rgba(255,255,255,0.2) !important;
+  color: var(--text) !important;
+  opacity: 1;
+  transform: none;
+}
+.invite-tab.active {
+  background: linear-gradient(var(--bg), var(--bg)) padding-box,
+              var(--gradient) border-box !important;
+  border-color: transparent !important;
+  color: var(--text) !important;
+}
+.invite-panel { display: grid; gap: 8px; }
+.invite-panel.hidden { display: none !important; }
+.external-invite-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+.external-invite-email-col,
+.external-invite-link-col {
+  display: grid;
+  gap: 8px;
+}
+@media (max-width: 860px) {
+  .external-invite-cols { grid-template-columns: 1fr; }
+  #btn_chat_send, #btn_wizard_chat_send { min-height: 44px; }
 }

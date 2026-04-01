@@ -66,8 +66,13 @@ const CLAIM_ENV_PARAM = "claim_env_id";
 const CLAIM_CODE_PARAM = "claim_code";
 const PROJECT_INVITE_PARAM = "project_invite";
 const PROJECT_INVITE_CODE_PARAM = "project_invite_code";
+const PROJECT_DEEPLINK_PROJECT_PARAM = "project";
+const PROJECT_DEEPLINK_PANE_PARAM = "project_pane";
+const PROJECT_DEEPLINK_PATH_PARAM = "project_path";
+const PROJECT_DEEPLINK_PREVIEW_PARAM = "project_preview";
 const OAUTH_ERROR_PARAM = "oauth_error";
 const PASSWORD_POLICY_MIN_LENGTH = 10;
+const SUMMARY_AGENT_DEFAULT_AVATAR = "/static/default-agent-avatar.svg";
 const CLAIM_SOCIAL_CTX_KEY = "hivee_claim_social_ctx_v1";
 let claimAuthContext = {
   active: false,
@@ -86,6 +91,16 @@ let projectInviteContext = {
   info: null,
   connections: [],
 };
+let projectDeepLinkContext = {
+  active: false,
+  projectId: "",
+  pane: "",
+  path: "",
+  previewPath: "",
+};
+let summaryAgents = [];
+let summaryAgentsLoading = false;
+let summaryAgentsError = "";
 let oauthProvidersState = new Map();
 
 function readStoredSessionToken() {
@@ -189,6 +204,101 @@ function clearProjectInviteContext({ clearUrl = false } = {}) {
   renderProjectInviteUI();
 }
 
+function normalizeProjectPaneForLink(pane) {
+  const raw = String(pane || "").trim().toLowerCase();
+  if (["info", "folder", "live", "usage", "tracker"].includes(raw)) return raw;
+  return "folder";
+}
+
+function parseProjectDeepLinkFromUrl() {
+  const params = new URLSearchParams(window.location.search || "");
+  const projectId = String(params.get(PROJECT_DEEPLINK_PROJECT_PARAM) || "").trim();
+  const pane = normalizeProjectPaneForLink(params.get(PROJECT_DEEPLINK_PANE_PARAM));
+  const path = String(params.get(PROJECT_DEEPLINK_PATH_PARAM) || "").trim();
+  const previewPath = String(params.get(PROJECT_DEEPLINK_PREVIEW_PARAM) || "").trim();
+  projectDeepLinkContext = {
+    active: Boolean(projectId),
+    projectId,
+    pane,
+    path,
+    previewPath,
+  };
+}
+
+function clearProjectDeepLinkParamsFromUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete(PROJECT_DEEPLINK_PROJECT_PARAM);
+  url.searchParams.delete(PROJECT_DEEPLINK_PANE_PARAM);
+  url.searchParams.delete(PROJECT_DEEPLINK_PATH_PARAM);
+  url.searchParams.delete(PROJECT_DEEPLINK_PREVIEW_PARAM);
+  const next = url.pathname + (url.search ? url.search : "") + (url.hash ? url.hash : "");
+  window.history.replaceState({}, "", next);
+}
+
+function clearProjectDeepLinkContext({ clearUrl = false } = {}) {
+  projectDeepLinkContext = {
+    active: false,
+    projectId: "",
+    pane: "",
+    path: "",
+    previewPath: "",
+  };
+  if (clearUrl) clearProjectDeepLinkParamsFromUrl();
+}
+
+function buildProjectDeepLink(projectId, { pane = "folder", path = "", previewPath = "" } = {}) {
+  const pid = String(projectId || "").trim();
+  if (!pid) return "";
+  const params = new URLSearchParams();
+  params.set(PROJECT_DEEPLINK_PROJECT_PARAM, pid);
+  params.set(PROJECT_DEEPLINK_PANE_PARAM, normalizeProjectPaneForLink(pane));
+  const cleanPath = normalizePath(path);
+  if (cleanPath) params.set(PROJECT_DEEPLINK_PATH_PARAM, cleanPath);
+  const cleanPreviewPath = normalizePath(previewPath);
+  if (cleanPreviewPath) params.set(PROJECT_DEEPLINK_PREVIEW_PARAM, cleanPreviewPath);
+  return `${window.location.pathname || "/"}?${params.toString()}`;
+}
+
+async function applyProjectDeepLinkContext() {
+  if (!projectDeepLinkContext.active) return false;
+  const targetProjectId = String(projectDeepLinkContext.projectId || "").trim();
+  if (!targetProjectId) {
+    clearProjectDeepLinkContext({ clearUrl: true });
+    return false;
+  }
+
+  const hasTarget = projectsCache.some((p) => String(p?.id || "").trim() === targetProjectId);
+  if (!hasTarget) {
+    clearProjectDeepLinkContext({ clearUrl: true });
+    return false;
+  }
+
+  if (selectedProjectId !== targetProjectId) {
+    await selectProject(targetProjectId);
+  }
+
+  setNavTab("projects");
+  const pane = normalizeProjectPaneForLink(projectDeepLinkContext.pane || "folder");
+  setProjectPane(pane);
+
+  if (pane === "folder") {
+    const folderPath = normalizePath(projectDeepLinkContext.path || "");
+    await loadProjectFiles(folderPath).catch(() => {});
+    const previewPath = normalizePath(projectDeepLinkContext.previewPath || "");
+    if (previewPath) {
+      await openProjectFile(previewPath).catch(() => {});
+    }
+  } else if (pane === "live") {
+    const previewPath = normalizePath(projectDeepLinkContext.previewPath || "");
+    if (previewPath) {
+      livePreviewPath = normalizeOutputPath(previewPath);
+      await renderLivePreview(livePreviewPath, { force: true }).catch(() => {});
+    }
+  }
+
+  clearProjectDeepLinkContext({ clearUrl: true });
+  return true;
+}
 function readOauthErrorFromUrl() {
   try {
     const params = new URLSearchParams(window.location.search || "");
@@ -693,7 +803,7 @@ function ignoreProjectInviteFromUI() {
   clearProjectInviteContext({ clearUrl: true });
   setMessage("project_invite_msg", "Invite ignored. You can reopen invite link anytime.", "ok");
   if (sessionToken) {
-    fetchInitial().catch(() => setView("auth"));
+    fetchInitial({ preferredProjectId: projectDeepLinkContext.projectId || null }).catch(() => setView("auth"));
   }
 }
 
@@ -1007,6 +1117,12 @@ function renderConnections(connections) {
   renderConfigConnectionDetails();
 }
 
+function projectNeedsApproval(project) {
+  const plan = String(project?.plan_status || "").trim().toLowerCase();
+  const exec = String(project?.execution_status || "").trim().toLowerCase();
+  return plan === "awaiting_approval" || exec === "paused";
+}
+
 function renderProjects(projects) {
   projectsCache = projects || [];
   const box = $("projects_list");
@@ -1019,10 +1135,32 @@ function renderProjects(projects) {
   }
 
   for (const p of projectsCache) {
+    const needsApproval = projectNeedsApproval(p);
     const el = document.createElement("button");
     el.type = "button";
-    el.className = "project-item" + (p.id === selectedProjectId ? " active" : "");
-    el.innerHTML = `<strong>${p.title}</strong><div class="meta">${formatTs(p.created_at)}</div>`;
+    el.className = "project-item" + (p.id === selectedProjectId ? " active" : "") + (needsApproval ? " needs-approval" : "");
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "project-item-title-row";
+
+    const title = document.createElement("strong");
+    title.textContent = p.title;
+    titleRow.appendChild(title);
+
+    if (needsApproval) {
+      const dot = document.createElement("span");
+      dot.className = "project-item-approval-dot";
+      dot.title = "Needs approval";
+      titleRow.appendChild(dot);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = formatTs(p.created_at);
+
+    el.appendChild(titleRow);
+    el.appendChild(meta);
+
     el.onclick = () => {
       if (activeNavTab !== "projects") setNavTab("projects");
       selectProject(p.id).catch((e) => showUiError("chat_hint", e));
@@ -1116,6 +1254,8 @@ function syncPrimaryNavState() {
 function syncProjectHeadbar() {
   const bar = $("project_headbar");
   const title = $("detail_title");
+  const titleText = $("detail_title_text");
+  const titleApproval = $("detail_title_approval_badge");
   const subline = $("detail_subline");
   const runBtn = $("btn_run");
   const deleteBtn = $("btn_delete_project");
@@ -1127,7 +1267,14 @@ function syncProjectHeadbar() {
   }
 
   if (selectedProjectData) {
-    title.textContent = selectedProjectData.title;
+    const projectTitle = String(selectedProjectData.title || "").trim() || "Untitled Project";
+    if (titleText) titleText.textContent = projectTitle;
+    else title.textContent = projectTitle;
+
+    if (titleApproval) {
+      titleApproval.classList.toggle("hidden", !projectNeedsApproval(selectedProjectData));
+    }
+
     const createdAt = selectedProjectData.created_at ? formatTs(selectedProjectData.created_at) : "-";
     const stage = projectStageLabel(selectedProjectReadiness?.stage || "draft");
     subline.textContent = `${shortText(selectedProjectData.brief)} - Created ${createdAt} - Stage ${stage}`;
@@ -1140,6 +1287,8 @@ function syncProjectHeadbar() {
       : detailToText(selectedProjectReadiness?.summary || "Complete readiness checklist first.");
     deleteBtn.classList.remove("hidden");
   } else {
+    if (titleText) titleText.textContent = "";
+    if (titleApproval) titleApproval.classList.add("hidden");
     bar.classList.add("hidden");
     runBtn.classList.add("hidden");
     runBtn.disabled = true;
@@ -1306,7 +1455,7 @@ function colorForAgent(agentId) {
 
 function parseMessageLinks(text) {
   const raw = String(text || "");
-  const re = /((?:https?:\/\/|\/api\/)[^\s<>"']+)/g;
+  const re = /((?:https?:\/\/|\/api\/|\/\?)[^\s<>"']+)/g;
   const parts = [];
   let cursor = 0;
   let match;
@@ -1336,6 +1485,111 @@ function parseMessageLinks(text) {
   return parts.length ? parts : [{ type: "text", value: raw }];
 }
 
+function _projectLinkLabel(target) {
+  const pane = normalizeProjectPaneForLink(target?.pane || "folder");
+  const path = normalizePath(target?.path || "");
+  const previewPath = normalizePath(target?.previewPath || "");
+  if (previewPath) return "Open latest file in Project Space";
+  if (pane === "folder" && path) return `Open ${path} in Project Space`;
+  if (pane === "live") return "Open live preview in Project Space";
+  if (pane === "folder") return "Open project files in Project Space";
+  return "Open project in Project Space";
+}
+
+function _parseProjectDeepLinkTarget(rawLink) {
+  try {
+    const parsed = new URL(String(rawLink || ""), window.location.origin);
+    if (parsed.origin !== window.location.origin) return null;
+    const projectId = String(parsed.searchParams.get(PROJECT_DEEPLINK_PROJECT_PARAM) || "").trim();
+    if (!projectId) return null;
+    const pane = normalizeProjectPaneForLink(parsed.searchParams.get(PROJECT_DEEPLINK_PANE_PARAM));
+    const path = normalizePath(parsed.searchParams.get(PROJECT_DEEPLINK_PATH_PARAM) || "");
+    const previewPath = normalizePath(parsed.searchParams.get(PROJECT_DEEPLINK_PREVIEW_PARAM) || "");
+    return {
+      projectId,
+      pane,
+      path,
+      previewPath,
+      label: _projectLinkLabel({ pane, path, previewPath }),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function _parseProjectApiLinkTarget(rawLink) {
+  try {
+    const parsed = new URL(String(rawLink || ""), window.location.origin);
+    if (parsed.origin !== window.location.origin) return null;
+    const pathname = String(parsed.pathname || "");
+    const filesMatch = pathname.match(/^\/api\/projects\/([^/]+)\/files$/i);
+    if (filesMatch) {
+      const projectId = decodeURIComponent(filesMatch[1] || "").trim();
+      if (!projectId) return null;
+      const path = normalizePath(parsed.searchParams.get("path") || "");
+      return {
+        projectId,
+        pane: "folder",
+        path,
+        previewPath: "",
+        label: _projectLinkLabel({ pane: "folder", path }),
+      };
+    }
+
+    const previewMatch = pathname.match(/^\/api\/projects\/([^/]+)\/preview\/(.+)$/i);
+    if (previewMatch) {
+      const projectId = decodeURIComponent(previewMatch[1] || "").trim();
+      const previewPath = normalizePath(decodeURIComponent(previewMatch[2] || ""));
+      if (!projectId || !previewPath) return null;
+      const parentPath = previewPath.includes("/") ? previewPath.slice(0, previewPath.lastIndexOf("/")) : "";
+      return {
+        projectId,
+        pane: "folder",
+        path: normalizePath(parentPath),
+        previewPath,
+        label: _projectLinkLabel({ pane: "folder", path: parentPath, previewPath }),
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function parseProjectSpaceLinkTarget(rawLink) {
+  return _parseProjectDeepLinkTarget(rawLink) || _parseProjectApiLinkTarget(rawLink);
+}
+
+async function openProjectSpaceFromLinkTarget(target) {
+  const projectId = String(target?.projectId || "").trim();
+  if (!projectId) return;
+
+  if (selectedProjectId !== projectId) {
+    await selectProject(projectId);
+  }
+  if (activeNavTab !== "projects") {
+    setNavTab("projects");
+  }
+
+  const pane = normalizeProjectPaneForLink(target?.pane || "folder");
+  setProjectPane(pane);
+
+  if (pane === "folder") {
+    const path = normalizePath(target?.path || "");
+    await loadProjectFiles(path).catch(() => {});
+    const previewPath = normalizePath(target?.previewPath || "");
+    if (previewPath) {
+      await openProjectFile(previewPath).catch(() => {});
+    }
+  } else if (pane === "live") {
+    const previewPath = normalizePath(target?.previewPath || "");
+    if (previewPath) {
+      livePreviewPath = normalizeOutputPath(previewPath);
+      await renderLivePreview(livePreviewPath, { force: true }).catch(() => {});
+    }
+  }
+}
+
 function renderChatBubbleContent(bubble, text) {
   bubble.textContent = "";
   const parts = parseMessageLinks(text);
@@ -1344,7 +1598,28 @@ function renderChatBubbleContent(bubble, text) {
       bubble.appendChild(document.createTextNode(part.value));
       continue;
     }
+
+    const internalTarget = parseProjectSpaceLinkTarget(part.value);
     const a = document.createElement("a");
+
+    if (internalTarget) {
+      const href = buildProjectDeepLink(internalTarget.projectId, {
+        pane: internalTarget.pane,
+        path: internalTarget.path,
+        previewPath: internalTarget.previewPath,
+      });
+      a.href = href || part.value;
+      a.textContent = internalTarget.label || part.value;
+      a.target = "_self";
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        openProjectSpaceFromLinkTarget(internalTarget)
+          .catch((e) => setMessage("chat_hint", detailToText(e?.message || e), "error"));
+      });
+      bubble.appendChild(a);
+      continue;
+    }
+
     a.href = part.value;
     a.textContent = part.value;
     a.target = "_blank";
@@ -2102,6 +2377,11 @@ async function refreshSelectedProjectData() {
   if (!selectedProjectId) return null;
   const latest = await api(`/api/projects/${selectedProjectId}`);
   selectedProjectData = latest;
+  const cacheIdx = projectsCache.findIndex((p) => String(p?.id || "") === String(latest?.id || ""));
+  if (cacheIdx >= 0) {
+    projectsCache[cacheIdx] = { ...projectsCache[cacheIdx], ...latest };
+    renderProjects(projectsCache);
+  }
   if (selectedProjectPlan) {
     selectedProjectPlan.status = latest.plan_status || selectedProjectPlan.status;
     selectedProjectPlan.text = latest.plan_text || selectedProjectPlan.text;
@@ -2797,6 +3077,176 @@ function renderProjectUsage() {
   `;
 }
 
+function _formatSummaryCapabilityLabel(raw) {
+  return String(raw || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function _extractSummaryAgentCapabilities(card) {
+  const tags = [];
+  const seen = new Set();
+  const capObj = card && typeof card.capabilities === "object" ? card.capabilities : {};
+  for (const [key, value] of Object.entries(capObj)) {
+    const enabled = value === true || (typeof value === "number" && value > 0) || (value && typeof value === "object");
+    if (!enabled) continue;
+    const label = _formatSummaryCapabilityLabel(key);
+    const low = label.toLowerCase();
+    if (!label || seen.has(low)) continue;
+    seen.add(low);
+    tags.push(label);
+  }
+
+  const skills = Array.isArray(card?.skills) ? card.skills : [];
+  for (const skill of skills) {
+    const skillName = String(skill?.name || skill?.id || "").trim();
+    if (!skillName) continue;
+    const label = `Skill: ${skillName}`;
+    const low = label.toLowerCase();
+    if (seen.has(low)) continue;
+    seen.add(low);
+    tags.push(label);
+    if (tags.length >= 8) break;
+  }
+
+  return tags.slice(0, 8);
+}
+
+function renderSummaryAgents() {
+  const list = $("summary_agents_list");
+  const msg = $("summary_agents_msg");
+  if (!list || !msg) return;
+
+  list.innerHTML = "";
+  msg.classList.remove("error", "ok");
+
+  if (summaryAgentsLoading) {
+    msg.textContent = "Loading agents...";
+    return;
+  }
+
+  if (summaryAgentsError) {
+    msg.textContent = summaryAgentsError;
+    msg.classList.add("error");
+    return;
+  }
+
+  if (!summaryAgents.length) {
+    msg.textContent = "No managed agents found yet. Bootstrap OpenClaw first.";
+    return;
+  }
+
+  msg.textContent = `${summaryAgents.length} agents loaded.`;
+
+  for (const agent of summaryAgents) {
+    const card = document.createElement("article");
+    card.className = "summary-agent-card";
+
+    const avatarWrap = document.createElement("div");
+    avatarWrap.className = "summary-agent-avatar";
+    const avatar = document.createElement("img");
+    avatar.src = SUMMARY_AGENT_DEFAULT_AVATAR;
+    avatar.alt = "Agent avatar";
+    avatar.loading = "lazy";
+    avatarWrap.appendChild(avatar);
+
+    const body = document.createElement("div");
+    body.className = "summary-agent-body";
+
+    const heading = document.createElement("div");
+    heading.className = "summary-agent-heading";
+    const name = document.createElement("strong");
+    name.textContent = String(agent.agent_name || agent.agent_id || "Agent");
+    const status = document.createElement("span");
+    status.className = "summary-agent-status";
+    status.textContent = String(agent.status || "active");
+    heading.appendChild(name);
+    heading.appendChild(status);
+
+    const meta = document.createElement("p");
+    meta.className = "summary-agent-meta";
+    const idPart = String(agent.agent_id || "").trim();
+    const connPart = String(agent.connection_id || "").trim();
+    meta.textContent = `ID: ${idPart || "-"} | Connection: ${connPart || "-"}`;
+
+    const caps = document.createElement("div");
+    caps.className = "summary-agent-capabilities";
+    const capList = Array.isArray(agent.capabilities) ? agent.capabilities : [];
+    if (!capList.length) {
+      const empty = document.createElement("span");
+      empty.className = "chip";
+      empty.textContent = "No capability metadata";
+      caps.appendChild(empty);
+    } else {
+      for (const cap of capList) {
+        const chip = document.createElement("span");
+        chip.className = "chip summary-cap-chip";
+        chip.textContent = cap;
+        caps.appendChild(chip);
+      }
+    }
+
+    body.appendChild(heading);
+    body.appendChild(meta);
+    body.appendChild(caps);
+
+    card.appendChild(avatarWrap);
+    card.appendChild(body);
+    list.appendChild(card);
+  }
+}
+
+async function loadSummaryAgents({ force = false } = {}) {
+  if (summaryAgentsLoading && !force) return;
+  if (!sessionToken) {
+    summaryAgents = [];
+    summaryAgentsError = "";
+    renderSummaryAgents();
+    return;
+  }
+
+  summaryAgentsLoading = true;
+  summaryAgentsError = "";
+  renderSummaryAgents();
+
+  try {
+    const listed = await api("/api/a2a/agents");
+    const items = Array.isArray(listed?.agents) ? listed.agents : [];
+
+    const enriched = await Promise.all(items.map(async (agent) => {
+      const agentId = String(agent?.agent_id || "").trim();
+      const connectionId = String(agent?.connection_id || "").trim();
+      let card = {};
+      if (agentId) {
+        const q = connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : "";
+        try {
+          const detail = await api(`/api/a2a/agents/${encodeURIComponent(agentId)}/card${q}`);
+          card = (detail && typeof detail.card === "object" && detail.card) ? detail.card : {};
+        } catch {
+          card = {};
+        }
+      }
+      return {
+        agent_id: agentId,
+        agent_name: String(agent?.agent_name || agentId || "agent").trim(),
+        connection_id: connectionId,
+        status: String(agent?.status || "active").trim() || "active",
+        capabilities: _extractSummaryAgentCapabilities(card),
+      };
+    }));
+
+    summaryAgents = enriched.filter((agent) => Boolean(agent.agent_id));
+    summaryAgentsError = "";
+  } catch (e) {
+    summaryAgents = [];
+    summaryAgentsError = detailToText(e?.message || e);
+  } finally {
+    summaryAgentsLoading = false;
+    renderSummaryAgents();
+  }
+}
 function setProjectPane(pane) {
   activeProjectPane = pane;
   for (const btn of document.querySelectorAll("[data-project-pane]")) {
@@ -2846,6 +3296,9 @@ function setNavTab(tab) {
   if (tab === "files") {
     renderFolderBrowsers();
     loadWorkspaceFiles(workspaceFilesCurrentPath || DEFAULT_OWNER_FILES_PATH).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  }
+  if (tab === "summary") {
+    loadSummaryAgents().catch(() => {});
   }
   if (tab === "config") renderConfigConnectionDetails();
   if (tab === "account") {
@@ -3549,13 +4002,26 @@ async function createWizardExternalInvite(ev) {
     }
   }
 
-  const msgBits = ["External invite created."];
+  let portalOpened = false;
+  if (portalUrl) {
+    try {
+      _openInviteDeliveryUrl(portalUrl);
+      portalOpened = true;
+    } catch {
+      portalOpened = false;
+    }
+  }
+
+  const msgBits = ["External invite sent."];
+  if (portalOpened) msgBits.push("Receiver portal opened in new tab.");
   if (copied) msgBits.push("Invite URL copied to clipboard.");
   else if (inviteUrl) msgBits.push(`Invite URL: ${inviteUrl}`);
-  if (portalUrl) msgBits.push(`Portal URL: ${portalUrl}`);
+  if (portalUrl && !portalOpened) msgBits.push(`Portal URL: ${portalUrl}`);
   if (inviteCode) msgBits.push(`Invite Code: ${inviteCode}`);
   if (docUrl) msgBits.push(`Project invitations doc: ${docUrl}`);
-  if (res?.email_delivery_status) msgBits.push(`Email: ${res.email_delivery_status}`);
+  if (res?.email_sent_by_primary_agent) msgBits.push("Primary agent sent the invite email.");
+  else if (res?.email_delivery_status) msgBits.push(`Email status: ${res.email_delivery_status}`);
+  if (res?.email_delivery_error) msgBits.push(`Email issue: ${detailToText(res.email_delivery_error)}`);
   setMessage("wizard_external_msg", msgBits.join(" "), "ok");
 
   await refreshWizardExternalAccess({ silent: true });
@@ -4232,7 +4698,8 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
   renderProjects(projects);
 
   if (projects.length) {
-    const preferred = String(preferredProjectId || "").trim();
+    const deepPreferred = String(projectDeepLinkContext.projectId || "").trim();
+    const preferred = String(preferredProjectId || deepPreferred || "").trim();
     const hasPreferred = Boolean(preferred && projects.some((p) => p.id === preferred));
     const hasSelected = Boolean(selectedProjectId && projects.some((p) => p.id === selectedProjectId));
     const pick = hasPreferred ? preferred : (hasSelected ? selectedProjectId : projects[0].id);
@@ -4241,6 +4708,14 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     showEmptyProject();
     await loadWorkspaceFiles(DEFAULT_OWNER_FILES_PATH).catch(() => {});
     await loadChatAgents().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  }
+
+  if (projectDeepLinkContext.active) {
+    await applyProjectDeepLinkContext().catch(() => {});
+  }
+
+  if (activeNavTab === "summary") {
+    await loadSummaryAgents({ force: true }).catch(() => {});
   }
 
   setNavTab(activeNavTab);
@@ -4471,6 +4946,7 @@ function bindActions() {
 bindTabs();
 parseClaimAuthFromUrl();
 parseProjectInviteFromUrl();
+parseProjectDeepLinkFromUrl();
 bindAuthMethods();
 bindActions();
 syncChatContextControls();
@@ -4509,10 +4985,8 @@ if (oauthError) {
     return;
   }
 
-  fetchInitial()
+  fetchInitial({ preferredProjectId: projectDeepLinkContext.projectId || null })
     .catch(() => {
       setView("auth");
     });
 })();
-
-

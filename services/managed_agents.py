@@ -2100,11 +2100,16 @@ async def _delegate_project_tasks(project_id: str) -> None:
         pause_reason = str(parsed_report.get("pause_reason") or "").strip()
         resume_hint = str(parsed_report.get("resume_hint") or "").strip()
         output_files_raw = parsed_report.get("output_files") or []
+        agent_output_allow_paths = [
+            USER_OUTPUTS_DIRNAME,
+            f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+        ]
         write_result = _apply_project_file_writes(
             owner_user_id=str(row["user_id"]),
             project_root=str(row["project_root"] or ""),
             writes=output_files_raw if isinstance(output_files_raw, list) else [],
             default_prefix=f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+            allow_paths=agent_output_allow_paths,
         )
         saved_files = write_result.get("saved") or []
         skipped_files = write_result.get("skipped") or []
@@ -2162,6 +2167,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                     project_root=str(row["project_root"] or ""),
                     writes=followup_writes if isinstance(followup_writes, list) else [],
                     default_prefix=f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+                    allow_paths=agent_output_allow_paths,
                 )
                 followup_saved = followup_write_result.get("saved") or []
                 followup_skipped = followup_write_result.get("skipped") or []
@@ -2224,6 +2230,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                     project_root=str(row["project_root"] or ""),
                     writes=rescue_writes if isinstance(rescue_writes, list) else [],
                     default_prefix=f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+                    allow_paths=agent_output_allow_paths,
                 )
                 rescue_saved = rescue_write_result.get("saved") or []
                 rescue_skipped = rescue_write_result.get("skipped") or []
@@ -2265,6 +2272,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 project_root=str(row["project_root"] or ""),
                 writes=[{"path": fallback_rel, "content": fallback_content, "append": False}],
                 default_prefix=f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+                allow_paths=agent_output_allow_paths,
             )
             fallback_saved = fallback_write_result.get("saved") or []
             fallback_skipped = fallback_write_result.get("skipped") or []
@@ -2464,14 +2472,31 @@ async def _delegate_project_tasks(project_id: str) -> None:
 
     _set_project_execution_state(project_id, status=EXEC_STATUS_COMPLETED, progress_pct=100)
     _refresh_project_documents(project_id)
-    project_files_link = f"/api/projects/{project_id}/files"
-    outputs_folder_link = f"/api/projects/{project_id}/files?path={url_quote(USER_OUTPUTS_DIRNAME, safe='')}"
+    quoted_project_id = url_quote(project_id, safe="")
+    project_files_api_link = f"/api/projects/{project_id}/files"
+    outputs_folder_api_link = f"/api/projects/{project_id}/files?path={url_quote(USER_OUTPUTS_DIRNAME, safe='')}"
+    project_files_link = f"/?project={quoted_project_id}&project_pane=folder"
+    outputs_folder_link = (
+        f"/?project={quoted_project_id}&project_pane=folder&project_path={url_quote(USER_OUTPUTS_DIRNAME, safe='')}"
+    )
     latest_output_rel = _latest_file_relative_path(outputs_dir, project_dir)
-    latest_preview_link = (
+    latest_preview_api_link = (
         f"/api/projects/{project_id}/preview/{_encode_rel_path_for_url_path(latest_output_rel)}"
         if latest_output_rel
         else ""
     )
+    latest_preview_link = ""
+    if latest_output_rel:
+        preview_rel = _clean_relative_project_path(latest_output_rel)
+        preview_parent = USER_OUTPUTS_DIRNAME
+        if preview_rel and "/" in preview_rel:
+            preview_parent = preview_rel.rsplit("/", 1)[0]
+        latest_preview_link = (
+            f"/?project={quoted_project_id}"
+            f"&project_pane=folder"
+            f"&project_path={url_quote(preview_parent, safe='')}"
+            f"&project_preview={url_quote(preview_rel, safe='')}"
+        )
     owner_notice_parts = [
         f"@owner project `{str(row['title'] or project_id)}` is completed.",
         f"Open project files: {project_files_link}",
@@ -2490,6 +2515,9 @@ async def _delegate_project_tasks(project_id: str) -> None:
             "project_files_link": project_files_link,
             "outputs_folder_link": outputs_folder_link,
             "latest_preview_link": latest_preview_link,
+            "project_files_api_link": project_files_api_link,
+            "outputs_folder_api_link": outputs_folder_api_link,
+            "latest_preview_api_link": latest_preview_api_link,
         },
     )
     _append_project_daily_log(
@@ -2505,6 +2533,9 @@ async def _delegate_project_tasks(project_id: str) -> None:
             "project_files_link": project_files_link,
             "outputs_folder_link": outputs_folder_link,
             "latest_preview_link": latest_preview_link,
+            "project_files_api_link": project_files_api_link,
+            "outputs_folder_api_link": outputs_folder_api_link,
+            "latest_preview_api_link": latest_preview_api_link,
         },
     )
     await emit(
@@ -2518,6 +2549,9 @@ async def _delegate_project_tasks(project_id: str) -> None:
             "project_files_link": project_files_link,
             "outputs_folder_link": outputs_folder_link,
             "latest_preview_link": latest_preview_link,
+            "project_files_api_link": project_files_api_link,
+            "outputs_folder_api_link": outputs_folder_api_link,
+            "latest_preview_api_link": latest_preview_api_link,
             "owner_message": primary_done_update[:1200],
         },
     )
