@@ -1167,6 +1167,25 @@ function renderProjects(projects) {
     };
     box.appendChild(el);
   }
+
+  // Also render horizontal cards in the center empty state grid
+  const grid = $("project_cards_grid");
+  if (grid) {
+    grid.innerHTML = "";
+    if (!projectsCache.length) {
+      grid.innerHTML = '<p class="helper" style="padding:8px 0">No projects yet. Click New Project to get started.</p>';
+    } else {
+      for (const p of projectsCache) {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "project-card";
+        const needsApproval = projectNeedsApproval(p);
+        card.innerHTML = `<strong>${p.title}</strong><div class="meta">${formatTs(p.created_at)}${needsApproval ? ' · Needs approval' : ''}</div>`;
+        card.onclick = () => selectProject(p.id).catch((e) => showUiError("chat_hint", e));
+        grid.appendChild(card);
+      }
+    }
+  }
 }
 
 function showEmptyProject() {
@@ -1219,6 +1238,7 @@ function showEmptyProject() {
   renderWorkspaceFiles(null);
   renderLiveStatus();
   syncProjectHeadbar();
+  syncWorkspaceSectionTitle();
 }
 
 function showProjectDetails() {
@@ -1227,6 +1247,7 @@ function showProjectDetails() {
   if (empty) empty.classList.add("hidden");
   if (details) details.classList.remove("hidden");
   syncProjectHeadbar();
+  syncWorkspaceSectionTitle();
 }
 
 function getActiveNavLabel() {
@@ -1238,7 +1259,12 @@ function getActiveNavLabel() {
 function syncWorkspaceSectionTitle() {
   const title = $("workspace_section_title");
   if (!title) return;
-  title.textContent = getActiveNavLabel();
+  // When inside a project show its name as the big heading
+  if (activeNavTab === "projects" && selectedProjectData) {
+    title.textContent = selectedProjectData.title;
+  } else {
+    title.textContent = getActiveNavLabel();
+  }
 }
 
 function syncPrimaryNavState() {
@@ -1267,9 +1293,11 @@ function syncProjectHeadbar() {
   }
 
   if (selectedProjectData) {
-    const projectTitle = String(selectedProjectData.title || "").trim() || "Untitled Project";
-    if (titleText) titleText.textContent = projectTitle;
-    else title.textContent = projectTitle;
+    // Title shows current pane; section title (above) shows project name
+    const paneLabels = { live: "Live", info: "Overview", folder: "Files", usage: "Usage", tracker: "Tracker" };
+    const paneLabel = paneLabels[activeProjectPane] || String(activeProjectPane);
+    if (titleText) titleText.textContent = paneLabel;
+    else title.textContent = paneLabel;
 
     if (titleApproval) {
       titleApproval.classList.toggle("hidden", !projectNeedsApproval(selectedProjectData));
@@ -1277,7 +1305,7 @@ function syncProjectHeadbar() {
 
     const createdAt = selectedProjectData.created_at ? formatTs(selectedProjectData.created_at) : "-";
     const stage = projectStageLabel(selectedProjectReadiness?.stage || "draft");
-    subline.textContent = `${shortText(selectedProjectData.brief)} - Created ${createdAt} - Stage ${stage}`;
+    subline.textContent = `${String(selectedProjectData.title || "").trim()} — Stage ${stage} — ${createdAt}`;
     const canRun = Boolean(selectedProjectReadiness?.can_run);
     runBtn.classList.remove("hidden");
     runBtn.disabled = !canRun;
@@ -1446,11 +1474,15 @@ function colorForAgent(agentId) {
   for (let i = 0; i < base.length; i++) {
     hash = ((hash << 5) - hash + base.charCodeAt(i)) | 0;
   }
-  const hue = Math.abs(hash) % 360;
-  return {
-    bg: `hsla(${hue}, 65%, 22%, 0.45)`,
-    border: `hsla(${hue}, 75%, 58%, 0.8)`,
-  };
+  // Restrict to project palette — no random hues
+  const palettes = [
+    { bg: "rgba(250, 204, 21, 0.11)",  border: "rgba(250, 204, 21, 0.5)" },  // yellow
+    { bg: "rgba(255, 77,  77,  0.11)", border: "rgba(255, 77,  77,  0.5)" }, // red
+    { bg: "rgba(59,  130, 246, 0.11)", border: "rgba(59,  130, 246, 0.5)" }, // blue
+    { bg: "rgba(34,  211, 238, 0.11)", border: "rgba(34,  211, 238, 0.5)" }, // cyan
+    { bg: "rgba(249, 115, 22,  0.11)", border: "rgba(249, 115, 22,  0.5)" }, // orange
+  ];
+  return palettes[Math.abs(hash) % palettes.length];
 }
 
 function parseMessageLinks(text) {
@@ -1643,6 +1675,10 @@ function appendChatMessage(role, text, meta = "", opts = {}) {
     const palette = colorForAgent(agentId);
     bubble.style.background = palette.bg;
     bubble.style.border = `1px solid ${palette.border}`;
+  }
+  // Approval messages get gradient outline
+  if (String(meta).toLowerCase().includes("approval")) {
+    node.classList.add("needs-approval");
   }
   box.appendChild(node);
   if (stickToBottom) box.scrollTop = box.scrollHeight;
@@ -3274,6 +3310,7 @@ function setProjectPane(pane) {
       loadLatestLiveArtifact({ render: true }).catch(() => clearLivePreview("No outputs in Outputs folder yet."));
     }
   }
+  syncProjectHeadbar();
 }
 
 function setNavTab(tab) {
@@ -4927,6 +4964,8 @@ function bindActions() {
       if (tab === "projects") {
         setNavTab("projects");
         if (content) content.classList.remove("hidden");
+        // Clicking "Projects" while inside a project → back to grid view
+        if (selectedProjectId) showEmptyProject();
         return;
       }
       if (activeNavTab !== tab) {
@@ -4940,6 +4979,46 @@ function bindActions() {
 
   for (const btn of document.querySelectorAll("[data-project-pane]")) {
     btn.addEventListener("click", () => setProjectPane(btn.dataset.projectPane));
+  }
+
+  // Invite tab toggle (Your Agents / External Agents)
+  const tabYours    = $("btn_invite_tab_yours");
+  const tabExternal = $("btn_invite_tab_external");
+  const panelYours    = $("invite_panel_yours");
+  const panelExternal = $("invite_panel_external");
+  if (tabYours && tabExternal) {
+    tabYours.addEventListener("click", () => {
+      tabYours.classList.add("active");
+      tabExternal.classList.remove("active");
+      if (panelYours)    panelYours.classList.remove("hidden");
+      if (panelExternal) panelExternal.classList.add("hidden");
+    });
+    tabExternal.addEventListener("click", () => {
+      tabExternal.classList.add("active");
+      tabYours.classList.remove("active");
+      if (panelExternal) panelExternal.classList.remove("hidden");
+      if (panelYours)    panelYours.classList.add("hidden");
+    });
+  }
+
+  // Cursor-driven aurora on auth view
+  const authView = document.getElementById("view_auth");
+  if (authView) {
+    const BASE_BG = "linear-gradient(160deg, #04050a 0%, #07090f 40%, #090c15 70%, #05070a 100%)";
+    document.addEventListener("mousemove", (e) => {
+      if (!authView.classList.contains("active")) return;
+      const x = e.clientX / window.innerWidth;
+      const y = e.clientY / window.innerHeight;
+      const a = (v) => (0.04 + v * 0.24).toFixed(3);
+      authView.style.background = [
+        `radial-gradient(900px at 50% -15%, rgba(250,204,21,${a(1-y)}), transparent 60%)`,
+        `radial-gradient(900px at 115% 50%, rgba(255,77,77,${a(x)}), transparent 60%)`,
+        `radial-gradient(900px at 50% 115%, rgba(34,211,238,${a(y)}), transparent 60%)`,
+        `radial-gradient(900px at -15% 50%, rgba(59,130,246,${a(1-x)}), transparent 60%)`,
+        BASE_BG,
+      ].join(",");
+      authView.style.animation = "none";
+    });
   }
 }
 

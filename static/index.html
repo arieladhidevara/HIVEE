@@ -74,7 +74,7 @@
               <label>Agent Name (optional)</label>
               <input id="invite_agent_name" type="text" placeholder="My Agent Name">
               <div class="action-row">
-                <button id="btn_accept_project_invite" type="button">Accept Project Invite</button>
+                <button id="btn_accept_project_invite" type="button" class="primary">Accept Project Invite</button>
                 <button id="btn_invite_open_setup" class="secondary" type="button">Open Connection Setup</button>
                 <button id="btn_ignore_project_invite" class="secondary" type="button">Ignore Invite</button>
               </div>
@@ -330,14 +330,14 @@
               <p id="detail_subline" class="project-subline"></p>
             </div>
             <div class="project-head-actions">
-              <button id="btn_run" type="button" class="hidden">Run</button>
+              <button id="btn_run" type="button" class="primary hidden">Run</button>
               <button id="btn_delete_project" type="button" class="secondary danger hidden">Delete</button>
             </div>
           </section>
 
           <div id="center_projects" class="center-pane active" data-center-tab="projects">
-            <div id="project_empty" class="empty-state">
-              <h3>Select a project</h3>
+            <div id="project_empty" class="project-empty-pane">
+              <div id="project_cards_grid" class="project-cards-grid"></div>
             </div>
 
             <div id="project_details" class="hidden">
@@ -381,7 +381,7 @@
                   <div class="action-row">
                     <button id="btn_refresh_plan" class="secondary" type="button">Refresh Plan</button>
                     <button id="btn_regenerate_plan" class="secondary" type="button">Regenerate Plan</button>
-                    <button id="btn_approve_plan" type="button">Approve Plan</button>
+                    <button id="btn_approve_plan" type="button" class="primary">Approve Plan</button>
                   </div>
                 </div>
                 <div class="agent-summary">
@@ -576,7 +576,9 @@
             <div class="wizard-chat-compose">
               <div class="wizard-chat-input-row">
                 <textarea id="wizard_chat_input" placeholder="Reply..."></textarea>
-                <button id="btn_wizard_chat_send" type="button">Send</button>
+                <button id="btn_wizard_chat_send" type="button" aria-label="Send">
+                  <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>
+                </button>
               </div>
             </div>
           </div>
@@ -607,95 +609,107 @@
           </div>
 
           <div id="wizard_step_agents" class="hidden">
+            <!-- Top: agents currently in / being assigned to the project -->
+            <p class="agents-section-label">Project Agents</p>
             <div id="wizard_agents" class="agent-pick-list"></div>
             <div class="action-row">
-              <button id="btn_save_agents" type="button">Save Agent Setup</button>
+              <button id="btn_save_agents" type="button" class="primary">Save Agent Setup</button>
             </div>
 
+            <!-- Bottom: invite section with Your Agents / External tabs -->
             <div id="wizard_external_access" class="wizard-external-access">
-              <h4>External Agent Access</h4>
-              <form id="form_external_invite" class="stack">
-                <label>Target Email (optional)</label>
-                <input id="ext_target_email" type="email" placeholder="agent-owner@email.com">
-                <label>Requested Agent ID (optional)</label>
-                <input id="ext_requested_agent_id" type="text" placeholder="dailybot">
-                <label>Requested Agent Name (optional)</label>
-                <input id="ext_requested_agent_name" type="text" placeholder="Daily Bot">
-                <label>Role</label>
-                <input id="ext_role" type="text" placeholder="Research assistant">
-                <label>Note</label>
-                <textarea id="ext_note" placeholder="Context for invited external agent"></textarea>
-                <label>Expires In (hours)</label>
-                <input id="ext_expires_hours" type="number" min="1" max="720" value="72">
-                <div class="action-row">
-                  <button id="btn_create_external_invite" type="submit">Send External Invite</button>
-                  <button id="btn_refresh_external_access" type="button" class="secondary">Refresh Access Data</button>
-                </div>
-              </form>
-              <p id="wizard_external_msg" class="helper"></p>
-              <section id="wizard_external_delivery" class="wizard-mini-card hidden">
-                <div class="title-row">
-                  <h5>Latest Invite Delivery</h5>
-                </div>
-                <label>Invitation URL</label>
-                <input id="ext_latest_invite_url" type="text" readonly>
-                <div class="action-row">
-                  <button id="btn_copy_latest_invite_url" type="button" class="secondary">Copy Invite URL</button>
-                  <button id="btn_open_latest_invite_url" type="button" class="secondary">Open Invite URL</button>
-                </div>
-                <label>Portal URL</label>
-                <input id="ext_latest_portal_url" type="text" readonly>
-                <div class="action-row">
-                  <button id="btn_copy_latest_portal_url" type="button" class="secondary">Copy Portal URL</button>
-                  <button id="btn_open_latest_portal_url" type="button" class="secondary">Open Portal URL</button>
-                </div>
-                <label>Invite Code</label>
-                <input id="ext_latest_invite_code" type="text" readonly>
-                <div class="action-row">
-                  <button id="btn_copy_latest_invite_code" type="button" class="secondary">Copy Invite Code</button>
-                </div>
-                <label>Project-Invitations.md URL</label>
-                <input id="ext_project_invitations_url" type="text" readonly>
-                <div class="action-row">
-                  <button id="btn_copy_project_invitations_url" type="button" class="secondary">Copy Invitations Doc URL</button>
-                  <button id="btn_open_project_invitations_url" type="button" class="secondary">Open Invitations Doc</button>
-                </div>
-                <label>Email Subject</label>
-                <input id="ext_latest_email_subject" type="text" readonly>
-                <label>Email Draft</label>
-                <textarea id="ext_latest_email_body" readonly></textarea>
-                <div class="action-row">
-                  <button id="btn_copy_latest_email" type="button" class="secondary">Copy Email Draft</button>
-                  <button id="btn_open_invite_mailto" type="button" class="secondary">Open Email Draft</button>
-                </div>
-              </section>
+              <p class="agents-section-label">Invite Agents</p>
 
-              <div class="wizard-split-grid">
-                <section class="wizard-mini-card">
-                  <div class="title-row">
-                    <h5>Invites</h5>
-                  </div>
-                  <div id="wizard_external_invites" class="wizard-simple-list"></div>
-                </section>
-                <section class="wizard-mini-card">
-                  <div class="title-row">
-                    <h5>Memberships</h5>
-                  </div>
-                  <div id="wizard_external_memberships" class="wizard-simple-list"></div>
-                </section>
+              <div class="invite-tab-row">
+                <button id="btn_invite_tab_yours" class="invite-tab active" type="button">Your Agents</button>
+                <button id="btn_invite_tab_external" class="invite-tab" type="button">External Agents</button>
               </div>
 
-              <section class="wizard-mini-card">
-                <div class="title-row">
-                  <h5>Agent Permissions</h5>
+              <!-- Your Agents panel -->
+              <div id="invite_panel_yours" class="invite-panel">
+                <div id="wizard_external_memberships" class="wizard-simple-list"></div>
+              </div>
+
+              <!-- External Agents panel: two columns -->
+              <div id="invite_panel_external" class="invite-panel hidden">
+                <div class="external-invite-cols">
+                  <!-- Left: email form -->
+                  <div class="external-invite-email-col">
+                    <form id="form_external_invite" class="stack">
+                      <label>Email</label>
+                      <input id="ext_target_email" type="email" placeholder="agent-owner@email.com">
+                      <label>Agent ID (optional)</label>
+                      <input id="ext_requested_agent_id" type="text" placeholder="dailybot">
+                      <label>Agent Name (optional)</label>
+                      <input id="ext_requested_agent_name" type="text" placeholder="Daily Bot">
+                      <label>Role</label>
+                      <input id="ext_role" type="text" placeholder="Research assistant">
+                      <label>Note</label>
+                      <textarea id="ext_note" placeholder="Context for invited external agent"></textarea>
+                      <label>Expires (hours)</label>
+                      <input id="ext_expires_hours" type="number" min="1" max="720" value="72">
+                      <div class="action-row">
+                        <button id="btn_create_external_invite" type="submit">Send Invite</button>
+                        <button id="btn_refresh_external_access" type="button" class="secondary">Refresh</button>
+                      </div>
+                    </form>
+                  </div>
+
+                  <!-- Right: generated invite link after creation -->
+                  <div class="external-invite-link-col">
+                    <section id="wizard_external_delivery" class="wizard-mini-card hidden">
+                      <label>Invitation URL</label>
+                      <input id="ext_latest_invite_url" type="text" readonly>
+                      <div class="action-row">
+                        <button id="btn_copy_latest_invite_url" type="button" class="secondary">Copy URL</button>
+                        <button id="btn_open_latest_invite_url" type="button" class="secondary">Open</button>
+                      </div>
+                      <label>Portal URL</label>
+                      <input id="ext_latest_portal_url" type="text" readonly>
+                      <div class="action-row">
+                        <button id="btn_copy_latest_portal_url" type="button" class="secondary">Copy</button>
+                        <button id="btn_open_latest_portal_url" type="button" class="secondary">Open</button>
+                      </div>
+                      <label>Invite Code</label>
+                      <input id="ext_latest_invite_code" type="text" readonly>
+                      <div class="action-row">
+                        <button id="btn_copy_latest_invite_code" type="button" class="secondary">Copy Code</button>
+                      </div>
+                      <label>Invitations Doc URL</label>
+                      <input id="ext_project_invitations_url" type="text" readonly>
+                      <div class="action-row">
+                        <button id="btn_copy_project_invitations_url" type="button" class="secondary">Copy</button>
+                        <button id="btn_open_project_invitations_url" type="button" class="secondary">Open Doc</button>
+                      </div>
+                      <label>Email Subject</label>
+                      <input id="ext_latest_email_subject" type="text" readonly>
+                      <label>Email Draft</label>
+                      <textarea id="ext_latest_email_body" readonly></textarea>
+                      <div class="action-row">
+                        <button id="btn_copy_latest_email" type="button" class="secondary">Copy Email</button>
+                        <button id="btn_open_invite_mailto" type="button" class="secondary">Open Draft</button>
+                      </div>
+                    </section>
+                    <section class="wizard-mini-card">
+                      <h5>Invites</h5>
+                      <div id="wizard_external_invites" class="wizard-simple-list"></div>
+                    </section>
+                  </div>
                 </div>
+              </div>
+
+              <!-- Agent Permissions -->
+              <section class="wizard-mini-card">
+                <h5>Agent Permissions</h5>
                 <div id="wizard_agent_permissions" class="wizard-perm-list"></div>
               </section>
+
+              <p id="wizard_external_msg" class="helper"></p>
             </div>
           </div>
 
           <div id="wizard_footer_actions" class="action-row">
-            <button id="btn_wizard_create_now" type="button">Create Project Now</button>
+            <button id="btn_wizard_create_now" type="button" class="primary">Create Project Now</button>
           </div>
 
           <p id="wizard_msg" class="helper"></p>
