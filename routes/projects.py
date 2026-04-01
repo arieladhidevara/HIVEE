@@ -1753,12 +1753,47 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(404, "Connection not found for this user")
 
+        policy_row = conn.execute(
+            "SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1",
+            (connection_id, member_user_id),
+        ).fetchone()
+        managed_rows = conn.execute(
+            """
+            SELECT agent_id, agent_name
+            FROM managed_agents
+            WHERE user_id = ? AND connection_id = ?
+            ORDER BY updated_at DESC, agent_name ASC
+            LIMIT 500
+            """,
+            (member_user_id, connection_id),
+        ).fetchall()
+        managed_name_by_id = {
+            str(r["agent_id"] or "").strip(): str(r["agent_name"] or "").strip()
+            for r in managed_rows
+            if str(r["agent_id"] or "").strip()
+        }
+
         project_id = str(invite_row["project_id"] or "").strip()
-        agent_id = str(payload.agent_id or invite_row["requested_agent_id"] or "").strip()[:180]
+        locked_requested_agent_id = str(invite_row["requested_agent_id"] or "").strip()[:180]
+        locked_requested_agent_name = str(invite_row["requested_agent_name"] or "").strip()[:220]
+        default_main_agent_id = str(policy_row["main_agent_id"] or "").strip()[:180] if policy_row else ""
+        default_main_agent_name = str(policy_row["main_agent_name"] or "").strip()[:220] if policy_row else ""
+
+        agent_id = str(payload.agent_id or locked_requested_agent_id or default_main_agent_id).strip()[:180]
         if not agent_id:
             conn.close()
-            raise HTTPException(400, "agent_id is required")
-        agent_name = str(payload.agent_name or invite_row["requested_agent_name"] or agent_id).strip()[:220] or agent_id
+            raise HTTPException(400, "agent_id is required. Ensure this connection has a main agent or provide agent_id explicitly.")
+        if locked_requested_agent_id and agent_id != locked_requested_agent_id:
+            conn.close()
+            raise HTTPException(403, "Invite locks agent_id and cannot be overridden")
+        if managed_name_by_id and agent_id not in managed_name_by_id:
+            conn.close()
+            raise HTTPException(400, "agent_id is not provisioned on the selected connection")
+
+        agent_name = str(payload.agent_name or locked_requested_agent_name or "").strip()[:220]
+        if not agent_name:
+            agent_name = str(managed_name_by_id.get(agent_id) or default_main_agent_name or agent_id).strip()[:220] or agent_id
+
         role = str(invite_row["role"] or "").strip()[:500]
 
         existing_agent = conn.execute(
@@ -1978,5 +2013,3 @@ def register_routes(app: FastAPI) -> None:
                     yield "event: ping\ndata: {}\n\n"
     
         return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-

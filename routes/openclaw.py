@@ -212,10 +212,21 @@ def register_routes(app: FastAPI) -> None:
     
     @app.post("/api/openclaw/{connection_id}/ws-chat")
     async def chat_openclaw_ws(request: Request, connection_id: str, payload: OpenClawWsChatIn):
-        user_id = get_session_user(request)
+        session_user: Optional[str] = None
+        try:
+            session_user = get_optional_session_user(request)
+        except HTTPException:
+            if not str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip():
+                raise
+            session_user = None
+        a2a_access = _resolve_optional_a2a_agent_session(request, required_scope="env.read")
+        user_id = str(session_user or (a2a_access.get("user_id") if a2a_access else "") or "").strip()
+        if not user_id:
+            raise HTTPException(401, "Missing authorization. Login first or use A2A agent session headers.")
+
         conn = db()
         row = conn.execute(
-            "SELECT base_url, api_key FROM openclaw_connections WHERE id = ? AND user_id = ?",
+            "SELECT base_url, api_key, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
         policy = conn.execute(
@@ -231,6 +242,9 @@ def register_routes(app: FastAPI) -> None:
         if context_mode == "project" and not session_key.startswith("prj_"):
             conn.close()
             raise HTTPException(400, "Project context requires a project session_key.")
+        if a2a_access and not wants_project_context:
+            conn.close()
+            raise HTTPException(403, "A2A agent session can only use project context chat")
         project_scope = None
         project_owner_user_id = user_id
         project_access_mode = "owner"
@@ -297,6 +311,15 @@ def register_routes(app: FastAPI) -> None:
                     conn.close()
                     raise HTTPException(403, "This connection is not an active external member for the selected project")
 
+                if a2a_access:
+                    a2a_agent_id = str(a2a_access.get("agent_id") or "").strip()
+                    if not a2a_agent_id or a2a_agent_id not in member_allowed_agent_ids:
+                        conn.close()
+                        raise HTTPException(403, "A2A agent session is not an active member for this project")
+                    if payload.agent_id and str(payload.agent_id).strip() != a2a_agent_id:
+                        conn.close()
+                        raise HTTPException(403, "A2A agent session can only chat as its own agent_id")
+
             if payload.agent_id:
                 allowed = (
                     member_allowed_agent_ids
@@ -309,7 +332,12 @@ def register_routes(app: FastAPI) -> None:
         if not row:
             conn.close()
             raise HTTPException(404, "Connection not found")
-    
+        if a2a_access:
+            connection_env_id = str(row["env_id"] or "").strip()
+            if not connection_env_id or connection_env_id != str(a2a_access.get("env_id") or "").strip():
+                conn.close()
+                raise HTTPException(403, "A2A agent session is not linked to this connection")
+
         workspace_root = str(policy["workspace_root"]) if (policy and policy["workspace_root"]) else HIVEE_ROOT
         main_agent_id = str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else ""
         main_agent_id = main_agent_id.strip() or None
@@ -325,19 +353,22 @@ def register_routes(app: FastAPI) -> None:
         write_allow_paths = None
         if project_scope:
             if project_access_mode == "member":
-                member_ordered = [
-                    str(r.get("agent_id") or "").strip()
-                    for r in role_rows
-                    if str(r.get("agent_id") or "").strip() in member_allowed_agent_ids
-                ]
-                default_member_agent_id = None
-                if project_primary_agent_id and project_primary_agent_id in member_allowed_agent_ids:
-                    default_member_agent_id = project_primary_agent_id
-                elif member_ordered:
-                    default_member_agent_id = member_ordered[0]
-                elif member_allowed_agent_ids:
-                    default_member_agent_id = sorted(member_allowed_agent_ids)[0]
-                effective_agent_id = payload.agent_id or default_member_agent_id
+                if a2a_access:
+                    effective_agent_id = str(a2a_access.get("agent_id") or "").strip() or None
+                else:
+                    member_ordered = [
+                        str(r.get("agent_id") or "").strip()
+                        for r in role_rows
+                        if str(r.get("agent_id") or "").strip() in member_allowed_agent_ids
+                    ]
+                    default_member_agent_id = None
+                    if project_primary_agent_id and project_primary_agent_id in member_allowed_agent_ids:
+                        default_member_agent_id = project_primary_agent_id
+                    elif member_ordered:
+                        default_member_agent_id = member_ordered[0]
+                    elif member_allowed_agent_ids:
+                        default_member_agent_id = sorted(member_allowed_agent_ids)[0]
+                    effective_agent_id = payload.agent_id or default_member_agent_id
             else:
                 is_paused_scope = _coerce_execution_status(project_scope["execution_status"]) == EXEC_STATUS_PAUSED
                 if is_paused_scope:
@@ -788,6 +819,10 @@ def register_routes(app: FastAPI) -> None:
         res["workspace_root"] = workspace_root
         res["context_mode"] = "project" if project_root else "workspace"
         res["session_key"] = session_key
+        res["auth_mode"] = "a2a_session" if a2a_access else "user_session"
+        if a2a_access:
+            res["a2a_agent_id"] = str(a2a_access.get("agent_id") or "")
+            res["a2a_env_id"] = str(a2a_access.get("env_id") or "")
         if project_root:
             res["project_root"] = project_root
         if project_scope:
@@ -799,5 +834,3 @@ def register_routes(app: FastAPI) -> None:
                 "write_paths": selected_agent_permissions.get("write_paths") or [],
             }
         return res
-    
-

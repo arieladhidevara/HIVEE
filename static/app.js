@@ -556,10 +556,13 @@ function renderProjectInviteUI() {
 
   if (agentIdInput) {
     const suggestedId = String(info.requested_agent_id || "").trim();
-    if (!String(agentIdInput.value || "").trim() && suggestedId) {
+    const idLockedByInvite = Boolean(suggestedId);
+    if (idLockedByInvite) {
+      agentIdInput.value = suggestedId;
+    } else if (!String(agentIdInput.value || "").trim() && suggestedId) {
       agentIdInput.value = suggestedId;
     }
-    agentIdInput.disabled = !hasSession || !canAccept;
+    agentIdInput.disabled = !hasSession || !canAccept || idLockedByInvite;
   }
   if (agentNameInput) {
     const suggestedName = String(info.requested_agent_name || "").trim();
@@ -4244,26 +4247,3 @@ if (oauthError) {
       setView("auth");
     });
 })();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

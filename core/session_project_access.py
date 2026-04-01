@@ -180,6 +180,96 @@ def _project_path_allowed_for_agent(rel_path: str, allow_paths: List[str]) -> bo
         return False
     return any(_rel_path_startswith(rel, root) for root in normalized_allow)
 
+def _parse_a2a_session_scopes(raw_scopes: Any) -> List[str]:
+    if isinstance(raw_scopes, list):
+        return [str(s).strip() for s in raw_scopes if str(s).strip()]
+    text = str(raw_scopes or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(s).strip() for s in parsed if str(s).strip()]
+
+
+def _resolve_optional_a2a_agent_session(
+    request: Request,
+    *,
+    required_scope: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    token = str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip()
+    if not token:
+        return None
+    expected_agent_id = str(request.headers.get(ENV_AGENT_ID_HEADER) or "").strip()
+    now = int(time.time())
+    token_hash = _hash_access_token(token)
+
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT eas.id, eas.env_id, eas.agent_id, eas.scopes_json, eas.status, eas.expires_at,
+               e.owner_user_id
+        FROM environment_agent_sessions eas
+        JOIN environments e ON e.id = eas.env_id
+        WHERE eas.token_hash = ?
+        ORDER BY eas.created_at DESC
+        LIMIT 1
+        """,
+        (token_hash,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(401, "Invalid A2A agent session")
+
+    agent_id = str(row["agent_id"] or "").strip()
+    if expected_agent_id and expected_agent_id != agent_id:
+        conn.close()
+        raise HTTPException(403, "A2A agent header does not match session agent")
+
+    status = str(row["status"] or "").strip().lower()
+    if status not in {ENV_AGENT_SESSION_STATUS_ACTIVE, ENV_AGENT_SESSION_STATUS_HANDOFF_PENDING}:
+        conn.close()
+        raise HTTPException(403, "A2A agent session is not active")
+
+    expires_at = _to_int(row["expires_at"])
+    if expires_at <= now:
+        conn.execute(
+            "UPDATE environment_agent_sessions SET status = ?, revoked_at = ? WHERE id = ?",
+            (ENV_AGENT_SESSION_STATUS_EXPIRED, now, str(row["id"])),
+        )
+        conn.commit()
+        conn.close()
+        raise HTTPException(401, "A2A agent session expired")
+
+    scopes = _parse_a2a_session_scopes(row["scopes_json"])
+    if required_scope and required_scope not in scopes and "*" not in scopes:
+        conn.close()
+        raise HTTPException(403, f"Missing required scope: {required_scope}")
+
+    user_id = str(row["owner_user_id"] or "").strip()
+    if not user_id:
+        conn.close()
+        raise HTTPException(409, "Environment is not claimed by a user yet")
+
+    conn.execute(
+        "UPDATE environment_agent_sessions SET last_seen_at = ? WHERE id = ?",
+        (now, str(row["id"])),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "session_id": str(row["id"] or "").strip(),
+        "env_id": str(row["env_id"] or "").strip(),
+        "agent_id": agent_id,
+        "user_id": user_id,
+        "scopes": scopes,
+        "status": status,
+        "expires_at": expires_at,
+    }
+
 
 def _require_project_read_access(access: Dict[str, Any]) -> None:
     if str(access.get("mode") or "") == "owner":
@@ -201,7 +291,14 @@ def _require_project_write_access(access: Dict[str, Any], rel_path: str) -> None
 
 
 def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict[str, Any]:
-    session_user = get_optional_session_user(request)
+    session_user: Optional[str] = None
+    try:
+        session_user = get_optional_session_user(request)
+    except HTTPException:
+        if not str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip():
+            raise
+        session_user = None
+    a2a_access = _resolve_optional_a2a_agent_session(request, required_scope="env.read")
     conn = db()
     project = conn.execute(
         "SELECT id, user_id, project_root, workspace_root FROM projects WHERE id = ?",
@@ -283,9 +380,56 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
                 "member_connection_id": str(selected["member_connection_id"] or "").strip() or None,
                 "agent_id": member_agent_id,
                 "source_type": source_type,
+                "auth_mode": "user_session",
                 "permissions": perms,
             }
 
+    if a2a_access:
+        a2a_env_id = str(a2a_access.get("env_id") or "").strip()
+        a2a_user_id = str(a2a_access.get("user_id") or "").strip()
+        a2a_agent_id = str(a2a_access.get("agent_id") or "").strip()
+        row = conn.execute(
+            """
+            SELECT pem.id AS membership_id,
+                   pem.member_connection_id,
+                   COALESCE(pa.source_type, 'external') AS source_type
+            FROM project_external_agent_memberships pem
+            JOIN project_agents pa
+                ON pa.project_id = pem.project_id AND pa.agent_id = pem.agent_id
+            JOIN openclaw_connections oc
+                ON oc.id = pem.member_connection_id
+            WHERE pem.project_id = ?
+              AND pem.member_user_id = ?
+              AND pem.agent_id = ?
+              AND pem.status = 'active'
+              AND oc.env_id = ?
+            ORDER BY pem.updated_at DESC, pem.created_at DESC
+            LIMIT 1
+            """,
+            (project_id, a2a_user_id, a2a_agent_id, a2a_env_id),
+        ).fetchone()
+        if row:
+            source_type = str(row["source_type"] or "external").strip() or "external"
+            perms = _get_project_agent_permissions(
+                conn,
+                project_id=project_id,
+                agent_id=a2a_agent_id,
+                source_type=source_type,
+            )
+            conn.close()
+            return {
+                "mode": "member",
+                "project": dict(project),
+                "user_id": a2a_user_id,
+                "membership_id": str(row["membership_id"] or "").strip() or None,
+                "member_connection_id": str(row["member_connection_id"] or "").strip() or None,
+                "agent_id": a2a_agent_id,
+                "source_type": source_type,
+                "auth_mode": "a2a_session",
+                "a2a_env_id": a2a_env_id,
+                "a2a_session_id": str(a2a_access.get("session_id") or "").strip() or None,
+                "permissions": perms,
+            }
     agent_id = (request.headers.get("X-Project-Agent-Id") or "").strip()
     agent_token = (request.headers.get("X-Project-Agent-Token") or "").strip()
     if agent_id and agent_token:
@@ -314,13 +458,17 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
                 "project": dict(project),
                 "agent_id": agent_id,
                 "source_type": source_type,
+                "auth_mode": "project_agent_token",
                 "permissions": perms,
             }
 
     conn.close()
-    if session_user:
+    if session_user or a2a_access:
         raise HTTPException(403, "Only project owner or invited agent can access this folder")
-    raise HTTPException(401, "Missing authorization. Use owner token or agent access headers.")
+    raise HTTPException(
+        401,
+        "Missing authorization. Use owner session, project agent headers, or A2A agent session headers.",
+    )
 
 
 def _clean_relative_project_path(raw_path: Optional[str]) -> str:
