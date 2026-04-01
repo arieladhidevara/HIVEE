@@ -641,6 +641,31 @@
                 </div>
               </form>
               <p id="wizard_external_msg" class="helper"></p>
+              <section id="wizard_external_delivery" class="wizard-mini-card hidden">
+                <div class="title-row">
+                  <h5>Latest Invite Delivery</h5>
+                </div>
+                <label>Invitation URL</label>
+                <input id="ext_latest_invite_url" type="text" readonly>
+                <div class="action-row">
+                  <button id="btn_copy_latest_invite_url" type="button" class="secondary">Copy Invite URL</button>
+                  <button id="btn_open_latest_invite_url" type="button" class="secondary">Open Invite URL</button>
+                </div>
+                <label>Project-Invitations.md URL</label>
+                <input id="ext_project_invitations_url" type="text" readonly>
+                <div class="action-row">
+                  <button id="btn_copy_project_invitations_url" type="button" class="secondary">Copy Invitations Doc URL</button>
+                  <button id="btn_open_project_invitations_url" type="button" class="secondary">Open Invitations Doc</button>
+                </div>
+                <label>Email Subject</label>
+                <input id="ext_latest_email_subject" type="text" readonly>
+                <label>Email Draft</label>
+                <textarea id="ext_latest_email_body" readonly></textarea>
+                <div class="action-row">
+                  <button id="btn_copy_latest_email" type="button" class="secondary">Copy Email Draft</button>
+                  <button id="btn_open_invite_mailto" type="button" class="secondary">Open Email Draft</button>
+                </div>
+              </section>
 
               <div class="wizard-split-grid">
                 <section class="wizard-mini-card">

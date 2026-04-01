@@ -79,6 +79,118 @@ def _build_external_agent_invite_markdown(
     )
 
 
+def _build_external_invite_email_template(
+    *,
+    project_title: str,
+    project_goal: str,
+    invite_url: str,
+    target_email: Optional[str],
+) -> Dict[str, str]:
+    subject = "You are invited to contribute to this project!"
+    body = (
+        "Hello,\n\n"
+        "You are invited to contribute to a Hivee project.\n\n"
+        f"Project: {project_title or '-'}\n"
+        f"Goal: {(project_goal or '-').strip()[:600]}\n\n"
+        "Open this invitation link:\n"
+        f"{invite_url}\n\n"
+        "If you do not have a Hivee account yet, register first and complete setup, "
+        "then reopen the same invite link to continue.\n\n"
+        "Setup guide: https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD\n\n"
+        "Thanks."
+    )
+    to_value = str(target_email or "").strip()
+    params = urlencode({"subject": subject, "body": body})
+    mailto_url = f"mailto:{url_quote(to_value)}?{params}" if to_value else f"mailto:?{params}"
+    return {
+        "subject": subject,
+        "body": body,
+        "mailto_url": mailto_url,
+    }
+
+
+def _append_project_invitations_record(
+    *,
+    owner_user_id: str,
+    project_root: str,
+    project_id: str,
+    project_title: str,
+    invite_id: str,
+    status: str,
+    invite_url: str,
+    accept_api_url: str,
+    target_email: Optional[str],
+    requested_agent_id: str,
+    requested_agent_name: str,
+    role: str,
+    note: str,
+    created_at: int,
+    expires_at: int,
+    email_subject: str,
+    email_body: str,
+) -> None:
+    project_dir = _resolve_owner_project_dir(owner_user_id, project_root).resolve()
+    doc_path = (project_dir / PROJECT_INVITATIONS_FILE).resolve()
+    if not _path_within(doc_path, project_dir):
+        return
+    doc_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not doc_path.exists():
+        header = (
+            "# Project Invitations\n\n"
+            "This file collects all external invite links and email drafts for this project.\n\n"
+            f"- Project ID: {project_id}\n"
+            f"- Project Title: {project_title}\n\n"
+            "Share the invite URL below with external collaborators, or use the email draft section.\n"
+        )
+        doc_path.write_text(header, encoding="utf-8")
+
+    requested_agent = requested_agent_name or requested_agent_id or "(not specified)"
+    text = (
+        "\n\n---\n\n"
+        f"## Invite {invite_id}\n"
+        f"- Status: {status}\n"
+        f"- Target Email: {target_email or '-'}\n"
+        f"- Requested Agent: {requested_agent}\n"
+        f"- Role: {role or '-'}\n"
+        f"- Note: {note or '-'}\n"
+        f"- Created At: {format_ts(created_at)}\n"
+        f"- Expires At: {format_ts(expires_at)}\n\n"
+        "### Invitation URL\n"
+        f"{invite_url}\n\n"
+        "### Accept API URL\n"
+        f"{accept_api_url}\n\n"
+        "### Email Subject\n"
+        f"{email_subject}\n\n"
+        "### Email Body\n"
+        f"{email_body}\n"
+    )
+    with doc_path.open("a", encoding="utf-8") as f:
+        f.write(text)
+
+
+def _append_project_invitations_status_update(
+    *,
+    owner_user_id: str,
+    project_root: str,
+    invite_id: str,
+    status: str,
+    ts_value: int,
+    note: str = "",
+) -> None:
+    project_dir = _resolve_owner_project_dir(owner_user_id, project_root).resolve()
+    doc_path = (project_dir / PROJECT_INVITATIONS_FILE).resolve()
+    if not _path_within(doc_path, project_dir):
+        return
+    doc_path.parent.mkdir(parents=True, exist_ok=True)
+    if not doc_path.exists():
+        doc_path.write_text("# Project Invitations\n", encoding="utf-8")
+    line = f"\n- [{format_ts(ts_value)}] Invite {invite_id} status => {status}"
+    if note:
+        line += f" ({note})"
+    with doc_path.open("a", encoding="utf-8") as f:
+        f.write(line)
+
 def register_routes(app: FastAPI) -> None:
     @app.post("/api/projects/setup-chat")
     async def project_setup_chat(request: Request, payload: ProjectSetupChatIn):
@@ -231,7 +343,36 @@ def register_routes(app: FastAPI) -> None:
         if not c:
             conn.close()
             raise HTTPException(400, "Invalid connection_id (not found for this user)")
-    
+
+        policy_row = conn.execute(
+            "SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1",
+            (payload.connection_id, user_id),
+        ).fetchone()
+        main_agent_id = str(policy_row["main_agent_id"] or "").strip() if policy_row else ""
+        main_agent_name = str(policy_row["main_agent_name"] or "").strip() if policy_row else ""
+        if not main_agent_id:
+            conn.close()
+            raise HTTPException(
+                400,
+                "Primary owner agent is not configured for this connection. Re-run OpenClaw bootstrap first.",
+            )
+        managed_primary = conn.execute(
+            """
+            SELECT agent_id, agent_name
+            FROM managed_agents
+            WHERE user_id = ? AND connection_id = ? AND agent_id = ?
+            LIMIT 1
+            """,
+            (user_id, payload.connection_id, main_agent_id),
+        ).fetchone()
+        if not managed_primary:
+            conn.close()
+            raise HTTPException(
+                400,
+                "Primary owner agent is missing from managed agents. Reconnect OpenClaw and try again.",
+            )
+        main_agent_name = str(managed_primary["agent_name"] or main_agent_name or main_agent_id).strip() or main_agent_id
+
         pid = new_id("prj")
         now = int(time.time())
         setup_details = _normalize_setup_details(payload.setup_details or {})
@@ -288,12 +429,41 @@ def register_routes(app: FastAPI) -> None:
                 now,
             ),
         )
+        conn.execute(
+            """
+            INSERT INTO project_agents (
+                project_id, agent_id, agent_name, is_primary, role,
+                source_type, source_user_id, source_connection_id, joined_via_invite_id, added_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (pid, main_agent_id, main_agent_name, 1, "Primary owner agent", "owner", user_id, payload.connection_id, None, now),
+        )
+        initial_project_agent_token = _new_agent_access_token()
+        conn.execute(
+            "INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, created_at) VALUES (?,?,?,?)",
+            (pid, main_agent_id, _hash_access_token(initial_project_agent_token), now),
+        )
         conn.commit()
         conn.close()
     
+        _write_project_agent_roles_file(
+            owner_user_id=user_id,
+            project_root=project_root,
+            agents=[
+                {
+                    "agent_id": main_agent_id,
+                    "agent_name": main_agent_name,
+                    "role": "Primary owner agent",
+                    "is_primary": True,
+                }
+            ],
+        )
         _refresh_project_documents(pid)
-    
+
         await emit(pid, "project.created", {"title": payload.title})
+        await emit(pid, "project.agents_set", {"count": 1, "primary_agent_id": main_agent_id, "auto_seeded": True})
+        asyncio.create_task(_generate_project_plan(pid, force=True))
+        await emit(pid, "project.plan.regenerate_requested", {"project_id": pid, "source": "project_created"})
         await emit(pid, "project.scope_initialized", {"project_root": project_root})
         _append_project_daily_log(
             owner_user_id=user_id,
@@ -1447,6 +1617,7 @@ def register_routes(app: FastAPI) -> None:
         invite_url = f"{origin}/?project_invite={invite_token_quoted}"
         accept_api_url = f"{origin}/api/projects/invites/{invite_token_quoted}/accept"
         invite_relpath = f"{PROJECT_INFO_DIRNAME}/Invites/EXTERNAL-AGENT-INVITE-{invite_id}.MD"
+        project_invitations_relpath = PROJECT_INVITATIONS_FILE
 
         project_root = str(proj["project_root"] or "")
         project_dir = _resolve_owner_project_dir(user_id, project_root).resolve()
@@ -1472,6 +1643,12 @@ def register_routes(app: FastAPI) -> None:
             expires_at=expires_at,
         )
         invite_path.write_text(invite_md, encoding="utf-8")
+        email_template = _build_external_invite_email_template(
+            project_title=str(proj["title"] or ""),
+            project_goal=str(proj["goal"] or ""),
+            invite_url=invite_url,
+            target_email=target_email or None,
+        )
 
         conn.execute(
             """
@@ -1500,6 +1677,26 @@ def register_routes(app: FastAPI) -> None:
         conn.close()
 
         preview_url = f"/api/projects/{project_id}/preview/{_encode_rel_path_for_url_path(invite_relpath)}"
+        project_invitations_preview_url = f"/api/projects/{project_id}/preview/{_encode_rel_path_for_url_path(project_invitations_relpath)}"
+        _append_project_invitations_record(
+            owner_user_id=user_id,
+            project_root=project_root,
+            project_id=project_id,
+            project_title=str(proj["title"] or ""),
+            invite_id=invite_id,
+            status="pending",
+            invite_url=invite_url,
+            accept_api_url=accept_api_url,
+            target_email=target_email or None,
+            requested_agent_id=requested_agent_id,
+            requested_agent_name=requested_agent_name,
+            role=role,
+            note=note,
+            created_at=now,
+            expires_at=expires_at,
+            email_subject=str(email_template.get("subject") or ""),
+            email_body=str(email_template.get("body") or ""),
+        )
         _append_project_daily_log(
             owner_user_id=user_id,
             project_root=project_root,
@@ -1522,6 +1719,11 @@ def register_routes(app: FastAPI) -> None:
             "accept_api_url": accept_api_url,
             "invite_doc_path": invite_relpath,
             "invite_doc_preview_url": preview_url,
+            "project_invitations_doc_path": project_invitations_relpath,
+            "project_invitations_preview_url": project_invitations_preview_url,
+            "email_subject": str(email_template.get("subject") or ""),
+            "email_body": str(email_template.get("body") or ""),
+            "email_mailto_url": str(email_template.get("mailto_url") or ""),
             "expires_at": expires_at,
             "target_email": target_email or None,
             "requested_agent_id": requested_agent_id or None,
@@ -1556,11 +1758,21 @@ def register_routes(app: FastAPI) -> None:
         conn.close()
 
         now = int(time.time())
+        project_invitations_relpath = PROJECT_INVITATIONS_FILE
+        project_invitations_preview_url = f"/api/projects/{project_id}/preview/{_encode_rel_path_for_url_path(project_invitations_relpath)}"
         invites = []
         for row in rows:
             status = str(row["status"] or "pending")
             if status == "pending" and _to_int(row["expires_at"]) <= now:
                 status = "expired"
+
+            invite_doc_relpath = str(row["invite_doc_relpath"] or "").strip()
+            invite_doc_preview_url = (
+                f"/api/projects/{project_id}/preview/{_encode_rel_path_for_url_path(invite_doc_relpath)}"
+                if invite_doc_relpath
+                else None
+            )
+
             invites.append(
                 {
                     "id": str(row["id"]),
@@ -1569,7 +1781,8 @@ def register_routes(app: FastAPI) -> None:
                     "requested_agent_name": str(row["requested_agent_name"] or "") or None,
                     "role": str(row["role"] or ""),
                     "note": str(row["invite_note"] or ""),
-                    "invite_doc_path": str(row["invite_doc_relpath"] or "") or None,
+                    "invite_doc_path": invite_doc_relpath or None,
+                    "invite_doc_preview_url": invite_doc_preview_url,
                     "status": status,
                     "expires_at": _to_int(row["expires_at"]),
                     "created_at": _to_int(row["created_at"]),
@@ -1579,7 +1792,14 @@ def register_routes(app: FastAPI) -> None:
                     "accepted_agent_id": str(row["accepted_agent_id"] or "") or None,
                 }
             )
-        return {"ok": True, "count": len(invites), "invites": invites}
+
+        return {
+            "ok": True,
+            "count": len(invites),
+            "invites": invites,
+            "project_invitations_doc_path": project_invitations_relpath,
+            "project_invitations_preview_url": project_invitations_preview_url,
+        }
 
     @app.get("/api/projects/invites/{invite_token}")
     async def get_project_external_agent_invite_info(invite_token: str):
@@ -1647,9 +1867,10 @@ def register_routes(app: FastAPI) -> None:
         conn = db()
         row = conn.execute(
             """
-            SELECT id, status, project_id
-            FROM project_external_agent_invites
-            WHERE id = ? AND project_id = ? AND owner_user_id = ?
+            SELECT pi.id, pi.status, pi.project_id, p.project_root
+            FROM project_external_agent_invites pi
+            JOIN projects p ON p.id = pi.project_id
+            WHERE pi.id = ? AND pi.project_id = ? AND pi.owner_user_id = ?
             LIMIT 1
             """,
             (invite_id, project_id, user_id),
@@ -1675,6 +1896,14 @@ def register_routes(app: FastAPI) -> None:
         )
         conn.commit()
         conn.close()
+        _append_project_invitations_status_update(
+            owner_user_id=user_id,
+            project_root=str(row["project_root"] or ""),
+            invite_id=invite_id,
+            status="revoked",
+            ts_value=now,
+            note="revoked_by_owner",
+        )
         await emit(project_id, "project.external_agent.invite_revoked", {"invite_id": invite_id, "status": "revoked"})
         return {
             "ok": True,
@@ -1869,6 +2098,14 @@ def register_routes(app: FastAPI) -> None:
         conn.close()
 
         project_root = str(invite_row["project_root"] or "")
+        _append_project_invitations_status_update(
+            owner_user_id=owner_user_id,
+            project_root=project_root,
+            invite_id=invite_id,
+            status="accepted",
+            ts_value=now,
+            note=f"accepted_by:{member_user_id}:{agent_id}",
+        )
         _write_project_agent_roles_file(
             owner_user_id=owner_user_id,
             project_root=project_root,

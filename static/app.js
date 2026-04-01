@@ -37,6 +37,7 @@ let wizardSuggestedRoles = new Map();
 let wizardExternalInvites = [];
 let wizardExternalMemberships = [];
 let wizardAgentPermissions = [];
+let wizardLatestExternalInvite = null;
 let runtimePollHandle = null;
 let projectFilesCurrentPath = "";
 let projectFilePreviewPath = "";
@@ -595,7 +596,7 @@ async function loadProjectInviteConnections() {
   return projectInviteContext.connections;
 }
 
-async function initializeProjectInviteContext({ refreshConnections = true } = {}) {
+async function initializeProjectInviteContext({ refreshConnections = true, autoAccept = false } = {}) {
   if (!projectInviteContext.active) {
     renderProjectInviteUI();
     return null;
@@ -609,9 +610,11 @@ async function initializeProjectInviteContext({ refreshConnections = true } = {}
   } else {
     renderProjectInviteUI();
   }
+  if (autoAccept && sessionToken) {
+    await tryAutoAcceptProjectInvite().catch(() => false);
+  }
   return projectInviteContext.info;
 }
-
 async function acceptProjectInviteFromUI() {
   if (!projectInviteContext.active) throw new Error("No active project invite.");
   if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
@@ -3107,6 +3110,92 @@ function _parseWritePathsInput(rawText) {
   return deduped;
 }
 
+let wizardProjectInvitationsPreviewUrl = "";
+
+function renderWizardLatestExternalInviteDelivery() {
+  const card = $("wizard_external_delivery");
+  if (!card) return;
+  const inviteUrl = String(wizardLatestExternalInvite?.invite_url || "").trim();
+  const docUrl = String(
+    wizardLatestExternalInvite?.project_invitations_preview_url
+      || wizardProjectInvitationsPreviewUrl
+      || ""
+  ).trim();
+  const emailSubject = String(wizardLatestExternalInvite?.email_subject || "").trim();
+  const emailBody = String(wizardLatestExternalInvite?.email_body || "").trim();
+  const emailMailtoUrl = String(wizardLatestExternalInvite?.email_mailto_url || "").trim();
+
+  const hasAny = Boolean(inviteUrl || docUrl || emailSubject || emailBody || emailMailtoUrl);
+  card.classList.toggle("hidden", !hasAny);
+  if (!hasAny) return;
+
+  const inviteInput = $("ext_latest_invite_url");
+  const docInput = $("ext_project_invitations_url");
+  const subjectInput = $("ext_latest_email_subject");
+  const bodyInput = $("ext_latest_email_body");
+
+  if (inviteInput) inviteInput.value = inviteUrl;
+  if (docInput) docInput.value = docUrl;
+  if (subjectInput) subjectInput.value = emailSubject;
+  if (bodyInput) bodyInput.value = emailBody;
+}
+
+async function _copyInviteDeliveryText(text, okMsg = "Copied") {
+  const value = String(text || "").trim();
+  if (!value) throw new Error("Nothing to copy yet.");
+  if (!navigator.clipboard?.writeText) throw new Error("Clipboard is not available on this browser.");
+  await navigator.clipboard.writeText(value);
+  setMessage("wizard_external_msg", okMsg, "ok");
+}
+
+function _openInviteDeliveryUrl(url) {
+  const value = String(url || "").trim();
+  if (!value) throw new Error("URL is empty.");
+  window.open(value, "_blank", "noopener");
+}
+
+function _latestInviteMailtoUrl() {
+  const mailto = String(wizardLatestExternalInvite?.email_mailto_url || "").trim();
+  if (mailto) return mailto;
+  const subject = encodeURIComponent(String($("ext_latest_email_subject")?.value || "").trim());
+  const body = encodeURIComponent(String($("ext_latest_email_body")?.value || "").trim());
+  if (!subject && !body) return "";
+  return `mailto:?subject=${subject}&body=${body}`;
+}
+
+async function tryAutoAcceptProjectInvite() {
+  if (!projectInviteContext.active || !sessionToken) return false;
+  const info = projectInviteContext.info || {};
+  if (!info?.can_accept) return false;
+  const connections = Array.isArray(projectInviteContext.connections) ? projectInviteContext.connections : [];
+  if (connections.length !== 1) return false;
+
+  const connectionId = String(connections[0]?.id || "").trim();
+  if (!connectionId) return false;
+
+  const payload = { connection_id: connectionId };
+  const suggestedAgentId = String(info?.requested_agent_id || "").trim();
+  const suggestedAgentName = String(info?.requested_agent_name || "").trim();
+  if (suggestedAgentId) payload.agent_id = suggestedAgentId;
+  if (suggestedAgentName) payload.agent_name = suggestedAgentName;
+
+  const tokenQuoted = encodeURIComponent(projectInviteContext.token);
+  try {
+    const res = await api(`/api/projects/invites/${tokenQuoted}/accept`, "POST", payload);
+    const acceptedProjectId = String(res?.project_id || "").trim();
+    setMessage("project_invite_msg", "Invite auto-accepted. Opening project...", "ok");
+    clearProjectInviteContext({ clearUrl: true });
+    await fetchInitial({ preferredProjectId: acceptedProjectId || null });
+    return true;
+  } catch (e) {
+    setMessage(
+      "project_invite_msg",
+      `Auto-accept skipped: ${detailToText(e?.message || e)}. You can accept manually below.`,
+      "error"
+    );
+    return false;
+  }
+}
 function renderWizardExternalInvites() {
   const box = $("wizard_external_invites");
   if (!box) return;
@@ -3142,9 +3231,21 @@ function renderWizardExternalInvites() {
     row.appendChild(title);
     row.appendChild(meta);
 
+    const actions = document.createElement("div");
+    actions.className = "action-row";
+    const inviteDocUrl = String(invite?.invite_doc_preview_url || "").trim();
+    if (inviteDocUrl) {
+      const openInviteDocBtn = document.createElement("button");
+      openInviteDocBtn.type = "button";
+      openInviteDocBtn.className = "secondary";
+      openInviteDocBtn.textContent = "Open Invite MD";
+      openInviteDocBtn.addEventListener("click", () => {
+        _openInviteDeliveryUrl(inviteDocUrl);
+      });
+      actions.appendChild(openInviteDocBtn);
+    }
+
     if (String(invite?.status || "").toLowerCase() === "pending") {
-      const actions = document.createElement("div");
-      actions.className = "action-row";
       const revokeBtn = document.createElement("button");
       revokeBtn.type = "button";
       revokeBtn.className = "secondary";
@@ -3153,6 +3254,9 @@ function renderWizardExternalInvites() {
         revokeWizardExternalInvite(id).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
       });
       actions.appendChild(revokeBtn);
+    }
+
+    if (actions.childElementCount) {
       row.appendChild(actions);
     }
 
@@ -3299,10 +3403,21 @@ function renderWizardAgentPermissions() {
 async function refreshWizardExternalAccess({ silent = false } = {}) {
   const panel = $("wizard_external_access");
   if (!panel) return;
+
   if (!selectedProjectId) {
     panel.classList.add("hidden");
+    wizardExternalInvites = [];
+    wizardExternalMemberships = [];
+    wizardAgentPermissions = [];
+    wizardProjectInvitationsPreviewUrl = "";
+    wizardLatestExternalInvite = null;
+    renderWizardExternalInvites();
+    renderWizardExternalMemberships();
+    renderWizardAgentPermissions();
+    renderWizardLatestExternalInviteDelivery();
     return;
   }
+
   panel.classList.remove("hidden");
 
   const [invitesRes, membershipsRes, permissionsRes] = await Promise.all([
@@ -3314,15 +3429,22 @@ async function refreshWizardExternalAccess({ silent = false } = {}) {
   wizardExternalInvites = Array.isArray(invitesRes?.invites) ? invitesRes.invites : [];
   wizardExternalMemberships = Array.isArray(membershipsRes?.memberships) ? membershipsRes.memberships : [];
   wizardAgentPermissions = Array.isArray(permissionsRes?.permissions) ? permissionsRes.permissions : [];
+  wizardProjectInvitationsPreviewUrl = String(invitesRes?.project_invitations_preview_url || "").trim();
+
+  const latestInviteProjectId = String(wizardLatestExternalInvite?.project_id || "").trim();
+  if (wizardLatestExternalInvite && latestInviteProjectId && latestInviteProjectId !== selectedProjectId) {
+    wizardLatestExternalInvite = null;
+  }
 
   renderWizardExternalInvites();
   renderWizardExternalMemberships();
   renderWizardAgentPermissions();
+  renderWizardLatestExternalInviteDelivery();
+
   if (!silent) {
     setMessage("wizard_external_msg", "External access data refreshed.", "ok");
   }
 }
-
 async function createWizardExternalInvite(ev) {
   if (ev?.preventDefault) ev.preventDefault();
   if (!selectedProjectId) throw new Error("Choose project first");
@@ -3343,21 +3465,36 @@ async function createWizardExternalInvite(ev) {
     expires_in_sec: _hoursToInviteTtlSec(expiresHours),
   });
 
+  wizardLatestExternalInvite = res || null;
+  if (
+    wizardLatestExternalInvite
+    && !String(wizardLatestExternalInvite.project_invitations_preview_url || "").trim()
+    && wizardProjectInvitationsPreviewUrl
+  ) {
+    wizardLatestExternalInvite.project_invitations_preview_url = wizardProjectInvitationsPreviewUrl;
+  }
+  renderWizardLatestExternalInviteDelivery();
+
   const inviteUrl = String(res?.invite_url || "").trim();
+  const docUrl = String(res?.project_invitations_preview_url || "").trim();
+  let copied = false;
   if (inviteUrl && navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(inviteUrl);
-      setMessage("wizard_external_msg", "External invite created and copied to clipboard.", "ok");
+      copied = true;
     } catch {
-      setMessage("wizard_external_msg", `External invite created: ${inviteUrl}`, "ok");
+      copied = false;
     }
-  } else {
-    setMessage("wizard_external_msg", inviteUrl ? `External invite created: ${inviteUrl}` : "External invite created.", "ok");
   }
+
+  const msgBits = ["External invite created."];
+  if (copied) msgBits.push("Invite URL copied to clipboard.");
+  else if (inviteUrl) msgBits.push(`Invite URL: ${inviteUrl}`);
+  if (docUrl) msgBits.push(`Project invitations doc: ${docUrl}`);
+  setMessage("wizard_external_msg", msgBits.join(" "), "ok");
 
   await refreshWizardExternalAccess({ silent: true });
 }
-
 async function revokeWizardExternalInvite(inviteId) {
   if (!selectedProjectId) throw new Error("Choose project first");
   const id = String(inviteId || "").trim();
@@ -3613,10 +3750,12 @@ async function login(ev) {
 
   if (projectInviteContext.active) {
     setView("auth");
-    await initializeProjectInviteContext({ refreshConnections: true }).catch((e) => {
+    await initializeProjectInviteContext({ refreshConnections: true, autoAccept: true }).catch((e) => {
       setMessage("project_invite_msg", detailToText(e?.message || e), "error");
     });
-    return;
+    if (projectInviteContext.active) {
+      return;
+    }
   }
 
   await fetchInitial();
@@ -3669,10 +3808,12 @@ async function signup(ev) {
 
   if (projectInviteContext.active) {
     setView("auth");
-    await initializeProjectInviteContext({ refreshConnections: true }).catch((e) => {
+    await initializeProjectInviteContext({ refreshConnections: true, autoAccept: true }).catch((e) => {
       setMessage("project_invite_msg", detailToText(e?.message || e), "error");
     });
-    return;
+    if (projectInviteContext.active) {
+      return;
+    }
   }
 
   await fetchInitial();
@@ -3973,10 +4114,12 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
   }
   if (projectInviteContext.active) {
     setView("auth");
-    await initializeProjectInviteContext({ refreshConnections: true }).catch((e) => {
+    await initializeProjectInviteContext({ refreshConnections: true, autoAccept: true }).catch((e) => {
       setMessage("project_invite_msg", detailToText(e?.message || e), "error");
     });
-    return;
+    if (projectInviteContext.active) {
+      return;
+    }
   }
   const connections = await api("/api/openclaw/connections");
   if (!connections.length) {
@@ -4117,7 +4260,44 @@ function bindActions() {
   $("btn_refresh_external_access")?.addEventListener("click", () => {
     refreshWizardExternalAccess({ silent: false }).catch((e) => showUiError("wizard_external_msg", e));
   });
-
+  $("btn_copy_latest_invite_url")?.addEventListener("click", () => {
+    _copyInviteDeliveryText($("ext_latest_invite_url")?.value, "Invite URL copied.")
+      .catch((e) => showUiError("wizard_external_msg", e));
+  });
+  $("btn_open_latest_invite_url")?.addEventListener("click", () => {
+    try {
+      _openInviteDeliveryUrl($("ext_latest_invite_url")?.value);
+    } catch (e) {
+      showUiError("wizard_external_msg", e);
+    }
+  });
+  $("btn_copy_project_invitations_url")?.addEventListener("click", () => {
+    _copyInviteDeliveryText($("ext_project_invitations_url")?.value, "Project invitations URL copied.")
+      .catch((e) => showUiError("wizard_external_msg", e));
+  });
+  $("btn_open_project_invitations_url")?.addEventListener("click", () => {
+    try {
+      _openInviteDeliveryUrl($("ext_project_invitations_url")?.value);
+    } catch (e) {
+      showUiError("wizard_external_msg", e);
+    }
+  });
+  $("btn_copy_latest_email")?.addEventListener("click", () => {
+    const subject = String($("ext_latest_email_subject")?.value || "").trim();
+    const body = String($("ext_latest_email_body")?.value || "").trim();
+    const payload = subject && body ? `Subject: ${subject}\n\n${body}` : (subject || body);
+    _copyInviteDeliveryText(payload, "Email draft copied.")
+      .catch((e) => showUiError("wizard_external_msg", e));
+  });
+  $("btn_open_invite_mailto")?.addEventListener("click", () => {
+    try {
+      const mailto = _latestInviteMailtoUrl();
+      if (!mailto) throw new Error("Email draft is empty.");
+      window.location.href = mailto;
+    } catch (e) {
+      showUiError("wizard_external_msg", e);
+    }
+  });
   $("btn_subscribe").onclick = () => subscribeEvents().catch((e) => addEvent("error", detailToText(e)));
   $("btn_run").onclick = () => runProject().catch((e) => { setMessage("chat_hint", detailToText(e), "error"); addEvent("error", detailToText(e)); });
   $("btn_delete_project").onclick = () => deleteSelectedProject().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
@@ -4235,7 +4415,7 @@ if (oauthError) {
 
   if (projectInviteContext.active) {
     setView("auth");
-    initializeProjectInviteContext({ refreshConnections: true })
+    initializeProjectInviteContext({ refreshConnections: true, autoAccept: Boolean(sessionToken) })
       .catch((e) => {
         setMessage("project_invite_msg", detailToText(e?.message || e), "error");
       });
