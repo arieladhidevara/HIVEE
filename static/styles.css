@@ -1387,10 +1387,11 @@ label {
 
 /* --- Section title: yellow-to-red gradient, project identity --- */
 #workspace_section_title {
-  background: linear-gradient(135deg, #facc15 0%, #ff4d4d 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  background: none;
+  -webkit-background-clip: border-box;
+  -webkit-text-fill-color: var(--text);
+  background-clip: border-box;
+  color: var(--text);
 }
 
 /* --- New Project button: transparent fill with gradient outline --- */
@@ -1443,10 +1444,11 @@ label {
   gap: 10px;
 }
 #detail_title_text {
-  background: var(--gradient);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  background: none;
+  -webkit-background-clip: border-box;
+  -webkit-text-fill-color: var(--text);
+  background-clip: border-box;
+  color: var(--text);
 }
 .approval-indicator {
   display: inline-flex;
@@ -1832,6 +1834,168 @@ textarea[readonly]:focus {
 @media (max-width: 860px) {
   .external-invite-cols { grid-template-columns: 1fr; }
   #btn_chat_send, #btn_wizard_chat_send { min-height: 44px; }
+}
+
+
+/* ===== AUTH HOMEPAGE: BLENDED (NO SECTION FILL) ===== */
+#view_auth .card {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+#view_auth .auth-modern {
+  width: min(1080px, calc(100vw - 48px));
+  padding: 0;
+  gap: 28px;
+  grid-template-columns: minmax(360px, 1fr) minmax(320px, 420px);
+  align-items: start;
+}
+
+#view_auth .auth-brand,
+#view_auth .auth-panel {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 22px 0;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+#view_auth .auth-brand {
+  padding-right: 28px;
+  border-right: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+#view_auth .auth-panel {
+  padding-left: 28px;
+}
+
+#view_auth .claim-connected-card,
+#view_auth .agent-guide {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+}
+
+#view_auth .social-divider span {
+  background: transparent;
+  padding-inline: 10px;
+}
+
+#view_auth .social-btn,
+#view_auth .tab-link.active {
+  background: transparent;
+}
+
+#view_auth .method-card {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  border: 1px solid var(--line-2) !important;
+  box-shadow: none;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+#view_auth .method-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: var(--gradient);
+  pointer-events: none;
+  opacity: 0;
+  z-index: 0;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+#view_auth .method-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+#view_auth .method-card:hover:not(.active) {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+#view_auth .method-card.active {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none;
+  border-radius: 10px;
+  border: 1px solid transparent !important;
+  color: var(--text);
+}
+
+#view_auth .method-card.active:hover {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none;
+  border: 1px solid transparent !important;
+  color: var(--text);
+}
+
+#view_auth .method-card.active::before {
+  opacity: 1;
+}
+
+#view_auth input,
+#view_auth select,
+#view_auth textarea {
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+#view_auth input:focus,
+#view_auth select:focus,
+#view_auth textarea:focus {
+  border-color: rgba(147, 197, 253, 0.9);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14);
+}
+
+@media (max-width: 980px) {
+  #view_auth .auth-modern {
+    width: calc(100vw - 24px);
+    gap: 16px;
+    grid-template-columns: 1fr;
+  }
+
+  #view_auth .auth-brand {
+    border-right: none;
+    padding-right: 0;
+    padding-bottom: 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  }
+
+  #view_auth .auth-panel {
+    padding-left: 0;
+    padding-top: 14px;
+  }
+}
+
+@media (max-width: 860px) {
+  #view_auth .auth-modern {
+    width: calc(100vw - 16px);
+    padding: 0;
+    gap: 12px;
+  }
+
+  #view_auth .auth-brand,
+  #view_auth .auth-panel {
+    padding: 18px 0;
+  }
 }
 
 
