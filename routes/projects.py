@@ -176,15 +176,23 @@ async def _compose_external_invite_email_with_primary_agent(
         "body": str(default_body or "").strip()[:6000],
         "composed_by_agent": False,
         "compose_error": None,
+        "sent_by_agent": False,
+        "send_status": "not_attempted",
+        "send_error": None,
+        "send_note": None,
     }
     if not base_url or not api_key or not main_agent_id:
+        fallback["send_status"] = "skipped_missing_primary_agent"
+        fallback["send_error"] = "Primary agent connection is missing"
         return fallback
 
     prompt = (
-        "Compose a concise invitation email in JSON only."
-        " Return object with keys: subject, body."
-        " Mention this is a Hivee external agent invitation."
-        " Keep tone professional and clear."
+        "You are the primary owner agent for a Hivee project. "
+        "Compose and send an invitation email NOW to the target email using your available email tool/integration. "
+        "If you cannot send, explain why. "
+        "Return JSON only with keys: subject, body, sent, send_status, send_error, send_note. "
+        "Rules: sent must be true only if email has actually been dispatched from your side. "
+        "Always include subject and body in your response."
         "\n\n"
         f"Project title: {project_title or '-'}\n"
         f"Target email: {target_email or '-'}\n"
@@ -201,31 +209,47 @@ async def _compose_external_invite_email_with_primary_agent(
             message=prompt,
             agent_id=main_agent_id,
             session_key=f"external-invite-email:{_normalize_invite_code(invite_code) or 'default'}",
-            timeout_sec=30,
+            timeout_sec=40,
         )
     except Exception as exc:
         fallback["compose_error"] = detail_to_text(exc)[:600]
+        fallback["send_status"] = "failed_primary_agent_send"
+        fallback["send_error"] = fallback["compose_error"]
         return fallback
 
     if not res.get("ok"):
         fallback["compose_error"] = detail_to_text(res.get("error") or res.get("details") or "compose failed")[:600]
+        fallback["send_status"] = "failed_primary_agent_send"
+        fallback["send_error"] = fallback["compose_error"]
         return fallback
 
     text = str(res.get("text") or "").strip()
     parsed = _extract_json_object(text) or {}
     subject = str(parsed.get("subject") or "").strip()[:220]
     body = str(parsed.get("body") or "").strip()[:6000]
-    if not subject or not body:
-        fallback["compose_error"] = "Primary agent response did not contain subject/body JSON"
-        return fallback
+    if not subject:
+        subject = fallback["subject"]
+    if not body:
+        body = fallback["body"]
+
+    sent_by_agent = _coerce_bool(parsed.get("sent"))
+    send_status = str(parsed.get("send_status") or "").strip()[:120]
+    send_error = str(parsed.get("send_error") or "").strip()[:1000] or None
+    send_note = str(parsed.get("send_note") or parsed.get("delivery_note") or "").strip()[:1000] or None
+    if not send_status:
+        send_status = "sent_by_primary_agent" if sent_by_agent else "failed_primary_agent_send"
 
     return {
         "subject": subject,
         "body": body,
         "composed_by_agent": True,
         "compose_error": None,
+        "sent_by_agent": sent_by_agent,
+        "send_status": send_status,
+        "send_error": send_error,
+        "send_note": send_note,
+        "raw_text": text[:1200],
     }
-
 
 def _build_external_agent_invite_markdown(
     *,
@@ -1911,14 +1935,37 @@ def register_routes(app: FastAPI) -> None:
             else f"mailto:?{urlencode({'subject': email_subject, 'body': email_body})}"
         )
 
-        email_delivery = _send_external_invite_email(
-            target_email=target_email or None,
-            subject=email_subject,
-            body=email_body,
-        )
-        email_delivery_status = str(email_delivery.get("status") or "pending")
-        email_delivery_error = str(email_delivery.get("error") or "").strip() or None
-        email_sent_at = _to_int(email_delivery.get("sent_at")) if email_delivery.get("sent_at") else None
+        primary_send_ok = bool(composed.get("sent_by_agent"))
+        primary_send_status_raw = str(composed.get("send_status") or "").strip()
+        primary_send_error = str(composed.get("send_error") or composed.get("compose_error") or "").strip() or None
+        primary_send_note = str(composed.get("send_note") or "").strip() or None
+
+        email_delivery_status = primary_send_status_raw or ("sent_by_primary_agent" if primary_send_ok else "failed_primary_agent_send")
+        email_delivery_error = primary_send_error
+        email_sent_at = int(time.time()) if primary_send_ok else None
+
+        smtp_fallback_allowed = str(os.getenv("INVITE_EMAIL_ALLOW_SMTP_FALLBACK") or "1").strip().lower() not in {"0", "false", "no", "off"}
+        if (not primary_send_ok) and smtp_fallback_allowed:
+            smtp_delivery = _send_external_invite_email(
+                target_email=target_email or None,
+                subject=email_subject,
+                body=email_body,
+            )
+            if smtp_delivery.get("ok"):
+                email_delivery_status = "sent_via_smtp_fallback"
+                smtp_error_text = str(smtp_delivery.get("error") or "").strip()
+                email_delivery_error = primary_send_error or (smtp_error_text or None)
+                email_sent_at = _to_int(smtp_delivery.get("sent_at")) if smtp_delivery.get("sent_at") else int(time.time())
+            else:
+                smtp_error_text = str(smtp_delivery.get("error") or "").strip()
+                joined_errors = " | ".join([x for x in [primary_send_error, smtp_error_text] if x]).strip()
+                email_delivery_status = "failed_primary_and_smtp"
+                email_delivery_error = joined_errors or "primary agent send failed and SMTP fallback failed"
+                email_sent_at = None
+        elif (not primary_send_ok) and (not smtp_fallback_allowed):
+            email_delivery_status = "failed_primary_no_fallback"
+            email_delivery_error = primary_send_error or "Primary agent send failed"
+
 
         conn.execute(
             """
@@ -2025,6 +2072,11 @@ def register_routes(app: FastAPI) -> None:
             "email_sent_at": email_sent_at,
             "email_composed_by_agent": bool(composed.get("composed_by_agent")),
             "email_compose_error": str(composed.get("compose_error") or "") or None,
+            "email_sent_by_primary_agent": primary_send_ok,
+            "email_primary_send_status": primary_send_status_raw or None,
+            "email_primary_send_error": primary_send_error,
+            "email_primary_send_note": primary_send_note,
+            "email_smtp_fallback_allowed": smtp_fallback_allowed,
             "expires_at": expires_at,
             "target_email": target_email or None,
             "requested_agent_id": requested_agent_id or None,
@@ -2640,4 +2692,3 @@ def register_routes(app: FastAPI) -> None:
                     yield "event: ping\ndata: {}\n\n"
     
         return StreamingResponse(event_generator(), media_type="text/event-stream")
-
