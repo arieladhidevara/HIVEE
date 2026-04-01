@@ -1153,7 +1153,7 @@ label {
 
 /* ===== CHAT COMPOSE ===== */
 .chat-compose            { display: grid; gap: 8px; }
-.chat-compose-row        { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+.chat-compose-row        { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
 .chat-compose textarea   { min-height: 80px; }
 .chat-compose-row button { min-height: 80px; white-space: nowrap; }
 
@@ -1226,7 +1226,7 @@ label {
 .wizard-chat-msg.agent .wizard-chat-bubble { border-color: rgba(249, 115, 22, 0.22); background: rgba(249, 115, 22, 0.05); }
 
 .wizard-chat-compose       { margin-top: 10px; display: grid; gap: 8px; }
-.wizard-chat-input-row     { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+.wizard-chat-input-row     { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
 .wizard-chat-compose textarea  { min-height: 80px; }
 .wizard-chat-input-row button  { min-height: 80px; white-space: nowrap; }
 
@@ -1742,40 +1742,44 @@ textarea[readonly]:focus {
 
 /* ===== STAGE 5: REFINEMENTS ===== */
 
-/* --- Chat send button: icon-only, gradient fill --- */
+/* --- Chat send button: icon-only, transparent, centered --- */
 #btn_chat_send,
 #btn_wizard_chat_send {
-  width: 46px;
-  min-width: 46px;
-  min-height: 80px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
   padding: 0;
   display: grid;
   place-items: center;
+  align-self: center;
   flex-shrink: 0;
-}
-#btn_chat_send {
-  background: var(--gradient) !important;
-  border: none !important;
-  color: #fff !important;
-}
-#btn_wizard_chat_send {
   background: transparent !important;
-  border: 1px solid transparent !important;
-  background-image: linear-gradient(var(--bg), var(--bg)), var(--gradient) !important;
-  background-origin: border-box !important;
-  background-clip: padding-box, border-box !important;
+  border: none !important;
+  box-shadow: none !important;
+  color: var(--muted) !important;
+}
+#btn_chat_send:hover,
+#btn_wizard_chat_send:hover {
+  background: transparent !important;
   color: var(--text) !important;
+  opacity: 1;
+  transform: none;
+}
+#btn_chat_send:active,
+#btn_wizard_chat_send:active {
+  transform: none;
+}
+#btn_chat_send:disabled,
+#btn_wizard_chat_send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 #btn_chat_send .icon-svg,
 #btn_wizard_chat_send .icon-svg {
   width: 18px;
   height: 18px;
   flex: 0 0 18px;
-}
-#btn_chat_send .icon-svg {
-  stroke: #fff;
-}
-#btn_wizard_chat_send .icon-svg {
   stroke: currentColor;
 }
 
