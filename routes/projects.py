@@ -1261,6 +1261,7 @@ def register_routes(app: FastAPI) -> None:
                 goal=str(row["goal"] or ""),
                 setup_details=_parse_setup_json(row["setup_json"]),
                 role_rows=role_rows,
+                project_root=str(row["project_root"] or ""),
                 plan_status=_coerce_plan_status(row["plan_status"]),
             )
             scoped_message = _compose_guardrailed_message(
@@ -2946,6 +2947,3 @@ def register_routes(app: FastAPI) -> None:
                     yield "event: ping\ndata: {}\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
-
-
-

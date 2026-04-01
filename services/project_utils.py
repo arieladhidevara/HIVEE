@@ -172,6 +172,19 @@ def _project_brief_markdown(*, brief: str, setup_details: Optional[Dict[str, Any
         lines.extend(["## Setup Chat Summary", summary, ""])
     return "\n".join(lines).strip() + "\n"
 
+def _artifact_sync_rule_lines(*, project_root: Optional[str] = None) -> List[str]:
+    lines = [
+        "Artifact sync policy:",
+        "- Persist every deliverable and handoff artifact into Hivee project files via `output_files`.",
+        "- Use project-relative paths only (no absolute machine/server paths).",
+        "- Do not mark work as done if files exist only on provider/local agent server.",
+        "- If external tools/runtime produce artifacts, copy full final content back into `output_files`.",
+        f"- Preferred writable roots: `{USER_OUTPUTS_DIRNAME}`, `{PROJECT_INFO_DIRNAME}`, `agents`, `logs`.",
+    ]
+    if project_root:
+        lines.append(f"- Hivee source-of-truth project root: `{project_root}`.")
+    return lines
+
 def _project_context_instruction(
     *,
     title: str,
@@ -179,6 +192,7 @@ def _project_context_instruction(
     goal: str,
     setup_details: Optional[Dict[str, Any]] = None,
     role_rows: Optional[List[Dict[str, Any]]] = None,
+    project_root: Optional[str] = None,
     plan_status: str = PLAN_STATUS_PENDING,
 ) -> str:
     sections = [
@@ -212,6 +226,7 @@ def _project_context_instruction(
         sections.append("- If execution is blocked by missing user info/approval, pause and ask the owner clearly.")
         sections.append("- For pause points, return JSON with `requires_user_input=true`, `pause_reason`, and optional `resume_hint`.")
         sections.append("- If owner explicitly says SKIP for missing info, make reasonable assumptions and continue execution.")
+    sections.extend(_artifact_sync_rule_lines(project_root=project_root))
     sections.append("- When handing off dependencies, mention the related invited agent explicitly using @agent_id.")
     sections.append(
         "- If you generate or modify files, include them in JSON field `output_files` as "
@@ -596,6 +611,7 @@ def _project_handoff_markdown(
         lines.append("- Validate outputs and archive completed tasks.")
     else:
         lines.append("- Continue execution and monitor blockers.")
+    lines.append("- Persist every deliverable and delegation handoff artifact in Hivee project files, not only on agent/provider server.")
     lines.extend(
         [
             "",
@@ -690,6 +706,17 @@ def _write_project_meta_bundle(
         },
         "assigned_agents": role_payload,
         "primary_agent_id": primary_agent_id,
+        "rules": {
+            "artifact_sync": {
+                "required": True,
+                "source_of_truth": project_dir.as_posix(),
+                "require_output_files": True,
+                "require_project_relative_paths": True,
+                "disallow_external_only_storage": True,
+                "delegation_handoff_requires_hivee_files": True,
+                "preferred_roots": [USER_OUTPUTS_DIRNAME, PROJECT_INFO_DIRNAME, "agents", "logs"],
+            }
+        },
         "created_at": _to_int(created_at) if created_at else None,
         "updated_at": now,
     }
@@ -736,6 +763,15 @@ def _write_project_meta_bundle(
             "pause_requires_owner": True,
             "stop_requires_owner": True,
             "max_parallel_agents": max(1, len(role_payload)),
+        },
+        "artifact_sync_policy": {
+            "required": True,
+            "source_of_truth": project_dir.as_posix(),
+            "require_output_files": True,
+            "require_project_relative_paths": True,
+            "disallow_external_only_storage": True,
+            "delegation_handoff_requires_hivee_files": True,
+            "preferred_roots": [USER_OUTPUTS_DIRNAME, PROJECT_INFO_DIRNAME, "agents", "logs"],
         },
         "updated_at": now,
     }
@@ -1230,6 +1266,7 @@ def _plan_prompt_from_project(
     goal: str,
     setup_details: Dict[str, Any],
     role_rows: List[Dict[str, Any]],
+    project_root: Optional[str] = None,
     project_info_excerpt: str = "",
 ) -> str:
     context = _project_context_instruction(
@@ -1238,6 +1275,7 @@ def _plan_prompt_from_project(
         goal=goal,
         setup_details=setup_details,
         role_rows=role_rows,
+        project_root=project_root,
         plan_status=PLAN_STATUS_PENDING,
     )
     roster = _agent_roster_markdown(role_rows)
@@ -1266,6 +1304,7 @@ def _delegate_prompt_from_project(
     setup_details: Dict[str, Any],
     role_rows: List[Dict[str, Any]],
     plan_text: str,
+    project_root: Optional[str] = None,
     project_info_excerpt: str = "",
 ) -> str:
     context = _project_context_instruction(
@@ -1274,6 +1313,7 @@ def _delegate_prompt_from_project(
         goal=goal,
         setup_details=setup_details,
         role_rows=role_rows,
+        project_root=project_root,
         plan_status=PLAN_STATUS_APPROVED,
     )
     roster_text = _agent_roster_markdown(role_rows)
@@ -1302,6 +1342,7 @@ def _delegate_prompt_from_project(
         f"- `project_delegation_md` should become `{PROJECT_DELEGATION_FILE}` and must summarize approved plan, sequencing, and coordination protocol.\n"
         "- Include an execution order showing which agent must finish first and what event triggers the next agent.\n"
         "- If an agent reaches a pit stop or missing credential, they must return requires_user_input=true with pause_reason and resume_hint.\n"
+        "- Every deliverable/handoff artifact must be persisted into Hivee project files, not only on provider/local runtime server.\n"
         "- If user chooses to skip missing details, primary agent can decide assumptions and continue; record assumptions.\n"
         f"Invited agents: {json.dumps(roster, ensure_ascii=False)}\n"
         f"Approved plan:\n{(plan_text or '').strip()[:MAX_TEMPLATE_PAYLOAD_BYTES]}\n"
@@ -1362,6 +1403,11 @@ def _normalize_task_markdown_for_agent(
         normalized = (
             normalized
             + "\n\nOutput Requirement: include concrete deliverable files in output_files with full content."
+        )
+    if "artifact sync rule" not in normalized.lower():
+        normalized = (
+            normalized
+            + "\n\nArtifact Sync Rule: persist every deliverable and handoff artifact in Hivee project files via output_files; do not keep final-only copies on provider/local runtime server."
         )
     return normalized.strip()
 
@@ -2135,6 +2181,7 @@ def _build_artifact_followup_prompt(*, user_message: str, previous_response: str
         "}\n"
         "Rules:\n"
         "- If you created or modified files, include all of them in output_files with full content.\n"
+        "- Persist deliverables in Hivee project files; do not report done if files exist only on your own server/runtime.\n"
         "- Use project-relative paths only.\n"
         "- If you cannot continue without user approval/input, set requires_user_input=true and explain pause_reason.\n"
         "- If no files were produced, return output_files as [] and explain why in chat_update.\n\n"
@@ -2204,6 +2251,7 @@ def _build_artifact_recovery_prompt(
         "- output_files MUST NOT be empty unless requires_user_input=true.\n"
         "- If implementation task, return concrete source files (for websites include at least index.html and style.css).\n"
         f"- If planning/research task, return at least one markdown deliverable file at {fallback_file}.\n"
+        "- Persist deliverables in Hivee project files; do not keep final-only copies on provider/local runtime server.\n"
         "- Use project-relative paths only.\n\n"
         f"Agent: {agent_id}\n"
         f"Role: {role}\n"

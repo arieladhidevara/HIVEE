@@ -1466,6 +1466,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         goal=str(row["goal"] or ""),
         setup_details=setup_details,
         role_rows=role_rows,
+        project_root=str(row["project_root"] or ""),
         plan_status=PLAN_STATUS_PENDING,
     )
     roster = _agent_roster_markdown(role_rows)
@@ -1674,6 +1675,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         goal=str(row["goal"] or ""),
         setup_details=setup_details,
         role_rows=role_rows,
+        project_root=str(row["project_root"] or ""),
         project_info_excerpt=project_info_excerpt,
     )
     plan_file_context = _build_project_file_context(
@@ -1802,6 +1804,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
         setup_details=setup_details,
         role_rows=role_rows,
         plan_text=str(row["plan_text"] or ""),
+        project_root=str(row["project_root"] or ""),
         project_info_excerpt=project_info_excerpt,
     )
     delegate_file_context = _build_project_file_context(
@@ -1914,6 +1917,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             f"- Follow dependency order from {PROJECT_DELEGATION_FILE}.\n"
             "- If your output unblocks another agent, mention them explicitly as @agent_id in chat_update so handoff happens in chat.\n"
             "- Save concrete artifacts into project files using output_files.\n"
+            "- Persist deliverables in Hivee project files; do not keep final-only copies on provider/local runtime server.\n"
             "- If blocked by missing user approval/input (credentials, API key, sign-off, pit stop), set requires_user_input=true with pause_reason and resume_hint.\n"
             "- If user answers SKIP, decide assumptions responsibly and continue.\n"
         )
@@ -2031,6 +2035,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 goal=str(row["goal"] or ""),
                 setup_details=setup_details,
                 role_rows=role_rows,
+                project_root=str(row["project_root"] or ""),
                 plan_status=PLAN_STATUS_APPROVED,
             )
             + "\n\n"
@@ -2049,6 +2054,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "Rules:\n"
             + "- chat_update must read like normal conversation.\n"
             + "- Put every created/updated artifact in output_files.\n"
+            + "- Persist deliverables in Hivee project files; do not keep final-only copies on provider/local runtime server.\n"
             + "- Use relative paths inside this project only.\n"
             + "- Use exact IDs from roster when mentioning other agents.\n"
             + "- Mention handoff needs in chat_update with @agent_id if needed.\n\n"

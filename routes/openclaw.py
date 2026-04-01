@@ -403,6 +403,7 @@ def register_routes(app: FastAPI) -> None:
                 goal=str(project_scope["goal"] or ""),
                 setup_details=_parse_setup_json(project_scope["setup_json"]),
                 role_rows=role_rows,
+                project_root=str(project_scope["project_root"] or ""),
                 plan_status=_coerce_plan_status(project_scope["plan_status"]),
             )
             roster_text = _agent_roster_markdown(role_rows)
