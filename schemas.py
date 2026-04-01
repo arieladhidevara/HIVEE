@@ -114,6 +114,13 @@ class ProjectExternalAgentInviteAcceptIn(BaseModel):
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
 
+class ProjectAgentPermissionsUpdateIn(BaseModel):
+    can_chat_project: Optional[bool] = None
+    can_read_files: Optional[bool] = None
+    can_write_files: Optional[bool] = None
+    write_paths: Optional[List[str]] = None
+    reset_to_default: bool = False
+
 class OpenClawChatIn(BaseModel):
     message: str = Field(..., min_length=1)
     agent_id: Optional[str] = None
@@ -295,3 +302,4 @@ class A2AEnvironmentHandoffWaitOut(BaseModel):
     waited_ms: int
 
 __all__ = [name for name in globals() if not name.startswith('__')]
+

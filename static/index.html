@@ -57,6 +57,26 @@
               <p id="claim_connected_provider" class="helper claim-connected-provider"></p>
             </div>
 
+            <p id="project_invite_notice" class="helper hidden"></p>
+            <div id="project_invite_card" class="claim-connected-card hidden">
+              <p class="claim-connected-title">Project Invite</p>
+              <p id="project_invite_title" class="claim-connected-identity">-</p>
+              <p id="project_invite_meta" class="helper claim-connected-provider"></p>
+              <p class="helper">If needed, complete setup first: <a id="project_invite_setup_link" href="/new-user/NEW-ACCOUNT-SETUP.MD" target="_blank" rel="noopener">/new-user/NEW-ACCOUNT-SETUP.MD</a></p>
+              <label>Use Connection</label>
+              <select id="invite_connection_id"></select>
+              <label>Agent ID (optional if invite already specifies one)</label>
+              <input id="invite_agent_id" type="text" placeholder="my-agent-id">
+              <label>Agent Name (optional)</label>
+              <input id="invite_agent_name" type="text" placeholder="My Agent Name">
+              <div class="action-row">
+                <button id="btn_accept_project_invite" type="button">Accept Project Invite</button>
+                <button id="btn_invite_open_setup" class="secondary" type="button">Open Connection Setup</button>
+                <button id="btn_ignore_project_invite" class="secondary" type="button">Ignore Invite</button>
+              </div>
+              <p id="project_invite_msg" class="helper"></p>
+            </div>
+
             <div id="hooman_auth" class="auth-method-panel">
               <form id="form_login" class="stack">
                 <div class="credential-only">
@@ -598,6 +618,52 @@
             <div class="action-row">
               <button id="btn_save_agents" type="button">Save Agent Setup</button>
             </div>
+
+            <div id="wizard_external_access" class="wizard-external-access">
+              <h4>External Agent Access</h4>
+              <p class="helper">Invite another user's agent, then manage membership and per-agent permission.</p>
+              <form id="form_external_invite" class="stack">
+                <label>Target Email (optional)</label>
+                <input id="ext_target_email" type="email" placeholder="agent-owner@email.com">
+                <label>Requested Agent ID (optional)</label>
+                <input id="ext_requested_agent_id" type="text" placeholder="dailybot">
+                <label>Requested Agent Name (optional)</label>
+                <input id="ext_requested_agent_name" type="text" placeholder="Daily Bot">
+                <label>Role</label>
+                <input id="ext_role" type="text" placeholder="Research assistant">
+                <label>Note</label>
+                <textarea id="ext_note" placeholder="Context for invited external agent"></textarea>
+                <label>Expires In (hours)</label>
+                <input id="ext_expires_hours" type="number" min="1" max="720" value="72">
+                <div class="action-row">
+                  <button id="btn_create_external_invite" type="submit">Create External Invite</button>
+                  <button id="btn_refresh_external_access" type="button" class="secondary">Refresh Access Data</button>
+                </div>
+              </form>
+              <p id="wizard_external_msg" class="helper"></p>
+
+              <div class="wizard-split-grid">
+                <section class="wizard-mini-card">
+                  <div class="title-row">
+                    <h5>Invites</h5>
+                  </div>
+                  <div id="wizard_external_invites" class="wizard-simple-list"></div>
+                </section>
+                <section class="wizard-mini-card">
+                  <div class="title-row">
+                    <h5>Memberships</h5>
+                  </div>
+                  <div id="wizard_external_memberships" class="wizard-simple-list"></div>
+                </section>
+              </div>
+
+              <section class="wizard-mini-card">
+                <div class="title-row">
+                  <h5>Agent Permissions</h5>
+                </div>
+                <div id="wizard_agent_permissions" class="wizard-perm-list"></div>
+              </section>
+            </div>
           </div>
 
           <div id="wizard_footer_actions" class="action-row">
@@ -613,3 +679,7 @@
   <script src="/static/app.js?v=20260224b"></script>
 </body>
 </html>
+
+
+
+

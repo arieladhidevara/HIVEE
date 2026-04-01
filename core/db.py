@@ -90,6 +90,22 @@ def init_db() -> None:
     )
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS project_agent_permissions (
+            project_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            can_chat_project INTEGER NOT NULL DEFAULT 1,
+            can_read_files INTEGER NOT NULL DEFAULT 1,
+            can_write_files INTEGER NOT NULL DEFAULT 1,
+            write_paths_json TEXT NOT NULL DEFAULT '[]',
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(project_id, agent_id),
+            FOREIGN KEY(project_id, agent_id) REFERENCES project_agents(project_id, agent_id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_agent_permissions_project ON project_agent_permissions(project_id)")
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS connection_policies (
             connection_id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -491,3 +507,4 @@ CHAT_PATHS = [
 
 
 __all__ = [name for name in globals() if not name.startswith('__')]
+

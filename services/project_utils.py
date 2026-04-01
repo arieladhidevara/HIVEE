@@ -1958,6 +1958,7 @@ def _apply_project_file_writes(
     project_root: str,
     writes: List[Dict[str, Any]],
     default_prefix: str = f"{USER_OUTPUTS_DIRNAME}/generated",
+    allow_paths: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     saved: List[Dict[str, Any]] = []
     skipped: List[str] = []
@@ -1968,6 +1969,25 @@ def _apply_project_file_writes(
         "agents",
         "logs",
     ]
+    normalized_allow_paths: Optional[List[str]] = None
+    if allow_paths is not None:
+        normalized_allow_paths = []
+        allow_seen: set[str] = set()
+        for raw_allow in allow_paths:
+            allow_rel = _clean_relative_project_path(str(raw_allow or ""))
+            if not allow_rel:
+                continue
+            allow_rel = _remap_legacy_project_doc_rel_path(allow_rel)
+            if allow_rel.lower() == LEGACY_OUTPUTS_DIRNAME:
+                allow_rel = USER_OUTPUTS_DIRNAME
+            elif _rel_path_startswith(allow_rel, LEGACY_OUTPUTS_DIRNAME):
+                suffix = allow_rel[len(LEGACY_OUTPUTS_DIRNAME):].lstrip("/\\")
+                allow_rel = _clean_relative_project_path(f"{USER_OUTPUTS_DIRNAME}/{suffix}")
+            allow_low = allow_rel.lower()
+            if allow_low in allow_seen:
+                continue
+            allow_seen.add(allow_low)
+            normalized_allow_paths.append(allow_rel)
     for idx, item in enumerate(writes[:MAX_AGENT_FILE_WRITES], start=1):
         path_raw = str(item.get("path") or "").strip()
         content = str(item.get("content") or "")
@@ -1990,6 +2010,9 @@ def _apply_project_file_writes(
             rel = f"{prefix}/artifact-{idx}.txt"
         if not any(_rel_path_startswith(rel, root) for root in allowed_roots):
             rel = _clean_relative_project_path(f"{prefix}/{rel}")
+        if normalized_allow_paths is not None and not any(_rel_path_startswith(rel, root) for root in normalized_allow_paths):
+            skipped.append(f"{rel}: blocked by write path policy")
+            continue
         try:
             target = _resolve_project_relative_path(
                 owner_user_id,

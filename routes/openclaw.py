@@ -232,18 +232,39 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(400, "Project context requires a project session_key.")
         project_scope = None
+        project_owner_user_id = user_id
+        project_access_mode = "owner"
         role_rows: List[Dict[str, Any]] = []
         project_primary_agent_id: Optional[str] = None
+        member_allowed_agent_ids: set[str] = set()
+        selected_agent_permissions: Dict[str, Any] = {
+            "can_chat_project": True,
+            "can_read_files": True,
+            "can_write_files": True,
+            "write_paths": [USER_OUTPUTS_DIRNAME, PROJECT_INFO_DIRNAME, "agents", "logs"],
+            "has_custom": False,
+        }
         if wants_project_context:
             project_scope = conn.execute(
-                "SELECT project_root, title, brief, goal, setup_json, plan_status, execution_status, progress_pct FROM projects WHERE id = ? AND user_id = ?",
-                (session_key, user_id),
+                """
+                SELECT user_id, project_root, title, brief, goal, setup_json, plan_status, execution_status, progress_pct
+                FROM projects
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (session_key,),
             ).fetchone()
             if not project_scope:
                 conn.close()
                 raise HTTPException(404, "Project not found for project chat context")
+            project_owner_user_id = str(project_scope["user_id"] or "").strip() or user_id
             raw_roles = conn.execute(
-                "SELECT agent_id, agent_name, is_primary, role FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
+                """
+                SELECT agent_id, agent_name, is_primary, role, COALESCE(source_type, 'owner') AS source_type
+                FROM project_agents
+                WHERE project_id = ?
+                ORDER BY is_primary DESC, agent_name ASC
+                """,
                 (session_key,),
             ).fetchall()
             role_rows = [dict(r) for r in raw_roles]
@@ -255,13 +276,38 @@ def register_routes(app: FastAPI) -> None:
                 project_primary_agent_id = str(first_primary.get("agent_id") or "").strip() or None
             elif role_rows:
                 project_primary_agent_id = str(role_rows[0].get("agent_id") or "").strip() or None
+
+            if project_owner_user_id != user_id:
+                project_access_mode = "member"
+                member_rows = conn.execute(
+                    """
+                    SELECT agent_id
+                    FROM project_external_agent_memberships
+                    WHERE project_id = ? AND member_user_id = ? AND member_connection_id = ? AND status = 'active'
+                    ORDER BY updated_at DESC, created_at DESC
+                    """,
+                    (session_key, user_id, connection_id),
+                ).fetchall()
+                member_allowed_agent_ids = {
+                    str(r["agent_id"] or "").strip()
+                    for r in member_rows
+                    if str(r["agent_id"] or "").strip()
+                }
+                if not member_allowed_agent_ids:
+                    conn.close()
+                    raise HTTPException(403, "This connection is not an active external member for the selected project")
+
             if payload.agent_id:
-                allowed = {str(r.get("agent_id") or "").strip() for r in role_rows}
+                allowed = (
+                    member_allowed_agent_ids
+                    if project_access_mode == "member"
+                    else {str(r.get("agent_id") or "").strip() for r in role_rows}
+                )
                 if payload.agent_id not in allowed:
                     conn.close()
-                    raise HTTPException(403, "Only invited project agents can be targeted in this project chat")
-        conn.close()
+                    raise HTTPException(403, "Only allowed project agents can be targeted in this project chat")
         if not row:
+            conn.close()
             raise HTTPException(404, "Connection not found")
     
         workspace_root = str(policy["workspace_root"]) if (policy and policy["workspace_root"]) else HIVEE_ROOT
@@ -269,12 +315,57 @@ def register_routes(app: FastAPI) -> None:
         main_agent_id = main_agent_id.strip() or None
         if (not project_scope) and payload.agent_id:
             if not main_agent_id:
+                conn.close()
                 raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
             if payload.agent_id != main_agent_id:
+                conn.close()
                 raise HTTPException(403, "Workspace chat can only target your main user agent")
         project_root = str(project_scope["project_root"]) if (project_scope and project_scope["project_root"]) else None
         project_instruction = None
+        write_allow_paths = None
         if project_scope:
+            if project_access_mode == "member":
+                member_ordered = [
+                    str(r.get("agent_id") or "").strip()
+                    for r in role_rows
+                    if str(r.get("agent_id") or "").strip() in member_allowed_agent_ids
+                ]
+                default_member_agent_id = None
+                if project_primary_agent_id and project_primary_agent_id in member_allowed_agent_ids:
+                    default_member_agent_id = project_primary_agent_id
+                elif member_ordered:
+                    default_member_agent_id = member_ordered[0]
+                elif member_allowed_agent_ids:
+                    default_member_agent_id = sorted(member_allowed_agent_ids)[0]
+                effective_agent_id = payload.agent_id or default_member_agent_id
+            else:
+                is_paused_scope = _coerce_execution_status(project_scope["execution_status"]) == EXEC_STATUS_PAUSED
+                if is_paused_scope:
+                    effective_agent_id = project_primary_agent_id or payload.agent_id
+                else:
+                    effective_agent_id = payload.agent_id or project_primary_agent_id
+            if not effective_agent_id:
+                conn.close()
+                raise HTTPException(400, "No project agent configured for this chat")
+
+            selected_source_type = next(
+                (
+                    str(r.get("source_type") or "owner").strip() or "owner"
+                    for r in role_rows
+                    if str(r.get("agent_id") or "").strip() == str(effective_agent_id)
+                ),
+                "owner",
+            )
+            selected_agent_permissions = _get_project_agent_permissions(
+                conn,
+                project_id=session_key,
+                agent_id=str(effective_agent_id),
+                source_type=selected_source_type,
+            )
+            if not bool(selected_agent_permissions.get("can_chat_project")):
+                conn.close()
+                raise HTTPException(403, "This project agent is not allowed to use project chat")
+
             project_instruction = _project_context_instruction(
                 title=str(project_scope["title"] or ""),
                 brief=str(project_scope["brief"] or ""),
@@ -284,22 +375,6 @@ def register_routes(app: FastAPI) -> None:
                 plan_status=_coerce_plan_status(project_scope["plan_status"]),
             )
             roster_text = _agent_roster_markdown(role_rows)
-            project_file_context = _build_project_file_context(
-                owner_user_id=user_id,
-                project_root=str(project_scope["project_root"] or ""),
-                include_paths=[
-                    PROJECT_INFO_FILE,
-                    PROJECT_DELEGATION_FILE,
-                    OVERVIEW_FILE,
-                    PROJECT_PLAN_FILE,
-                    "agents/ROLES.md",
-                    SETUP_CHAT_HISTORY_FILE,
-                    SETUP_CHAT_HISTORY_COMPAT_FILE,
-                ],
-                request_text=payload.message,
-                max_total_chars=8_000,
-                max_files=8,
-            )
             sections = [project_instruction, roster_text]
             project_exec_status = _coerce_execution_status(project_scope["execution_status"])
             if project_exec_status == EXEC_STATUS_PAUSED:
@@ -311,22 +386,47 @@ def register_routes(app: FastAPI) -> None:
                     "- If information is still missing, ask clearly and include @owner in chat_update with requires_user_input=true.\n"
                     "- If user explicitly says SKIP, continue with reasonable assumptions and set requires_user_input=false."
                 )
-            if project_file_context:
-                sections.append(project_file_context)
-            project_instruction = "\n\n".join([s for s in sections if str(s or "").strip()])
-        if project_scope:
-            is_paused_scope = _coerce_execution_status(project_scope["execution_status"]) == EXEC_STATUS_PAUSED
-            if is_paused_scope:
-                effective_agent_id = project_primary_agent_id or payload.agent_id
+            if bool(selected_agent_permissions.get("can_read_files")):
+                project_file_context = _build_project_file_context(
+                    owner_user_id=project_owner_user_id,
+                    project_root=str(project_scope["project_root"] or ""),
+                    include_paths=[
+                        PROJECT_INFO_FILE,
+                        PROJECT_DELEGATION_FILE,
+                        OVERVIEW_FILE,
+                        PROJECT_PLAN_FILE,
+                        "agents/ROLES.md",
+                        SETUP_CHAT_HISTORY_FILE,
+                        SETUP_CHAT_HISTORY_COMPAT_FILE,
+                    ],
+                    request_text=payload.message,
+                    max_total_chars=8_000,
+                    max_files=8,
+                )
+                if project_file_context:
+                    sections.append(project_file_context)
             else:
-                effective_agent_id = payload.agent_id or project_primary_agent_id
-            if not effective_agent_id:
-                raise HTTPException(400, "No primary project agent configured")
+                sections.append(
+                    "File access note:\n"
+                    "- You currently do not have permission to read project files.\n"
+                    "- Ask @owner to grant file-read permission if deeper context is required."
+                )
+            project_instruction = "\n\n".join([s for s in sections if str(s or "").strip()])
+            if bool(selected_agent_permissions.get("can_write_files")):
+                write_allow_paths = _normalize_permission_write_paths(
+                    selected_agent_permissions.get("write_paths") or [],
+                    fallback=[],
+                )
+            else:
+                write_allow_paths = []
         else:
             effective_agent_id = main_agent_id
             session_key = "main"
             if not effective_agent_id:
+                conn.close()
                 raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
+
+        conn.close()
         scoped_message = _compose_guardrailed_message(
             payload.message.strip(),
             workspace_root=workspace_root,
@@ -344,7 +444,7 @@ def register_routes(app: FastAPI) -> None:
         if not res.get("ok"):
             if project_scope:
                 _append_project_daily_log(
-                    owner_user_id=user_id,
+                    owner_user_id=project_owner_user_id,
                     project_root=str(project_scope["project_root"] or ""),
                     kind="chat.error",
                     text=detail_to_text(res.get("error") or res.get("details"))[:1200],
@@ -360,10 +460,11 @@ def register_routes(app: FastAPI) -> None:
             resume_hint = str(parsed_payload.get("resume_hint") or "").strip()
             write_payload = parsed_payload.get("output_files") or []
             write_result = _apply_project_file_writes(
-                owner_user_id=user_id,
+                owner_user_id=project_owner_user_id,
                 project_root=str(project_scope["project_root"] or ""),
                 writes=write_payload if isinstance(write_payload, list) else [],
                 default_prefix=f"{USER_OUTPUTS_DIRNAME}/chat-generated",
+            allow_paths=write_allow_paths,
             )
             saved_writes = write_result.get("saved") or []
             skipped_writes = write_result.get("skipped") or []
@@ -418,10 +519,11 @@ def register_routes(app: FastAPI) -> None:
                     if not parsed_notes:
                         parsed_notes = str(followup_parsed.get("notes") or "").strip()
                     followup_write_result = _apply_project_file_writes(
-                        owner_user_id=user_id,
+                        owner_user_id=project_owner_user_id,
                         project_root=str(project_scope["project_root"] or ""),
                         writes=followup_writes_raw if isinstance(followup_writes_raw, list) else [],
                         default_prefix=f"{USER_OUTPUTS_DIRNAME}/chat-generated",
+                    allow_paths=write_allow_paths,
                     )
                     followup_saved = followup_write_result.get("saved") or []
                     followup_skipped = followup_write_result.get("skipped") or []
@@ -477,10 +579,11 @@ def register_routes(app: FastAPI) -> None:
                     if not rescue_writes_raw:
                         rescue_writes_raw = _extract_artifacts_from_fenced_code(rescue_text)
                     rescue_write_result = _apply_project_file_writes(
-                        owner_user_id=user_id,
+                        owner_user_id=project_owner_user_id,
                         project_root=str(project_scope["project_root"] or ""),
                         writes=rescue_writes_raw if isinstance(rescue_writes_raw, list) else [],
                         default_prefix=f"{USER_OUTPUTS_DIRNAME}/chat-generated",
+                    allow_paths=write_allow_paths,
                     )
                     rescue_saved = rescue_write_result.get("saved") or []
                     rescue_skipped = rescue_write_result.get("skipped") or []
@@ -522,10 +625,11 @@ def register_routes(app: FastAPI) -> None:
                     f"## Agent Response\n{str(res.get('text') or raw_agent_text).strip()}\n"
                 )
                 fallback_write_result = _apply_project_file_writes(
-                    owner_user_id=user_id,
+                    owner_user_id=project_owner_user_id,
                     project_root=str(project_scope["project_root"] or ""),
                     writes=[{"path": fallback_rel, "content": fallback_content, "append": False}],
                     default_prefix=f"{USER_OUTPUTS_DIRNAME}/chat-generated",
+                allow_paths=write_allow_paths,
                 )
                 fallback_saved = fallback_write_result.get("saved") or []
                 fallback_skipped = fallback_write_result.get("skipped") or []
@@ -579,7 +683,7 @@ def register_routes(app: FastAPI) -> None:
                         },
                     )
                     _append_project_daily_log(
-                        owner_user_id=user_id,
+                        owner_user_id=project_owner_user_id,
                         project_root=str(project_scope["project_root"] or ""),
                         kind="execution.auto_paused",
                         text=f"{effective_agent_id or 'agent'}: {reason_text[:1200]}",
@@ -605,7 +709,7 @@ def register_routes(app: FastAPI) -> None:
                         },
                     )
                     _append_project_daily_log(
-                        owner_user_id=user_id,
+                        owner_user_id=project_owner_user_id,
                         project_root=str(project_scope["project_root"] or ""),
                         kind="execution.resume",
                         text=resume_summary,
@@ -623,7 +727,7 @@ def register_routes(app: FastAPI) -> None:
                         },
                     )
                     _append_project_daily_log(
-                        owner_user_id=user_id,
+                        owner_user_id=project_owner_user_id,
                         project_root=str(project_scope["project_root"] or ""),
                         kind="execution.resume",
                         text="Execution resumed after user continue message in chat.",
@@ -662,7 +766,7 @@ def register_routes(app: FastAPI) -> None:
                     },
                 )
             _append_project_daily_log(
-                owner_user_id=user_id,
+                owner_user_id=project_owner_user_id,
                 project_root=str(project_scope["project_root"] or ""),
                 kind="chat.hivee",
                 text=(
@@ -686,5 +790,14 @@ def register_routes(app: FastAPI) -> None:
         res["session_key"] = session_key
         if project_root:
             res["project_root"] = project_root
+        if project_scope:
+            res["project_access_mode"] = project_access_mode
+            res["project_permissions"] = {
+                "can_chat_project": bool(selected_agent_permissions.get("can_chat_project")),
+                "can_read_files": bool(selected_agent_permissions.get("can_read_files")),
+                "can_write_files": bool(selected_agent_permissions.get("can_write_files")),
+                "write_paths": selected_agent_permissions.get("write_paths") or [],
+            }
         return res
     
+

@@ -756,6 +756,9 @@ def _delete_project_with_resources(*, owner_user_id: str, project_id: str) -> Di
     project_title = str(row["title"] or project_id)
     project_root = str(row["project_root"] or "")
     conn.execute("DELETE FROM project_agent_access_tokens WHERE project_id = ?", (project_id,))
+    conn.execute("DELETE FROM project_agent_permissions WHERE project_id = ?", (project_id,))
+    conn.execute("DELETE FROM project_external_agent_memberships WHERE project_id = ?", (project_id,))
+    conn.execute("DELETE FROM project_external_agent_invites WHERE project_id = ?", (project_id,))
     conn.execute("DELETE FROM project_agents WHERE project_id = ?", (project_id,))
     conn.execute("DELETE FROM projects WHERE id = ? AND user_id = ?", (project_id, owner_user_id))
     conn.commit()
@@ -784,7 +787,6 @@ def _delete_project_with_resources(*, owner_user_id: str, project_id: str) -> Di
         "folder_deleted": deleted_dir,
         "folder_error": folder_error or None,
     }
-
 def _delete_account_with_resources(*, user_id: str) -> Dict[str, Any]:
     conn = db()
     user_row = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -820,6 +822,18 @@ def _delete_account_with_resources(*, user_id: str) -> Dict[str, Any]:
     conn.execute(
         "DELETE FROM project_agent_access_tokens WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)",
         (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM project_agent_permissions WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)",
+        (user_id,),
+    )
+    conn.execute(
+        "DELETE FROM project_external_agent_memberships WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?) OR member_user_id = ?",
+        (user_id, user_id),
+    )
+    conn.execute(
+        "DELETE FROM project_external_agent_invites WHERE owner_user_id = ? OR accepted_by_user_id = ?",
+        (user_id, user_id),
     )
     conn.execute(
         "DELETE FROM project_agents WHERE project_id IN (SELECT id FROM projects WHERE user_id = ?)",

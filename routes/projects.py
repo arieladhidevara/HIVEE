@@ -13,6 +13,20 @@ def _clamp_external_invite_ttl(raw_ttl: Any) -> int:
     return max(PROJECT_EXTERNAL_INVITE_MIN_TTL_SEC, min(ttl, PROJECT_EXTERNAL_INVITE_MAX_TTL_SEC))
 
 
+def _mask_email_for_public(raw_email: str) -> Optional[str]:
+    normalized = _normalize_email(raw_email)
+    if not normalized or "@" not in normalized:
+        return None
+    local, _, domain = normalized.partition("@")
+    if not local:
+        return f"***@{domain}" if domain else None
+    if len(local) <= 2:
+        masked_local = local[0] + ("*" * max(1, len(local) - 1))
+    else:
+        masked_local = local[0] + ("*" * (len(local) - 2)) + local[-1]
+    return f"{masked_local}@{domain}" if domain else masked_local
+
+
 def _build_external_agent_invite_markdown(
     *,
     owner_user_id: str,
@@ -315,7 +329,7 @@ def register_routes(app: FastAPI) -> None:
     async def list_projects(request: Request):
         user_id = get_session_user(request)
         conn = db()
-        rows = conn.execute(
+        owner_rows = conn.execute(
             """
             SELECT id, title, brief, goal, connection_id, created_at, workspace_root, project_root, setup_json,
                    plan_text, plan_status, plan_updated_at, plan_approved_at,
@@ -327,9 +341,31 @@ def register_routes(app: FastAPI) -> None:
             """,
             (user_id,),
         ).fetchall()
+        member_rows = conn.execute(
+            """
+            SELECT p.id, p.title, p.brief, p.goal, p.connection_id, p.created_at, p.workspace_root, p.project_root, p.setup_json,
+                   p.plan_text, p.plan_status, p.plan_updated_at, p.plan_approved_at,
+                   p.execution_status, p.progress_pct, p.execution_updated_at,
+                   p.usage_prompt_tokens, p.usage_completion_tokens, p.usage_total_tokens, p.usage_updated_at
+            FROM project_external_agent_memberships pem
+            JOIN projects p ON p.id = pem.project_id
+            WHERE pem.member_user_id = ? AND pem.status = 'active'
+            ORDER BY p.created_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
         conn.close()
-        return [_project_out_from_row(r) for r in rows]
-    
+
+        merged: Dict[str, sqlite3.Row] = {}
+        for r in owner_rows:
+            merged[str(r["id"])] = r
+        for r in member_rows:
+            pid = str(r["id"])
+            if pid not in merged:
+                merged[pid] = r
+        ordered = sorted(merged.values(), key=lambda r: _to_int(r["created_at"]), reverse=True)
+        return [_project_out_from_row(r) for r in ordered]
+
     @app.get("/api/projects/{project_id}", response_model=ProjectOut)
     async def get_project(request: Request, project_id: str):
         user_id = get_session_user(request)
@@ -342,14 +378,29 @@ def register_routes(app: FastAPI) -> None:
                    usage_prompt_tokens, usage_completion_tokens, usage_total_tokens, usage_updated_at
             FROM projects
             WHERE id = ? AND user_id = ?
+            LIMIT 1
             """,
             (project_id, user_id),
         ).fetchone()
+        if not row:
+            row = conn.execute(
+                """
+                SELECT p.id, p.title, p.brief, p.goal, p.connection_id, p.created_at, p.workspace_root, p.project_root, p.setup_json,
+                       p.plan_text, p.plan_status, p.plan_updated_at, p.plan_approved_at,
+                       p.execution_status, p.progress_pct, p.execution_updated_at,
+                       p.usage_prompt_tokens, p.usage_completion_tokens, p.usage_total_tokens, p.usage_updated_at
+                FROM project_external_agent_memberships pem
+                JOIN projects p ON p.id = pem.project_id
+                WHERE p.id = ? AND pem.member_user_id = ? AND pem.status = 'active'
+                LIMIT 1
+                """,
+                (project_id, user_id),
+            ).fetchone()
         conn.close()
         if not row:
             raise HTTPException(404, "Project not found")
         return _project_out_from_row(row)
-    
+
     @app.get("/api/projects/{project_id}/card")
     async def get_project_card(request: Request, project_id: str):
         user_id = get_session_user(request)
@@ -519,6 +570,7 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/projects/{project_id}/workspace/tree", response_model=ProjectWorkspaceTreeOut)
     async def get_project_workspace_tree(request: Request, project_id: str):
         access = _resolve_project_workspace_access(request, project_id)
+        _require_project_read_access(access)
         project = access["project"]
         owner_user_id = str(project["user_id"])
         _ensure_user_workspace(owner_user_id)
@@ -534,6 +586,7 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/projects/{project_id}/files", response_model=ProjectFilesOut)
     async def list_project_files(request: Request, project_id: str, path: str = ""):
         access = _resolve_project_workspace_access(request, project_id)
+        _require_project_read_access(access)
         project = access["project"]
         owner_user_id = str(project["user_id"])
         project_dir = _resolve_owner_project_dir(owner_user_id, str(project.get("project_root") or "")).resolve()
@@ -579,6 +632,7 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/projects/{project_id}/files/content", response_model=ProjectFileContentOut)
     async def read_project_file(request: Request, project_id: str, path: str):
         access = _resolve_project_workspace_access(request, project_id)
+        _require_project_read_access(access)
         project = access["project"]
         owner_user_id = str(project["user_id"])
         project_dir = _resolve_owner_project_dir(owner_user_id, str(project.get("project_root") or "")).resolve()
@@ -612,6 +666,7 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/projects/{project_id}/files/raw")
     async def read_project_file_raw(request: Request, project_id: str, path: str):
         access = _resolve_project_workspace_access(request, project_id)
+        _require_project_read_access(access)
         project = access["project"]
         owner_user_id = str(project["user_id"])
         project_root = str(project.get("project_root") or "")
@@ -631,6 +686,7 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/projects/{project_id}/preview/{path:path}")
     async def preview_project_file(request: Request, project_id: str, path: str):
         access = _resolve_project_workspace_access(request, project_id)
+        _require_project_read_access(access)
         project = access["project"]
         owner_user_id = str(project["user_id"])
         project_root = str(project.get("project_root") or "")
@@ -661,6 +717,8 @@ def register_routes(app: FastAPI) -> None:
             require_exists=False,
             require_dir=False,
         ).resolve()
+        rel = target.relative_to(project_dir).as_posix()
+        _require_project_write_access(access, rel)
         if target.exists() and target.is_dir():
             raise HTTPException(400, "Target path is a directory")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -668,7 +726,6 @@ def register_routes(app: FastAPI) -> None:
         content = str(payload.content or "")
         with target.open(mode, encoding="utf-8") as f:
             f.write(content)
-        rel = target.relative_to(project_dir).as_posix()
         actor = f"owner:{access.get('user_id')}" if access.get("mode") == "owner" else f"agent:{access.get('agent_id')}"
         _append_project_daily_log(
             owner_user_id=owner_user_id,
@@ -883,6 +940,10 @@ def register_routes(app: FastAPI) -> None:
                 "DELETE FROM project_agent_access_tokens WHERE project_id = ? AND agent_id = ?",
                 (project_id, str(r["agent_id"])),
             )
+            conn.execute(
+                "DELETE FROM project_agent_permissions WHERE project_id = ? AND agent_id = ?",
+                (project_id, str(r["agent_id"])),
+            )
         conn.execute(
             "DELETE FROM project_agents WHERE project_id = ? AND COALESCE(source_type, 'owner') = 'owner'",
             (project_id,),
@@ -972,23 +1033,384 @@ def register_routes(app: FastAPI) -> None:
             """,
             (project_id,),
         ).fetchall()
+        agents: List[Dict[str, Any]] = []
+        for r in rows:
+            agent_id = str(r["agent_id"] or "").strip()
+            source_type = str(r["source_type"] or "owner").strip() or "owner"
+            permissions = _get_project_agent_permissions(
+                conn,
+                project_id=project_id,
+                agent_id=agent_id,
+                source_type=source_type,
+            )
+            agents.append(
+                {
+                    "id": agent_id,
+                    "name": str(r["agent_name"] or agent_id),
+                    "is_primary": bool(r["is_primary"]),
+                    "role": str(r["role"] or ""),
+                    "source_type": source_type,
+                    "source_user_id": str(r["source_user_id"] or "") or None,
+                    "source_connection_id": str(r["source_connection_id"] or "") or None,
+                    "joined_via_invite_id": str(r["joined_via_invite_id"] or "") or None,
+                    "added_at": _to_int(r["added_at"]),
+                    "permissions": {
+                        "can_chat_project": bool(permissions.get("can_chat_project")),
+                        "can_read_files": bool(permissions.get("can_read_files")),
+                        "can_write_files": bool(permissions.get("can_write_files")),
+                        "write_paths": permissions.get("write_paths") or [],
+                        "has_custom": bool(permissions.get("has_custom")),
+                    },
+                }
+            )
         conn.close()
-        agents = [
-            {
-                "id": r["agent_id"],
-                "name": r["agent_name"],
-                "is_primary": bool(r["is_primary"]),
-                "role": str(r["role"] or ""),
-                "source_type": str(r["source_type"] or "owner"),
-                "source_user_id": str(r["source_user_id"] or "") or None,
-                "source_connection_id": str(r["source_connection_id"] or "") or None,
-                "joined_via_invite_id": str(r["joined_via_invite_id"] or "") or None,
-                "added_at": _to_int(r["added_at"]),
-            }
-            for r in rows
-        ]
         primary = next((a for a in agents if a["is_primary"]), None)
         return {"ok": True, "agents": agents, "primary_agent": primary}
+
+    @app.get("/api/projects/{project_id}/agent-permissions")
+    async def list_project_agent_permissions(request: Request, project_id: str):
+        user_id = get_session_user(request)
+        conn = db()
+        proj = conn.execute(
+            "SELECT id FROM projects WHERE id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        if not proj:
+            conn.close()
+            raise HTTPException(404, "Project not found")
+        rows = conn.execute(
+            """
+            SELECT agent_id, agent_name, COALESCE(source_type, 'owner') AS source_type
+            FROM project_agents
+            WHERE project_id = ?
+            ORDER BY agent_name ASC
+            """,
+            (project_id,),
+        ).fetchall()
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            agent_id = str(row["agent_id"] or "").strip()
+            source_type = str(row["source_type"] or "owner").strip() or "owner"
+            perms = _get_project_agent_permissions(
+                conn,
+                project_id=project_id,
+                agent_id=agent_id,
+                source_type=source_type,
+            )
+            items.append(
+                {
+                    "agent_id": agent_id,
+                    "agent_name": str(row["agent_name"] or agent_id),
+                    "source_type": source_type,
+                    "can_chat_project": bool(perms.get("can_chat_project")),
+                    "can_read_files": bool(perms.get("can_read_files")),
+                    "can_write_files": bool(perms.get("can_write_files")),
+                    "write_paths": perms.get("write_paths") or [],
+                    "has_custom": bool(perms.get("has_custom")),
+                }
+            )
+        conn.close()
+        return {"ok": True, "project_id": project_id, "count": len(items), "permissions": items}
+
+    @app.post("/api/projects/{project_id}/agent-permissions/{agent_id}")
+    async def update_project_agent_permissions(
+        request: Request,
+        project_id: str,
+        agent_id: str,
+        payload: ProjectAgentPermissionsUpdateIn,
+    ):
+        user_id = get_session_user(request)
+        normalized_agent_id = str(agent_id or "").strip()
+        if not normalized_agent_id:
+            raise HTTPException(400, "agent_id is required")
+
+        conn = db()
+        proj = conn.execute(
+            "SELECT id FROM projects WHERE id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        if not proj:
+            conn.close()
+            raise HTTPException(404, "Project not found")
+
+        agent_row = conn.execute(
+            """
+            SELECT agent_id, agent_name, COALESCE(source_type, 'owner') AS source_type
+            FROM project_agents
+            WHERE project_id = ? AND agent_id = ?
+            LIMIT 1
+            """,
+            (project_id, normalized_agent_id),
+        ).fetchone()
+        if not agent_row:
+            conn.close()
+            raise HTTPException(404, "Agent not found in project")
+
+        source_type = str(agent_row["source_type"] or "owner").strip() or "owner"
+        now = int(time.time())
+        if bool(payload.reset_to_default):
+            conn.execute(
+                "DELETE FROM project_agent_permissions WHERE project_id = ? AND agent_id = ?",
+                (project_id, normalized_agent_id),
+            )
+            conn.commit()
+            updated = _get_project_agent_permissions(
+                conn,
+                project_id=project_id,
+                agent_id=normalized_agent_id,
+                source_type=source_type,
+            )
+            conn.close()
+            return {
+                "ok": True,
+                "project_id": project_id,
+                "agent_id": normalized_agent_id,
+                "agent_name": str(agent_row["agent_name"] or normalized_agent_id),
+                "source_type": source_type,
+                "permissions": {
+                    "can_chat_project": bool(updated.get("can_chat_project")),
+                    "can_read_files": bool(updated.get("can_read_files")),
+                    "can_write_files": bool(updated.get("can_write_files")),
+                    "write_paths": updated.get("write_paths") or [],
+                    "has_custom": bool(updated.get("has_custom")),
+                },
+            }
+
+        current = _get_project_agent_permissions(
+            conn,
+            project_id=project_id,
+            agent_id=normalized_agent_id,
+            source_type=source_type,
+        )
+        can_chat_project = bool(
+            current.get("can_chat_project")
+            if payload.can_chat_project is None
+            else payload.can_chat_project
+        )
+        can_read_files = bool(
+            current.get("can_read_files")
+            if payload.can_read_files is None
+            else payload.can_read_files
+        )
+        can_write_files = bool(
+            current.get("can_write_files")
+            if payload.can_write_files is None
+            else payload.can_write_files
+        )
+        write_paths = (
+            _normalize_permission_write_paths(payload.write_paths, fallback=[])
+            if payload.write_paths is not None
+            else _normalize_permission_write_paths(current.get("write_paths") or [], fallback=[])
+        )
+
+        conn.execute(
+            """
+            INSERT INTO project_agent_permissions (
+                project_id, agent_id, can_chat_project, can_read_files, can_write_files, write_paths_json, updated_at
+            ) VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(project_id, agent_id) DO UPDATE SET
+                can_chat_project = excluded.can_chat_project,
+                can_read_files = excluded.can_read_files,
+                can_write_files = excluded.can_write_files,
+                write_paths_json = excluded.write_paths_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                project_id,
+                normalized_agent_id,
+                1 if can_chat_project else 0,
+                1 if can_read_files else 0,
+                1 if can_write_files else 0,
+                json.dumps(write_paths, ensure_ascii=False),
+                now,
+            ),
+        )
+        conn.commit()
+        updated = _get_project_agent_permissions(
+            conn,
+            project_id=project_id,
+            agent_id=normalized_agent_id,
+            source_type=source_type,
+        )
+        conn.close()
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "agent_id": normalized_agent_id,
+            "agent_name": str(agent_row["agent_name"] or normalized_agent_id),
+            "source_type": source_type,
+            "permissions": {
+                "can_chat_project": bool(updated.get("can_chat_project")),
+                "can_read_files": bool(updated.get("can_read_files")),
+                "can_write_files": bool(updated.get("can_write_files")),
+                "write_paths": updated.get("write_paths") or [],
+                "has_custom": bool(updated.get("has_custom")),
+            },
+        }
+
+    @app.get("/api/projects/{project_id}/memberships/external-agent")
+    async def list_external_agent_memberships(request: Request, project_id: str):
+        user_id = get_session_user(request)
+        conn = db()
+        proj = conn.execute(
+            "SELECT id FROM projects WHERE id = ? AND user_id = ?",
+            (project_id, user_id),
+        ).fetchone()
+        if not proj:
+            conn.close()
+            raise HTTPException(404, "Project not found")
+
+        rows = conn.execute(
+            """
+            SELECT pem.id, pem.member_user_id, pem.member_connection_id,
+                   pem.agent_id, pem.agent_name, pem.role, pem.invite_id,
+                   pem.status, pem.created_at, pem.updated_at,
+                   COALESCE(pa.source_type, 'external') AS source_type
+            FROM project_external_agent_memberships pem
+            LEFT JOIN project_agents pa ON pa.project_id = pem.project_id AND pa.agent_id = pem.agent_id
+            WHERE pem.project_id = ? AND pem.owner_user_id = ?
+            ORDER BY pem.updated_at DESC, pem.created_at DESC
+            LIMIT 200
+            """,
+            (project_id, user_id),
+        ).fetchall()
+
+        memberships: List[Dict[str, Any]] = []
+        for row in rows:
+            source_type = str(row["source_type"] or "external").strip() or "external"
+            agent_id_row = str(row["agent_id"] or "").strip()
+            perms = _get_project_agent_permissions(
+                conn,
+                project_id=project_id,
+                agent_id=agent_id_row,
+                source_type=source_type,
+            )
+            memberships.append(
+                {
+                    "id": str(row["id"]),
+                    "member_user_id": str(row["member_user_id"] or "") or None,
+                    "member_connection_id": str(row["member_connection_id"] or "") or None,
+                    "agent_id": agent_id_row,
+                    "agent_name": str(row["agent_name"] or agent_id_row),
+                    "role": str(row["role"] or ""),
+                    "invite_id": str(row["invite_id"] or "") or None,
+                    "status": str(row["status"] or ""),
+                    "created_at": _to_int(row["created_at"]),
+                    "updated_at": _to_int(row["updated_at"]),
+                    "permissions": {
+                        "can_chat_project": bool(perms.get("can_chat_project")),
+                        "can_read_files": bool(perms.get("can_read_files")),
+                        "can_write_files": bool(perms.get("can_write_files")),
+                        "write_paths": perms.get("write_paths") or [],
+                        "has_custom": bool(perms.get("has_custom")),
+                    },
+                }
+            )
+        conn.close()
+        return {"ok": True, "project_id": project_id, "count": len(memberships), "memberships": memberships}
+
+    @app.post("/api/projects/{project_id}/memberships/external-agent/{membership_id}/revoke")
+    async def revoke_external_agent_membership(request: Request, project_id: str, membership_id: str):
+        user_id = get_session_user(request)
+        now = int(time.time())
+        conn = db()
+        row = conn.execute(
+            """
+            SELECT pem.id, pem.project_id, pem.owner_user_id, pem.member_user_id, pem.member_connection_id,
+                   pem.agent_id, pem.agent_name, pem.status, p.project_root
+            FROM project_external_agent_memberships pem
+            JOIN projects p ON p.id = pem.project_id
+            WHERE pem.id = ? AND pem.project_id = ? AND pem.owner_user_id = ?
+            LIMIT 1
+            """,
+            (membership_id, project_id, user_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "External membership not found")
+
+        current_status = str(row["status"] or "active").strip().lower() or "active"
+        if current_status != "active":
+            conn.close()
+            return {
+                "ok": True,
+                "project_id": project_id,
+                "membership_id": membership_id,
+                "status": current_status,
+                "revoked": False,
+            }
+
+        agent_id_row = str(row["agent_id"] or "").strip()
+        conn.execute(
+            "UPDATE project_external_agent_memberships SET status = ?, updated_at = ? WHERE id = ?",
+            ("revoked", now, membership_id),
+        )
+        conn.execute(
+            "DELETE FROM project_agent_access_tokens WHERE project_id = ? AND agent_id = ?",
+            (project_id, agent_id_row),
+        )
+        conn.execute(
+            "DELETE FROM project_agent_permissions WHERE project_id = ? AND agent_id = ?",
+            (project_id, agent_id_row),
+        )
+        conn.execute(
+            """
+            DELETE FROM project_agents
+            WHERE project_id = ? AND agent_id = ? AND COALESCE(source_type, 'owner') = 'external'
+            """,
+            (project_id, agent_id_row),
+        )
+        all_rows = conn.execute(
+            "SELECT agent_id, agent_name, is_primary, role FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
+            (project_id,),
+        ).fetchall()
+        conn.commit()
+        conn.close()
+
+        project_root = str(row["project_root"] or "")
+        _write_project_agent_roles_file(
+            owner_user_id=user_id,
+            project_root=project_root,
+            agents=[
+                {
+                    "agent_id": str(r["agent_id"] or ""),
+                    "agent_name": str(r["agent_name"] or ""),
+                    "role": str(r["role"] or ""),
+                    "is_primary": bool(r["is_primary"]),
+                }
+                for r in all_rows
+            ],
+        )
+        _refresh_project_documents(project_id)
+        _append_project_daily_log(
+            owner_user_id=user_id,
+            project_root=project_root,
+            kind="external_agent.revoked",
+            text=f"External agent revoked: {agent_id_row}",
+            payload={
+                "membership_id": membership_id,
+                "member_user_id": str(row["member_user_id"] or "") or None,
+                "member_connection_id": str(row["member_connection_id"] or "") or None,
+            },
+        )
+        await emit(
+            project_id,
+            "project.external_agent.revoked",
+            {
+                "membership_id": membership_id,
+                "agent_id": agent_id_row,
+                "agent_name": str(row["agent_name"] or agent_id_row),
+            },
+        )
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "membership_id": membership_id,
+            "status": "revoked",
+            "revoked": True,
+            "agent_id": agent_id_row,
+            "agent_name": str(row["agent_name"] or agent_id_row),
+        }
 
     @app.post("/api/projects/{project_id}/invites/external-agent")
     async def create_project_external_agent_invite(request: Request, project_id: str, payload: ProjectExternalAgentInviteCreateIn):
@@ -1158,6 +1580,110 @@ def register_routes(app: FastAPI) -> None:
                 }
             )
         return {"ok": True, "count": len(invites), "invites": invites}
+
+    @app.get("/api/projects/invites/{invite_token}")
+    async def get_project_external_agent_invite_info(invite_token: str):
+        token = str(invite_token or "").strip()
+        if not token:
+            raise HTTPException(400, "invite token is required")
+
+        now = int(time.time())
+        conn = db()
+        row = conn.execute(
+            """
+            SELECT pi.id, pi.project_id, pi.owner_user_id, pi.target_email, pi.requested_agent_id, pi.requested_agent_name,
+                   pi.role, pi.invite_note, pi.status, pi.expires_at, pi.created_at, pi.accepted_at,
+                   pi.accepted_by_user_id, pi.accepted_connection_id, pi.accepted_agent_id,
+                   p.title AS project_title
+            FROM project_external_agent_invites pi
+            JOIN projects p ON p.id = pi.project_id
+            WHERE pi.token_hash = ?
+            LIMIT 1
+            """,
+            (_hash_access_token(token),),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "Invite not found")
+
+        status = str(row["status"] or "pending").strip().lower() or "pending"
+        expires_at = _to_int(row["expires_at"])
+        if status == "pending" and expires_at <= now:
+            status = "expired"
+            conn.execute(
+                "UPDATE project_external_agent_invites SET status = ? WHERE id = ?",
+                ("expired", str(row["id"])),
+            )
+            conn.commit()
+        conn.close()
+
+        return {
+            "ok": True,
+            "invite_id": str(row["id"]),
+            "project_id": str(row["project_id"]),
+            "project_title": str(row["project_title"] or ""),
+            "owner_user_id": str(row["owner_user_id"] or ""),
+            "target_email_masked": _mask_email_for_public(str(row["target_email"] or "")),
+            "requested_agent_id": str(row["requested_agent_id"] or "") or None,
+            "requested_agent_name": str(row["requested_agent_name"] or "") or None,
+            "role": str(row["role"] or ""),
+            "note": str(row["invite_note"] or ""),
+            "status": status,
+            "expires_at": expires_at,
+            "created_at": _to_int(row["created_at"]),
+            "accepted_at": _to_int(row["accepted_at"]),
+            "accepted_by_user_id": str(row["accepted_by_user_id"] or "") or None,
+            "accepted_connection_id": str(row["accepted_connection_id"] or "") or None,
+            "accepted_agent_id": str(row["accepted_agent_id"] or "") or None,
+            "can_accept": status == "pending" and expires_at > now,
+            "setup_doc_url": "https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD",
+            "security_doc_url": "https://hivee.cloud/new-user/AGENT-SECURITY-RULES.MD",
+        }
+
+    @app.post("/api/projects/{project_id}/invites/external-agent/{invite_id}/revoke")
+    async def revoke_project_external_agent_invite(request: Request, project_id: str, invite_id: str):
+        user_id = get_session_user(request)
+        now = int(time.time())
+        conn = db()
+        row = conn.execute(
+            """
+            SELECT id, status, project_id
+            FROM project_external_agent_invites
+            WHERE id = ? AND project_id = ? AND owner_user_id = ?
+            LIMIT 1
+            """,
+            (invite_id, project_id, user_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "Invite not found")
+
+        current_status = str(row["status"] or "pending").strip().lower() or "pending"
+        if current_status != "pending":
+            conn.close()
+            return {
+                "ok": True,
+                "project_id": project_id,
+                "invite_id": invite_id,
+                "status": current_status,
+                "revoked": False,
+            }
+
+        conn.execute(
+            "UPDATE project_external_agent_invites SET status = ? WHERE id = ?",
+            ("revoked", invite_id),
+        )
+        conn.commit()
+        conn.close()
+        await emit(project_id, "project.external_agent.invite_revoked", {"invite_id": invite_id, "status": "revoked"})
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "invite_id": invite_id,
+            "status": "revoked",
+            "revoked": True,
+            "revoked_at": now,
+        }
 
     @app.post("/api/projects/invites/{invite_token}/accept")
     async def accept_project_external_agent_invite(request: Request, invite_token: str, payload: ProjectExternalAgentInviteAcceptIn):
@@ -1452,4 +1978,5 @@ def register_routes(app: FastAPI) -> None:
                     yield "event: ping\ndata: {}\n\n"
     
         return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 

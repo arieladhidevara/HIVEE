@@ -1,11 +1,13 @@
 from schemas import *
 
+
 def _bearer_token(request: Request) -> str:
     auth = request.headers.get("Authorization", "")
     token = auth.replace("Bearer ", "").strip()
     if token:
         return token
     return str(request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
+
 
 def _set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
@@ -18,8 +20,10 @@ def _set_session_cookie(response: Response, token: str) -> None:
         path="/",
     )
 
+
 def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(key=SESSION_COOKIE_NAME, path="/", samesite="lax")
+
 
 def get_optional_session_user(request: Request) -> Optional[str]:
     token = _bearer_token(request)
@@ -32,6 +36,7 @@ def get_optional_session_user(request: Request) -> Optional[str]:
         raise HTTPException(401, "Invalid session token")
     return row["user_id"]
 
+
 def get_session_user(request: Request) -> str:
     token = _bearer_token(request)
     if not token:
@@ -43,8 +48,10 @@ def get_session_user(request: Request) -> str:
         raise HTTPException(401, "Invalid session token")
     return row["user_id"]
 
+
 def new_id(prefix: str) -> str:
     return f"{prefix}_{secrets.token_urlsafe(10)}"
+
 
 def _project_out_from_row(row: sqlite3.Row) -> ProjectOut:
     payload = dict(row)
@@ -63,6 +70,136 @@ def _project_out_from_row(row: sqlite3.Row) -> ProjectOut:
     payload["usage_updated_at"] = payload.get("usage_updated_at")
     return ProjectOut(**payload)
 
+
+def _default_project_agent_write_paths(source_type: str, agent_id: str) -> List[str]:
+    source = str(source_type or "owner").strip().lower() or "owner"
+    if source == "external":
+        safe_agent = _safe_agent_filename(agent_id)
+        return [f"{USER_OUTPUTS_DIRNAME}/external/{safe_agent}"]
+    return [USER_OUTPUTS_DIRNAME, PROJECT_INFO_DIRNAME, "agents", "logs"]
+
+
+def _normalize_permission_write_paths(raw_paths: Any, *, fallback: Optional[List[str]] = None) -> List[str]:
+    candidate_values: List[Any] = []
+    if isinstance(raw_paths, list):
+        candidate_values = raw_paths
+    elif isinstance(raw_paths, tuple):
+        candidate_values = list(raw_paths)
+    elif isinstance(raw_paths, str):
+        text = raw_paths.strip()
+        if text:
+            parsed: Any = None
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                candidate_values = parsed
+            else:
+                candidate_values = [text]
+    elif raw_paths is not None:
+        candidate_values = [raw_paths]
+
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for item in candidate_values:
+        rel = _clean_relative_project_path(str(item or ""))
+        if not rel:
+            continue
+        rel = _remap_legacy_project_doc_rel_path(rel)
+        if rel.lower() == LEGACY_OUTPUTS_DIRNAME:
+            rel = USER_OUTPUTS_DIRNAME
+        elif _rel_path_startswith(rel, LEGACY_OUTPUTS_DIRNAME):
+            suffix = rel[len(LEGACY_OUTPUTS_DIRNAME) :].lstrip("/\\")
+            rel = _clean_relative_project_path(f"{USER_OUTPUTS_DIRNAME}/{suffix}")
+        path_parts = [p for p in Path(rel).parts if p not in {"", "."}]
+        if any(p == ".." for p in path_parts):
+            continue
+        low = rel.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        cleaned.append(rel)
+        if len(cleaned) >= 40:
+            break
+
+    if cleaned:
+        return cleaned
+    if fallback is not None:
+        return _normalize_permission_write_paths(fallback, fallback=None)
+    return []
+
+
+def _default_project_agent_permissions(*, source_type: str, agent_id: str) -> Dict[str, Any]:
+    return {
+        "can_chat_project": True,
+        "can_read_files": True,
+        "can_write_files": True,
+        "write_paths": _normalize_permission_write_paths(
+            _default_project_agent_write_paths(source_type, agent_id),
+            fallback=None,
+        ),
+        "has_custom": False,
+    }
+
+
+def _get_project_agent_permissions(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    agent_id: str,
+    source_type: str,
+) -> Dict[str, Any]:
+    defaults = _default_project_agent_permissions(source_type=source_type, agent_id=agent_id)
+    row = conn.execute(
+        """
+        SELECT can_chat_project, can_read_files, can_write_files, write_paths_json
+        FROM project_agent_permissions
+        WHERE project_id = ? AND agent_id = ?
+        """,
+        (project_id, agent_id),
+    ).fetchone()
+    if not row:
+        return defaults
+    return {
+        "can_chat_project": bool(_to_int(row["can_chat_project"])),
+        "can_read_files": bool(_to_int(row["can_read_files"])),
+        "can_write_files": bool(_to_int(row["can_write_files"])),
+        "write_paths": _normalize_permission_write_paths(row["write_paths_json"], fallback=defaults["write_paths"]),
+        "has_custom": True,
+    }
+
+
+def _project_path_allowed_for_agent(rel_path: str, allow_paths: List[str]) -> bool:
+    rel = _clean_relative_project_path(rel_path)
+    if not rel:
+        return False
+    rel = _remap_legacy_project_doc_rel_path(rel)
+    normalized_allow = _normalize_permission_write_paths(allow_paths, fallback=[])
+    if not normalized_allow:
+        return False
+    return any(_rel_path_startswith(rel, root) for root in normalized_allow)
+
+
+def _require_project_read_access(access: Dict[str, Any]) -> None:
+    if str(access.get("mode") or "") == "owner":
+        return
+    perms = access.get("permissions") or {}
+    if not bool(perms.get("can_read_files")):
+        raise HTTPException(403, "This project agent cannot read project files")
+
+
+def _require_project_write_access(access: Dict[str, Any], rel_path: str) -> None:
+    if str(access.get("mode") or "") == "owner":
+        return
+    perms = access.get("permissions") or {}
+    if not bool(perms.get("can_write_files")):
+        raise HTTPException(403, "This project agent cannot write project files")
+    allow_paths = perms.get("write_paths") or []
+    if not _project_path_allowed_for_agent(rel_path, allow_paths):
+        raise HTTPException(403, "Path is outside allowed write paths for this project agent")
+
+
 def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict[str, Any]:
     session_user = get_optional_session_user(request)
     conn = db()
@@ -74,9 +211,80 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
         conn.close()
         raise HTTPException(404, "Project not found")
 
-    if session_user and project["user_id"] == session_user:
+    project_owner_user_id = str(project["user_id"] or "").strip()
+
+    if session_user and project_owner_user_id == session_user:
         conn.close()
-        return {"mode": "owner", "project": dict(project), "user_id": session_user}
+        return {
+            "mode": "owner",
+            "project": dict(project),
+            "user_id": session_user,
+            "agent_id": None,
+            "source_type": "owner",
+            "permissions": {
+                "can_chat_project": True,
+                "can_read_files": True,
+                "can_write_files": True,
+                "write_paths": _normalize_permission_write_paths(
+                    [USER_OUTPUTS_DIRNAME, PROJECT_INFO_DIRNAME, "agents", "logs"],
+                    fallback=None,
+                ),
+                "has_custom": False,
+            },
+        }
+
+    if session_user:
+        member_rows = conn.execute(
+            """
+            SELECT pem.id AS membership_id,
+                   pem.agent_id,
+                   pem.member_connection_id,
+                   COALESCE(pa.source_type, 'external') AS source_type
+            FROM project_external_agent_memberships pem
+            JOIN project_agents pa
+                ON pa.project_id = pem.project_id AND pa.agent_id = pem.agent_id
+            WHERE pem.project_id = ? AND pem.member_user_id = ? AND pem.status = 'active'
+            ORDER BY pem.updated_at DESC, pem.created_at DESC
+            """,
+            (project_id, session_user),
+        ).fetchall()
+        if member_rows:
+            requested_member_agent_id = (request.headers.get("X-Project-Agent-Id") or "").strip()
+            selected: Optional[sqlite3.Row] = None
+            if requested_member_agent_id:
+                selected = next(
+                    (
+                        r
+                        for r in member_rows
+                        if str(r["agent_id"] or "").strip() == requested_member_agent_id
+                    ),
+                    None,
+                )
+                if not selected:
+                    conn.close()
+                    raise HTTPException(403, "This user is not an active member for the requested project agent")
+            else:
+                selected = member_rows[0]
+
+            member_agent_id = str(selected["agent_id"] or "").strip()
+            source_type = str(selected["source_type"] or "external").strip() or "external"
+            perms = _get_project_agent_permissions(
+                conn,
+                project_id=project_id,
+                agent_id=member_agent_id,
+                source_type=source_type,
+            )
+            conn.close()
+            return {
+                "mode": "member",
+                "project": dict(project),
+                "user_id": session_user,
+                "membership_id": str(selected["membership_id"] or "").strip() or None,
+                "member_connection_id": str(selected["member_connection_id"] or "").strip() or None,
+                "agent_id": member_agent_id,
+                "source_type": source_type,
+                "permissions": perms,
+            }
 
     agent_id = (request.headers.get("X-Project-Agent-Id") or "").strip()
     agent_token = (request.headers.get("X-Project-Agent-Token") or "").strip()
@@ -84,7 +292,7 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
         token_hash = _hash_access_token(agent_token)
         row = conn.execute(
             """
-            SELECT 1
+            SELECT COALESCE(pa.source_type, 'owner') AS source_type
             FROM project_agents pa
             JOIN project_agent_access_tokens pat
                 ON pat.project_id = pa.project_id AND pat.agent_id = pa.agent_id
@@ -93,19 +301,34 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
             (project_id, agent_id, token_hash),
         ).fetchone()
         if row:
+            source_type = str(row["source_type"] or "owner").strip() or "owner"
+            perms = _get_project_agent_permissions(
+                conn,
+                project_id=project_id,
+                agent_id=agent_id,
+                source_type=source_type,
+            )
             conn.close()
-            return {"mode": "agent", "project": dict(project), "agent_id": agent_id}
+            return {
+                "mode": "agent",
+                "project": dict(project),
+                "agent_id": agent_id,
+                "source_type": source_type,
+                "permissions": perms,
+            }
 
     conn.close()
     if session_user:
         raise HTTPException(403, "Only project owner or invited agent can access this folder")
     raise HTTPException(401, "Missing authorization. Use owner token or agent access headers.")
 
+
 def _clean_relative_project_path(raw_path: Optional[str]) -> str:
     raw = str(raw_path or "").strip().replace("\\", "/")
     while raw.startswith("/"):
         raw = raw[1:]
     return raw
+
 
 def _resolve_project_relative_path(
     owner_user_id: str,
@@ -126,6 +349,7 @@ def _resolve_project_relative_path(
         raise HTTPException(400, "Path is not a directory")
     return target
 
+
 def _resolve_workspace_relative_path(
     user_id: str,
     relative_path: Optional[str],
@@ -144,5 +368,6 @@ def _resolve_workspace_relative_path(
     if require_dir and target.exists() and not target.is_dir():
         raise HTTPException(400, "Path is not a directory")
     return workspace_root, target
+
 
 __all__ = [name for name in globals() if not name.startswith('__')]

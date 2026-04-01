@@ -34,6 +34,9 @@ let wizardChatPending = false;
 let wizardTranscript = [];
 let wizardDraft = null;
 let wizardSuggestedRoles = new Map();
+let wizardExternalInvites = [];
+let wizardExternalMemberships = [];
+let wizardAgentPermissions = [];
 let runtimePollHandle = null;
 let projectFilesCurrentPath = "";
 let projectFilePreviewPath = "";
@@ -60,6 +63,7 @@ const AGENT_SETUP_DOC_PATH = "/new-user/NEW-ACCOUNT-SETUP.MD";
 const AGENT_SECURITY_DOC_PATH = "/new-user/AGENT-SECURITY-RULES.MD";
 const CLAIM_ENV_PARAM = "claim_env_id";
 const CLAIM_CODE_PARAM = "claim_code";
+const PROJECT_INVITE_PARAM = "project_invite";
 const OAUTH_ERROR_PARAM = "oauth_error";
 const PASSWORD_POLICY_MIN_LENGTH = 10;
 const CLAIM_SOCIAL_CTX_KEY = "hivee_claim_social_ctx_v1";
@@ -72,6 +76,12 @@ let claimSessionState = {
   connected: false,
   email: "",
   providers: [],
+};
+let projectInviteContext = {
+  active: false,
+  token: "",
+  info: null,
+  connections: [],
 };
 let oauthProvidersState = new Map();
 
@@ -141,6 +151,35 @@ function clearClaimParamsFromUrl() {
   url.searchParams.delete(CLAIM_CODE_PARAM);
   const next = url.pathname + (url.search ? url.search : "") + (url.hash ? url.hash : "");
   window.history.replaceState({}, "", next);
+}
+
+function parseProjectInviteFromUrl() {
+  const params = new URLSearchParams(window.location.search || "");
+  const token = String(params.get(PROJECT_INVITE_PARAM) || "").trim();
+  projectInviteContext = {
+    active: Boolean(token),
+    token,
+    info: null,
+    connections: [],
+  };
+}
+
+function clearProjectInviteParamFromUrl() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete(PROJECT_INVITE_PARAM);
+  const next = url.pathname + (url.search ? url.search : "") + (url.hash ? url.hash : "");
+  window.history.replaceState({}, "", next);
+}
+
+function clearProjectInviteContext({ clearUrl = false } = {}) {
+  projectInviteContext = {
+    active: false,
+    token: "",
+    info: null,
+    connections: [],
+  };
+  if (clearUrl) clearProjectInviteParamFromUrl();
+  renderProjectInviteUI();
 }
 
 function readOauthErrorFromUrl() {
@@ -368,8 +407,10 @@ function applyClaimAuthUI() {
     if (socialAuthBlock) socialAuthBlock.classList.remove("hidden");
     applyOAuthProvidersUI();
     claimOnlyBlocks.forEach((el) => el.classList.add("hidden"));
+    renderProjectInviteUI();
     return;
   }
+
   activeAuthMethod = "hooman";
   if (methodAgent) {
     methodAgent.disabled = true;
@@ -412,6 +453,191 @@ function applyClaimAuthUI() {
   if (socialAuthBlock) socialAuthBlock.classList.remove("hidden");
   applyOAuthProvidersUI();
   claimOnlyBlocks.forEach((el) => el.classList.remove("hidden"));
+  renderProjectInviteUI();
+}
+function inviteStatusLabel(status) {
+  const normalized = String(status || "pending").trim().toLowerCase();
+  if (normalized === "pending") return "Pending";
+  if (normalized === "accepted") return "Accepted";
+  if (normalized === "expired") return "Expired";
+  if (normalized === "revoked") return "Revoked";
+  return normalized || "unknown";
+}
+
+function renderProjectInviteUI() {
+  const notice = $("project_invite_notice");
+  const card = $("project_invite_card");
+  const title = $("project_invite_title");
+  const meta = $("project_invite_meta");
+  const setupLink = $("project_invite_setup_link");
+  const connectionSelect = $("invite_connection_id");
+  const agentIdInput = $("invite_agent_id");
+  const agentNameInput = $("invite_agent_name");
+  const acceptBtn = $("btn_accept_project_invite");
+
+  if (!notice || !card) return;
+
+  if (!projectInviteContext.active) {
+    notice.classList.add("hidden");
+    notice.textContent = "";
+    card.classList.add("hidden");
+    if (connectionSelect) connectionSelect.innerHTML = "";
+    return;
+  }
+
+  const info = projectInviteContext.info || {};
+  const status = String(info.status || "pending").toLowerCase();
+  const hasSession = Boolean(sessionToken);
+  const canAccept = Boolean(info.can_accept);
+
+  notice.classList.remove("hidden");
+  if (!info.project_id) {
+    notice.textContent = "Project invite detected. Loading invite details...";
+  } else if (status !== "pending") {
+    if (status === "expired") {
+      notice.textContent = "Invite is expired. Ask project owner to generate a new invite link.";
+    } else if (status === "accepted") {
+      notice.textContent = "Invite has already been accepted.";
+    } else if (status === "revoked") {
+      notice.textContent = "Invite was revoked by project owner.";
+    } else {
+      notice.textContent = `Invite status: ${inviteStatusLabel(status)}.`;
+    }
+  } else if (!hasSession) {
+    notice.textContent = "Project invite detected. Login or sign up first, then accept invite.";
+  } else {
+    notice.textContent = "Project invite ready. Choose connection and accept.";
+  }
+
+  card.classList.remove("hidden");
+  if (title) title.textContent = String(info.project_title || "External Project");
+  if (meta) {
+    const parts = [];
+    if (info.project_id) parts.push(`Project ID: ${info.project_id}`);
+    if (info.target_email_masked) parts.push(`Target: ${info.target_email_masked}`);
+    parts.push(`Status: ${inviteStatusLabel(status)}`);
+    if (info.expires_at) parts.push(`Expires: ${formatTs(info.expires_at)}`);
+    meta.textContent = parts.join(" | ");
+  }
+  if (setupLink) {
+    const url = toAbsoluteAppUrl(info.setup_doc_url || AGENT_SETUP_DOC_PATH);
+    setupLink.href = url;
+    setupLink.textContent = url;
+  }
+
+  if (connectionSelect) {
+    const previous = String(connectionSelect.value || "").trim();
+    connectionSelect.innerHTML = "";
+    const rows = Array.isArray(projectInviteContext.connections) ? projectInviteContext.connections : [];
+    if (!rows.length) {
+      const opt = document.createElement("option");
+      opt.value = "";
+      opt.textContent = hasSession
+        ? "No OpenClaw connection found for this account"
+        : "Login first to load your OpenClaw connections";
+      connectionSelect.appendChild(opt);
+    } else {
+      for (const item of rows) {
+        const id = String(item?.id || "").trim();
+        if (!id) continue;
+        const opt = document.createElement("option");
+        opt.value = id;
+        const name = String(item?.name || "").trim();
+        const base = String(item?.base_url || "").trim();
+        opt.textContent = name ? `${name} (${id})` : `${id}${base ? ` - ${base}` : ""}`;
+        connectionSelect.appendChild(opt);
+      }
+      if (previous && rows.some((x) => String(x?.id || "") === previous)) {
+        connectionSelect.value = previous;
+      }
+    }
+    connectionSelect.disabled = !hasSession || !canAccept || !Array.isArray(projectInviteContext.connections) || !projectInviteContext.connections.length;
+  }
+
+  if (agentIdInput) {
+    const suggestedId = String(info.requested_agent_id || "").trim();
+    if (!String(agentIdInput.value || "").trim() && suggestedId) {
+      agentIdInput.value = suggestedId;
+    }
+    agentIdInput.disabled = !hasSession || !canAccept;
+  }
+  if (agentNameInput) {
+    const suggestedName = String(info.requested_agent_name || "").trim();
+    if (!String(agentNameInput.value || "").trim() && suggestedName) {
+      agentNameInput.value = suggestedName;
+    }
+    agentNameInput.disabled = !hasSession || !canAccept;
+  }
+
+  if (acceptBtn) {
+    const hasConnection = Boolean(String(connectionSelect?.value || "").trim());
+    acceptBtn.disabled = !hasSession || !canAccept || !hasConnection;
+  }
+}
+
+async function loadProjectInviteConnections() {
+  if (!projectInviteContext.active) return [];
+  if (!sessionToken) {
+    projectInviteContext.connections = [];
+    renderProjectInviteUI();
+    return [];
+  }
+  try {
+    const rows = await api("/api/openclaw/connections");
+    projectInviteContext.connections = Array.isArray(rows) ? rows : [];
+  } catch {
+    projectInviteContext.connections = [];
+  }
+  renderProjectInviteUI();
+  return projectInviteContext.connections;
+}
+
+async function initializeProjectInviteContext({ refreshConnections = true } = {}) {
+  if (!projectInviteContext.active) {
+    renderProjectInviteUI();
+    return null;
+  }
+  setMessage("project_invite_msg", "");
+  const tokenQuoted = encodeURIComponent(projectInviteContext.token);
+  const info = await api(`/api/projects/invites/${tokenQuoted}`);
+  projectInviteContext.info = info || null;
+  if (refreshConnections) {
+    await loadProjectInviteConnections().catch(() => {});
+  } else {
+    renderProjectInviteUI();
+  }
+  return projectInviteContext.info;
+}
+
+async function acceptProjectInviteFromUI() {
+  if (!projectInviteContext.active) throw new Error("No active project invite.");
+  if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
+
+  const connectionId = String($("invite_connection_id")?.value || "").trim();
+  if (!connectionId) throw new Error("Choose one of your OpenClaw connections first.");
+
+  const agentId = String($("invite_agent_id")?.value || "").trim();
+  const agentName = String($("invite_agent_name")?.value || "").trim();
+  const payload = {
+    connection_id: connectionId,
+  };
+  if (agentId) payload.agent_id = agentId;
+  if (agentName) payload.agent_name = agentName;
+
+  const tokenQuoted = encodeURIComponent(projectInviteContext.token);
+  const res = await api(`/api/projects/invites/${tokenQuoted}/accept`, "POST", payload);
+  const acceptedProjectId = String(res?.project_id || "").trim();
+  setMessage("project_invite_msg", "Invite accepted. Opening project...", "ok");
+  clearProjectInviteContext({ clearUrl: true });
+  await fetchInitial({ preferredProjectId: acceptedProjectId || null });
+}
+
+function ignoreProjectInviteFromUI() {
+  clearProjectInviteContext({ clearUrl: true });
+  setMessage("project_invite_msg", "Invite ignored. You can reopen invite link anytime.", "ok");
+  if (sessionToken) {
+    fetchInitial().catch(() => setView("auth"));
+  }
 }
 
 function claimConnectionPayload(prefix) {
@@ -2691,6 +2917,8 @@ function openWizard(newProject = true) {
     $("wizard_step_project").classList.add("hidden");
     $("wizard_step_agents").classList.add("hidden");
     $("wizard_footer_actions")?.classList.remove("hidden");
+    $("wizard_external_access")?.classList.add("hidden");
+    setMessage("wizard_external_msg", "");
     $("form_project").reset();
     wizardMode = "chat";
     wizardChatBooted = false;
@@ -2714,7 +2942,11 @@ function openWizard(newProject = true) {
     $("wizard_step_project").classList.add("hidden");
     $("wizard_step_agents").classList.remove("hidden");
     $("wizard_footer_actions")?.classList.add("hidden");
-    loadAgentsForWizard().catch((e) => setMessage("wizard_msg", detailToText(e), "error"));
+    $("wizard_external_access")?.classList.remove("hidden");
+    Promise.all([
+      loadAgentsForWizard(),
+      refreshWizardExternalAccess({ silent: true }),
+    ]).catch((e) => setMessage("wizard_msg", detailToText(e), "error"));
   }
 }
 
@@ -2845,7 +3077,318 @@ async function saveAgentSetup() {
   setMessage("wizard_msg", "Agents saved. Primary agent is building project info and plan.", "ok");
   await selectProject(selectedProjectId);
   await loadChatAgents().catch(() => {});
+  await refreshWizardExternalAccess({ silent: true }).catch(() => {});
   setTimeout(closeWizard, 450);
+}
+
+function _hoursToInviteTtlSec(rawHours) {
+  const n = Number(rawHours);
+  if (!Number.isFinite(n)) return 72 * 3600;
+  const clampedHours = Math.min(720, Math.max(1, Math.round(n)));
+  return clampedHours * 3600;
+}
+
+function _parseWritePathsInput(rawText) {
+  const parts = String(rawText || "")
+    .split(/[,\n]/g)
+    .map((s) => String(s || "").trim())
+    .filter(Boolean);
+  const deduped = [];
+  const seen = new Set();
+  for (const p of parts) {
+    const key = p.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(p);
+  }
+  return deduped;
+}
+
+function renderWizardExternalInvites() {
+  const box = $("wizard_external_invites");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!wizardExternalInvites.length) {
+    const empty = document.createElement("div");
+    empty.className = "helper";
+    empty.textContent = "No invites yet.";
+    box.appendChild(empty);
+    return;
+  }
+
+  for (const invite of wizardExternalInvites) {
+    const id = String(invite?.id || "").trim();
+    if (!id) continue;
+    const row = document.createElement("div");
+    row.className = "wizard-list-item";
+
+    const title = document.createElement("div");
+    title.className = "title";
+    const requested = String(invite?.requested_agent_name || invite?.requested_agent_id || "(agent not specified)").trim();
+    title.textContent = `${requested} - ${inviteStatusLabel(invite?.status)}`;
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const metaBits = [];
+    if (invite?.target_email) metaBits.push(`target: ${invite.target_email}`);
+    if (invite?.role) metaBits.push(`role: ${invite.role}`);
+    if (invite?.expires_at) metaBits.push(`expires: ${formatTs(invite.expires_at)}`);
+    metaBits.push(`invite_id: ${id}`);
+    meta.textContent = metaBits.join(" | ");
+
+    row.appendChild(title);
+    row.appendChild(meta);
+
+    if (String(invite?.status || "").toLowerCase() === "pending") {
+      const actions = document.createElement("div");
+      actions.className = "action-row";
+      const revokeBtn = document.createElement("button");
+      revokeBtn.type = "button";
+      revokeBtn.className = "secondary";
+      revokeBtn.textContent = "Revoke";
+      revokeBtn.addEventListener("click", () => {
+        revokeWizardExternalInvite(id).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
+      });
+      actions.appendChild(revokeBtn);
+      row.appendChild(actions);
+    }
+
+    box.appendChild(row);
+  }
+}
+
+function renderWizardExternalMemberships() {
+  const box = $("wizard_external_memberships");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!wizardExternalMemberships.length) {
+    const empty = document.createElement("div");
+    empty.className = "helper";
+    empty.textContent = "No external memberships yet.";
+    box.appendChild(empty);
+    return;
+  }
+
+  for (const membership of wizardExternalMemberships) {
+    const id = String(membership?.id || "").trim();
+    if (!id) continue;
+    const row = document.createElement("div");
+    row.className = "wizard-list-item";
+
+    const title = document.createElement("div");
+    title.className = "title";
+    const agentName = String(membership?.agent_name || membership?.agent_id || "external-agent").trim();
+    title.textContent = `${agentName} - ${inviteStatusLabel(membership?.status)}`;
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const metaBits = [];
+    if (membership?.role) metaBits.push(`role: ${membership.role}`);
+    if (membership?.member_user_id) metaBits.push(`member_user: ${membership.member_user_id}`);
+    if (membership?.member_connection_id) metaBits.push(`member_conn: ${membership.member_connection_id}`);
+    metaBits.push(`membership_id: ${id}`);
+    meta.textContent = metaBits.join(" | ");
+
+    row.appendChild(title);
+    row.appendChild(meta);
+
+    if (String(membership?.status || "").toLowerCase() === "active") {
+      const actions = document.createElement("div");
+      actions.className = "action-row";
+      const revokeBtn = document.createElement("button");
+      revokeBtn.type = "button";
+      revokeBtn.className = "secondary danger";
+      revokeBtn.textContent = "Revoke Membership";
+      revokeBtn.addEventListener("click", () => {
+        revokeWizardExternalMembership(id).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
+      });
+      actions.appendChild(revokeBtn);
+      row.appendChild(actions);
+    }
+
+    box.appendChild(row);
+  }
+}
+
+function renderWizardAgentPermissions() {
+  const box = $("wizard_agent_permissions");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!wizardAgentPermissions.length) {
+    const empty = document.createElement("div");
+    empty.className = "helper";
+    empty.textContent = "No agent permission data.";
+    box.appendChild(empty);
+    return;
+  }
+
+  for (const item of wizardAgentPermissions) {
+    const agentId = String(item?.agent_id || "").trim();
+    if (!agentId) continue;
+    const row = document.createElement("div");
+    row.className = "perm-row";
+
+    const head = document.createElement("div");
+    head.className = "title";
+    const agentName = String(item?.agent_name || agentId).trim();
+    const sourceType = String(item?.source_type || "owner").trim();
+    const customBadge = item?.has_custom ? "custom" : "default";
+    head.textContent = `${agentName} (${agentId}) - ${sourceType} - ${customBadge}`;
+
+    const toggles = document.createElement("div");
+    toggles.className = "perm-toggles";
+
+    const mkCheck = (label, checked) => {
+      const wrap = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(checked);
+      wrap.appendChild(input);
+      wrap.appendChild(document.createTextNode(label));
+      toggles.appendChild(wrap);
+      return input;
+    };
+
+    const canChatEl = mkCheck("can_chat_project", item?.can_chat_project);
+    const canReadEl = mkCheck("can_read_files", item?.can_read_files);
+    const canWriteEl = mkCheck("can_write_files", item?.can_write_files);
+
+    const writePathsLabel = document.createElement("label");
+    writePathsLabel.textContent = "write_paths (comma or newline)";
+    const writePathsInput = document.createElement("textarea");
+    writePathsInput.className = "perm-write-paths";
+    writePathsInput.value = Array.isArray(item?.write_paths) ? item.write_paths.join("\n") : "";
+
+    const actions = document.createElement("div");
+    actions.className = "action-row";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.textContent = "Save Permission";
+    saveBtn.addEventListener("click", () => {
+      saveWizardAgentPermission(agentId, {
+        can_chat_project: Boolean(canChatEl.checked),
+        can_read_files: Boolean(canReadEl.checked),
+        can_write_files: Boolean(canWriteEl.checked),
+        write_paths: _parseWritePathsInput(writePathsInput.value),
+      }).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
+    });
+
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "secondary";
+    resetBtn.textContent = "Reset Default";
+    resetBtn.addEventListener("click", () => {
+      resetWizardAgentPermission(agentId).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
+    });
+
+    actions.appendChild(saveBtn);
+    actions.appendChild(resetBtn);
+
+    row.appendChild(head);
+    row.appendChild(toggles);
+    row.appendChild(writePathsLabel);
+    row.appendChild(writePathsInput);
+    row.appendChild(actions);
+    box.appendChild(row);
+  }
+}
+
+async function refreshWizardExternalAccess({ silent = false } = {}) {
+  const panel = $("wizard_external_access");
+  if (!panel) return;
+  if (!selectedProjectId) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+
+  const [invitesRes, membershipsRes, permissionsRes] = await Promise.all([
+    api(`/api/projects/${selectedProjectId}/invites/external-agent`).catch(() => ({ invites: [] })),
+    api(`/api/projects/${selectedProjectId}/memberships/external-agent`).catch(() => ({ memberships: [] })),
+    api(`/api/projects/${selectedProjectId}/agent-permissions`).catch(() => ({ permissions: [] })),
+  ]);
+
+  wizardExternalInvites = Array.isArray(invitesRes?.invites) ? invitesRes.invites : [];
+  wizardExternalMemberships = Array.isArray(membershipsRes?.memberships) ? membershipsRes.memberships : [];
+  wizardAgentPermissions = Array.isArray(permissionsRes?.permissions) ? permissionsRes.permissions : [];
+
+  renderWizardExternalInvites();
+  renderWizardExternalMemberships();
+  renderWizardAgentPermissions();
+  if (!silent) {
+    setMessage("wizard_external_msg", "External access data refreshed.", "ok");
+  }
+}
+
+async function createWizardExternalInvite(ev) {
+  if (ev?.preventDefault) ev.preventDefault();
+  if (!selectedProjectId) throw new Error("Choose project first");
+
+  const targetEmail = String($("ext_target_email")?.value || "").trim();
+  const requestedAgentId = String($("ext_requested_agent_id")?.value || "").trim();
+  const requestedAgentName = String($("ext_requested_agent_name")?.value || "").trim();
+  const role = String($("ext_role")?.value || "").trim();
+  const note = String($("ext_note")?.value || "").trim();
+  const expiresHours = String($("ext_expires_hours")?.value || "72").trim();
+
+  const res = await api(`/api/projects/${selectedProjectId}/invites/external-agent`, "POST", {
+    target_email: targetEmail || null,
+    requested_agent_id: requestedAgentId || null,
+    requested_agent_name: requestedAgentName || null,
+    role,
+    note,
+    expires_in_sec: _hoursToInviteTtlSec(expiresHours),
+  });
+
+  const inviteUrl = String(res?.invite_url || "").trim();
+  if (inviteUrl && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setMessage("wizard_external_msg", "External invite created and copied to clipboard.", "ok");
+    } catch {
+      setMessage("wizard_external_msg", `External invite created: ${inviteUrl}`, "ok");
+    }
+  } else {
+    setMessage("wizard_external_msg", inviteUrl ? `External invite created: ${inviteUrl}` : "External invite created.", "ok");
+  }
+
+  await refreshWizardExternalAccess({ silent: true });
+}
+
+async function revokeWizardExternalInvite(inviteId) {
+  if (!selectedProjectId) throw new Error("Choose project first");
+  const id = String(inviteId || "").trim();
+  if (!id) throw new Error("invite_id is required");
+  await api(`/api/projects/${selectedProjectId}/invites/external-agent/${encodeURIComponent(id)}/revoke`, "POST");
+  setMessage("wizard_external_msg", `Invite revoked: ${id}`, "ok");
+  await refreshWizardExternalAccess({ silent: true });
+}
+
+async function revokeWizardExternalMembership(membershipId) {
+  if (!selectedProjectId) throw new Error("Choose project first");
+  const id = String(membershipId || "").trim();
+  if (!id) throw new Error("membership_id is required");
+  await api(`/api/projects/${selectedProjectId}/memberships/external-agent/${encodeURIComponent(id)}/revoke`, "POST");
+  setMessage("wizard_external_msg", `Membership revoked: ${id}`, "ok");
+  await refreshWizardExternalAccess({ silent: true });
+}
+
+async function saveWizardAgentPermission(agentId, payload) {
+  if (!selectedProjectId) throw new Error("Choose project first");
+  const id = String(agentId || "").trim();
+  if (!id) throw new Error("agent_id is required");
+  await api(`/api/projects/${selectedProjectId}/agent-permissions/${encodeURIComponent(id)}`, "POST", payload || {});
+  setMessage("wizard_external_msg", `Permission updated: ${id}`, "ok");
+  await refreshWizardExternalAccess({ silent: true });
+}
+
+async function resetWizardAgentPermission(agentId) {
+  if (!selectedProjectId) throw new Error("Choose project first");
+  const id = String(agentId || "").trim();
+  if (!id) throw new Error("agent_id is required");
+  await api(`/api/projects/${selectedProjectId}/agent-permissions/${encodeURIComponent(id)}`, "POST", { reset_to_default: true });
+  setMessage("wizard_external_msg", `Permission reset: ${id}`, "ok");
+  await refreshWizardExternalAccess({ silent: true });
 }
 
 function collectSetupDetailsFromForm() {
@@ -2944,7 +3487,8 @@ async function createProjectRecord({ title, brief, goal, setupDetails, setupChat
     const roleInput = document.querySelector(`[data-agent-role="${a.id}"]`);
     if (roleInput && !String(roleInput.value || "").trim()) roleInput.value = preset;
   }
-  await fetchInitial();
+  await refreshWizardExternalAccess({ silent: true }).catch(() => {});
+  await fetchInitial({ preferredProjectId: created.id });
   await selectProject(created.id);
 }
 
@@ -3063,6 +3607,15 @@ async function login(ev) {
   } else {
     setMessage("auth_msg", "Login success", "ok");
   }
+
+  if (projectInviteContext.active) {
+    setView("auth");
+    await initializeProjectInviteContext({ refreshConnections: true }).catch((e) => {
+      setMessage("project_invite_msg", detailToText(e?.message || e), "error");
+    });
+    return;
+  }
+
   await fetchInitial();
 }
 
@@ -3110,6 +3663,15 @@ async function signup(ev) {
   } else {
     setMessage("auth_msg", "Account created", "ok");
   }
+
+  if (projectInviteContext.active) {
+    setView("auth");
+    await initializeProjectInviteContext({ refreshConnections: true }).catch((e) => {
+      setMessage("project_invite_msg", detailToText(e?.message || e), "error");
+    });
+    return;
+  }
+
   await fetchInitial();
 }
 
@@ -3268,11 +3830,21 @@ function bindAuthMethods() {
   $("method_hooman").onclick = () => setAuthMethod("hooman");
   $("method_agent").onclick = () => setAuthMethod("agent");
   $("btn_copy_agent_url").onclick = () => copyAgentUrl().catch(() => {});
+  $("btn_accept_project_invite")?.addEventListener("click", () => {
+    acceptProjectInviteFromUI().catch((e) => setMessage("project_invite_msg", detailToText(e?.message || e), "error"));
+  });
+  $("btn_invite_open_setup")?.addEventListener("click", () => {
+    setView("setup");
+  });
+  $("btn_ignore_project_invite")?.addEventListener("click", () => {
+    ignoreProjectInviteFromUI();
+  });
+  $("invite_connection_id")?.addEventListener("change", () => renderProjectInviteUI());
   refreshAgentGuideUrls();
   applyClaimAuthUI();
+  renderProjectInviteUI();
   setAuthMethod(activeAuthMethod);
 }
-
 function bindTabs() {
   $("tab_login").onclick = () => {
     $("tab_login").classList.add("active");
@@ -3391,9 +3963,16 @@ async function deleteSelectedProject() {
   await fetchInitial();
 }
 
-async function fetchInitial() {
+async function fetchInitial({ preferredProjectId = null } = {}) {
   if (claimAuthContext.active) {
     setView("auth");
+    return;
+  }
+  if (projectInviteContext.active) {
+    setView("auth");
+    await initializeProjectInviteContext({ refreshConnections: true }).catch((e) => {
+      setMessage("project_invite_msg", detailToText(e?.message || e), "error");
+    });
     return;
   }
   const connections = await api("/api/openclaw/connections");
@@ -3435,7 +4014,10 @@ async function fetchInitial() {
   renderProjects(projects);
 
   if (projects.length) {
-    const pick = selectedProjectId && projects.some((p) => p.id === selectedProjectId) ? selectedProjectId : projects[0].id;
+    const preferred = String(preferredProjectId || "").trim();
+    const hasPreferred = Boolean(preferred && projects.some((p) => p.id === preferred));
+    const hasSelected = Boolean(selectedProjectId && projects.some((p) => p.id === selectedProjectId));
+    const pick = hasPreferred ? preferred : (hasSelected ? selectedProjectId : projects[0].id);
     await selectProject(pick);
   } else {
     showEmptyProject();
@@ -3526,6 +4108,12 @@ function bindActions() {
     createProjectNow().catch((e) => showUiError("wizard_msg", e));
   });
   $("btn_save_agents").onclick = () => saveAgentSetup().catch((e) => showUiError("wizard_msg", e));
+  $("form_external_invite")?.addEventListener("submit", (ev) => {
+    createWizardExternalInvite(ev).catch((e) => showUiError("wizard_external_msg", e));
+  });
+  $("btn_refresh_external_access")?.addEventListener("click", () => {
+    refreshWizardExternalAccess({ silent: false }).catch((e) => showUiError("wizard_external_msg", e));
+  });
 
   $("btn_subscribe").onclick = () => subscribeEvents().catch((e) => addEvent("error", detailToText(e)));
   $("btn_run").onclick = () => runProject().catch((e) => { setMessage("chat_hint", detailToText(e), "error"); addEvent("error", detailToText(e)); });
@@ -3612,6 +4200,7 @@ function bindActions() {
 
 bindTabs();
 parseClaimAuthFromUrl();
+parseProjectInviteFromUrl();
 bindAuthMethods();
 bindActions();
 syncChatContextControls();
@@ -3640,8 +4229,41 @@ if (oauthError) {
       return;
     }
   }
+
+  if (projectInviteContext.active) {
+    setView("auth");
+    initializeProjectInviteContext({ refreshConnections: true })
+      .catch((e) => {
+        setMessage("project_invite_msg", detailToText(e?.message || e), "error");
+      });
+    return;
+  }
+
   fetchInitial()
     .catch(() => {
       setView("auth");
     });
 })();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
