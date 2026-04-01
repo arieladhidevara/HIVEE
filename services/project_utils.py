@@ -1498,6 +1498,7 @@ def _project_readiness_snapshot(
     project_id: str,
     project_root: str,
     plan_status: Any,
+    execution_status: Any = EXEC_STATUS_IDLE,
     role_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     normalized_rows: List[Dict[str, Any]] = []
@@ -1516,6 +1517,17 @@ def _project_readiness_snapshot(
     primary_row = next((r for r in normalized_rows if _coerce_bool(r.get("is_primary"))), None)
     primary_agent_id = str((primary_row or {}).get("agent_id") or "").strip() or None
     plan_approved = _coerce_plan_status(plan_status) == PLAN_STATUS_APPROVED
+    normalized_execution_status = _coerce_execution_status(execution_status)
+    execution_ready_for_run = normalized_execution_status in {EXEC_STATUS_IDLE, EXEC_STATUS_STOPPED}
+    execution_cta = "Execution is currently running. Wait until completion, or pause/stop first."
+    if normalized_execution_status == EXEC_STATUS_PAUSED:
+        execution_cta = "Execution is paused. Resume or stop this run before starting a new run."
+    elif normalized_execution_status == EXEC_STATUS_COMPLETED:
+        execution_cta = "Project run is already completed."
+    elif normalized_execution_status == EXEC_STATUS_STOPPED:
+        execution_cta = "Execution was stopped and can be started again."
+    elif normalized_execution_status == EXEC_STATUS_IDLE:
+        execution_cta = "Execution has not started yet."
     root_ready = _project_root_ready(owner_user_id, project_root)
     stage = _project_lifecycle_stage(
         invited_agents_count=invited_agents_count,
@@ -1551,6 +1563,13 @@ def _project_readiness_snapshot(
             "ok": root_ready,
             "required": True,
             "cta": "Project folder is missing. Recreate project or restore the project root.",
+        },
+        {
+            "key": "execution_state",
+            "label": "Execution is idle/stopped (safe to start run)",
+            "ok": execution_ready_for_run,
+            "required": True,
+            "cta": execution_cta,
         },
     ]
     can_run = all(bool(c.get("ok")) for c in checks if bool(c.get("required", True)))

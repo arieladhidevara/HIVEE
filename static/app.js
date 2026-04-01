@@ -1,4 +1,4 @@
-﻿let sessionToken = null;
+let sessionToken = null;
 let activeConnectionId = null;
 let preferredConnectionId = null;
 let selectedProjectId = null;
@@ -1741,13 +1741,27 @@ function syncProjectHeadbar() {
     const createdAt = selectedProjectData.created_at ? formatTs(selectedProjectData.created_at) : "-";
     const stage = projectStageLabel(selectedProjectReadiness?.stage || "draft");
     subline.textContent = `${String(selectedProjectData.title || "").trim()} â€” Stage ${stage} â€” ${createdAt}`;
-    const canRun = Boolean(selectedProjectReadiness?.can_run);
+    const readinessCanRun = Boolean(selectedProjectReadiness?.can_run);
+    const exec = String(selectedProjectData.execution_status || "idle").trim().toLowerCase();
+    const statusAllowsRun = exec === "idle" || exec === "stopped";
+    const canRun = readinessCanRun && statusAllowsRun;
     runBtn.classList.remove("hidden");
     runBtn.disabled = !canRun;
-    runBtn.textContent = canRun ? "Run" : "Run (Locked)";
-    runBtn.title = canRun
-      ? "Start project run"
-      : detailToText(selectedProjectReadiness?.summary || "Complete readiness checklist first.");
+    if (exec === "running") {
+      runBtn.textContent = "Running";
+      runBtn.title = "Project execution is already running.";
+    } else if (exec === "paused") {
+      runBtn.textContent = "Run (Paused)";
+      runBtn.title = "Project is paused. Use Resume/Stop controls first.";
+    } else if (exec === "completed") {
+      runBtn.textContent = "Run (Completed)";
+      runBtn.title = "Project is already completed.";
+    } else {
+      runBtn.textContent = canRun ? "Run" : "Run (Locked)";
+      runBtn.title = canRun
+        ? "Start project run"
+        : detailToText(selectedProjectReadiness?.summary || "Complete readiness checklist first.");
+    }
     deleteBtn.classList.remove("hidden");
   } else {
     if (titleText) titleText.textContent = "";
@@ -3242,7 +3256,18 @@ async function sendChatPrototype() {
         : `${res.transport || "ws"} via ${res.path || "gateway"}`;
       appendChatMessage(role, shown, meta, { agentId: resolvedAgentId });
     }
-    setMessage("chat_hint", "Message delivered.", "ok");
+    const savedFiles = Array.isArray(res?.saved_files) ? res.saved_files : [];
+    if (usingProjectContext && savedFiles.length) {
+      const sample = savedFiles
+        .slice(0, 3)
+        .map((item) => String(item?.path || "").trim())
+        .filter(Boolean)
+        .join(", ");
+      const suffix = sample ? `: ${sample}` : "";
+      setMessage("chat_hint", `Message delivered. ${savedFiles.length} file(s) saved${suffix}`, "ok");
+    } else {
+      setMessage("chat_hint", "Message delivered.", "ok");
+    }
     addEvent("chat.reply", { path: res.path, text: shown, context_mode: payload.context_mode });
     if (usingProjectContext) {
       await refreshSelectedProjectData().catch(() => {});
@@ -5555,6 +5580,10 @@ async function runProject() {
     const reason = detailToText(selectedProjectReadiness?.summary || "Project is not ready to run yet.");
     throw new Error(reason);
   }
+  const exec = String(selectedProjectData?.execution_status || "").trim().toLowerCase();
+  if (exec === "running") throw new Error("Project is already running.");
+  if (exec === "paused") throw new Error("Project is paused. Resume or stop first.");
+  if (exec === "completed") throw new Error("Project is already completed.");
   await api(`/api/projects/${selectedProjectId}/run`, "POST");
   addEvent("ui.run", "Run started");
   await refreshSelectedProjectData().catch(() => {});
@@ -6059,7 +6088,3 @@ if (oauthError) {
       setView("auth");
     });
 })();
-
-
-
-

@@ -816,6 +816,10 @@ def register_routes(app: FastAPI) -> None:
                     "resume_hint": str(res.get("resume_hint") or "")[:300],
                 },
             )
+            res["saved_files"] = saved_writes
+            res["skipped_files"] = skipped_writes[:20]
+            res["artifact_followup_used"] = artifact_followup_used
+            res["artifact_rescue_used"] = artifact_rescue_used
         res["resolved_agent_id"] = effective_agent_id
         res["workspace_root"] = workspace_root
         res["context_mode"] = "project" if project_root else "workspace"

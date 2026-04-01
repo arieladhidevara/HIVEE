@@ -1,7 +1,7 @@
 from hivee_shared import *
 from email.message import EmailMessage
 import smtplib
-from services.project_runtime import simulate_run
+from services.managed_agents import _delegate_project_tasks
 
 
 def _new_project_external_invite_token() -> str:
@@ -2837,7 +2837,7 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         proj = conn.execute(
-            "SELECT id, user_id, project_root, plan_status FROM projects WHERE id = ? AND user_id = ?",
+            "SELECT id, user_id, project_root, plan_status, execution_status FROM projects WHERE id = ? AND user_id = ?",
             (project_id, user_id),
         ).fetchone()
         conn.close()
@@ -2849,6 +2849,7 @@ def register_routes(app: FastAPI) -> None:
             project_id=project_id,
             project_root=str(proj["project_root"] or ""),
             plan_status=proj["plan_status"],
+            execution_status=proj["execution_status"],
         )
         return ProjectReadinessOut(**readiness)
     
@@ -2872,12 +2873,31 @@ def register_routes(app: FastAPI) -> None:
         if not proj:
             raise HTTPException(404, "Project not found")
 
+        current_status = _coerce_execution_status(proj["execution_status"])
+        if current_status in {EXEC_STATUS_RUNNING, EXEC_STATUS_PAUSED}:
+            raise HTTPException(
+                409,
+                {
+                    "message": "Project execution is already in progress.",
+                    "status": current_status,
+                },
+            )
+        if current_status == EXEC_STATUS_COMPLETED:
+            raise HTTPException(
+                409,
+                {
+                    "message": "Project execution is already completed.",
+                    "status": current_status,
+                },
+            )
+
         role_rows = [dict(a) for a in agents]
         readiness = _project_readiness_snapshot(
             owner_user_id=str(proj["user_id"]),
             project_id=project_id,
             project_root=str(proj["project_root"] or ""),
             plan_status=proj["plan_status"],
+            execution_status=proj["execution_status"],
             role_rows=role_rows,
         )
         if not bool(readiness.get("can_run")):
@@ -2888,7 +2908,7 @@ def register_routes(app: FastAPI) -> None:
                     "readiness": readiness,
                 },
             )
-    
+
         current_progress = _clamp_progress(proj["progress_pct"])
         start_progress = max(10, current_progress)
         _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=start_progress)
@@ -2900,7 +2920,16 @@ def register_routes(app: FastAPI) -> None:
             text="User started project execution run.",
             payload={"agents": len(agents)},
         )
-        asyncio.create_task(simulate_run(project_id, dict(proj), [dict(a) for a in agents]))
+        await emit(
+            project_id,
+            "run.started",
+            {
+                "project": str(proj["title"] or ""),
+                "agents": [str(a["agent_name"] or a["agent_id"] or "") for a in agents],
+                "primary_agent": next((str(a["agent_name"] or a["agent_id"] or "") for a in agents if bool(a["is_primary"])), None),
+            },
+        )
+        asyncio.create_task(_delegate_project_tasks(project_id))
         return {"ok": True}
     
 
