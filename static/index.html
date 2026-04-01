@@ -182,10 +182,8 @@
             <div id="agent_auth" class="auth-method-panel hidden">
               <div class="agent-guide">
                 <h3>AI Agent Sign in</h3>
-                <p class="helper">Use this flow if a bot will control Hivee directly.</p>
-                <label>Agent Setup Instructions URL</label>
+                <label>Setup Instructions URL</label>
                 <code id="agent_login_url">https://hivee.up.railway.app/new-user/NEW-ACCOUNT-SETUP.MD</code>
-                <p class="helper">Copy this URL to your Agent runner. The agent should open it and follow setup steps by itself.</p>
                 <p class="helper">
                   Security rules:
                   <a id="agent_security_url" href="https://hivee.up.railway.app/new-user/AGENT-SECURITY-RULES.MD" target="_blank" rel="noopener">
@@ -209,7 +207,6 @@
             <img src="/static/logo.png" alt="Hivee logo" class="setup-logo"/>
             <div>
               <h2>Connect OpenClaw</h2>
-              <p class="helper">Add gateway endpoint and token.</p>
             </div>
           </div>
 
@@ -264,7 +261,6 @@
               <span>Files</span>
             </button>
             <div id="nav_content_files" class="nav-content hidden">
-              <p class="helper">Workspace file explorer.</p>
             </div>
           </div>
 
@@ -274,7 +270,6 @@
               <span>Overview</span>
             </button>
             <div id="nav_content_overview" class="nav-content hidden">
-              <p class="helper">Overview workspace.</p>
             </div>
           </div>
 
@@ -284,7 +279,6 @@
               <span>Usage</span>
             </button>
             <div id="nav_content_usage" class="nav-content hidden">
-              <p class="helper">Usage workspace.</p>
             </div>
           </div>
 
@@ -294,7 +288,6 @@
               <span>Summary</span>
             </button>
             <div id="nav_content_summary" class="nav-content hidden">
-              <p class="helper">Summary workspace.</p>
             </div>
           </div>
 
@@ -304,7 +297,6 @@
               <span>Config</span>
             </button>
             <div id="nav_content_config" class="nav-content hidden">
-              <p class="helper">Gateway configuration.</p>
             </div>
           </div>
 
@@ -314,7 +306,6 @@
               <span>Account</span>
             </button>
             <div id="nav_content_account" class="nav-content hidden">
-              <p class="helper">Account settings.</p>
             </div>
           </div>
         </aside>
@@ -350,7 +341,6 @@
           <div id="center_projects" class="center-pane active" data-center-tab="projects">
             <div id="project_empty" class="empty-state">
               <h3>Select a project</h3>
-              <p class="helper">Pick project from the left sidebar.</p>
             </div>
 
             <div id="project_details" class="hidden">
@@ -359,7 +349,7 @@
                   <h4>Live</h4>
                   <span id="live_status_text" class="pill neutral">Idle</span>
                 </div>
-                <p id="live_preview_meta" class="helper">Latest artifact preview from invited agents.</p>
+                <p id="live_preview_meta" class="helper"></p>
                 <div id="live_preview_stage" class="live-preview-stage">
                   <p id="live_preview_empty" class="helper">No output file rendered yet.</p>
                   <div id="live_preview_mount" class="live-preview-mount"></div>
@@ -434,7 +424,6 @@
 
           <div id="center_files" class="center-pane hidden" data-center-tab="files">
             <h3>Files</h3>
-            <p id="workspace_files_hint" class="helper">Browse owner workspace folder (account-scoped).</p>
             <div id="workspace_files_breadcrumbs" class="file-breadcrumbs"></div>
             <div id="workspace_files_list" class="folder-browser file-list"></div>
             <div id="workspace_file_preview" class="text-block file-preview"><p class="helper">Select a file to preview.</p></div>
@@ -442,22 +431,18 @@
 
           <div id="center_overview" class="center-pane hidden" data-center-tab="overview">
             <h3>Overview</h3>
-            <p class="helper">Coming soon.</p>
           </div>
 
           <div id="center_usage" class="center-pane hidden" data-center-tab="usage">
             <h3>Usage</h3>
-            <p class="helper">Coming soon.</p>
           </div>
 
           <div id="center_summary" class="center-pane hidden" data-center-tab="summary">
             <h3>Summary</h3>
-            <p class="helper">Coming soon.</p>
           </div>
 
           <div id="center_config" class="center-pane hidden" data-center-tab="config">
             <h3>Configuration</h3>
-            <p class="helper">OpenClaw connection and status.</p>
             <div class="config-grid">
               <label>OpenClaw Connection</label>
               <select id="home_connections"></select>
@@ -476,7 +461,6 @@
 
           <div id="center_account" class="center-pane hidden" data-center-tab="account">
             <h3>Account</h3>
-            <p class="helper">Profile and security settings.</p>
             <div class="account-grid">
               <section class="account-card">
                 <div class="account-card-head">
@@ -544,15 +528,14 @@
                 <option value="project">Project</option>
               </select>
             </div>
-            <p id="chat_context_note" class="helper">Workspace context active.</p>
+            <p id="chat_context_note" class="helper"></p>
           </div>
-          <p id="chat_hint" class="helper">Mention with @alias to route message.</p>
           <div id="chat_agent_list" class="chat-agent-list"></div>
           <div id="chat_messages" class="chat-messages"></div>
           <div id="chat_autocomplete" class="chat-autocomplete hidden"></div>
           <div class="chat-compose">
             <div class="chat-compose-row">
-              <textarea id="chat_input" placeholder="Type message... example: @dailybot make recap"></textarea>
+              <textarea id="chat_input" placeholder="Message... @alias to route"></textarea>
               <button id="btn_chat_send" type="button">Send</button>
             </div>
           </div>
@@ -567,25 +550,23 @@
           </div>
 
           <div id="wizard_step_mode">
-            <p class="helper">Choose mode first: CHAT or MANUAL.</p>
             <div class="wizard-mode-grid">
               <button id="btn_mode_chat" class="wizard-mode active" type="button">
-                <strong>CHAT</strong>
-                <span>Setup via conversation. Agent asks questions from PROJECT-SETUP template.</span>
+                <strong>Chat</strong>
+                <span>Agent walks you through setup via conversation.</span>
               </button>
               <button id="btn_mode_manual" class="wizard-mode" type="button">
-                <strong>MANUAL</strong>
-                <span>Fill project info manually, then continue with agent assignment.</span>
+                <strong>Manual</strong>
+                <span>Fill in project details yourself.</span>
               </button>
             </div>
           </div>
 
           <div id="wizard_step_chat" class="hidden">
-            <p class="helper">New Project setup chat (template-driven).</p>
             <div id="wizard_chat_log" class="wizard-chat-log"></div>
             <div class="wizard-chat-compose">
               <div class="wizard-chat-input-row">
-                <textarea id="wizard_chat_input" placeholder="Type reply for setup agent..."></textarea>
+                <textarea id="wizard_chat_input" placeholder="Reply..."></textarea>
                 <button id="btn_wizard_chat_send" type="button">Send</button>
               </div>
             </div>
@@ -617,7 +598,6 @@
           </div>
 
           <div id="wizard_step_agents" class="hidden">
-            <p class="helper">Invite bots for this project and mark one as primary.</p>
             <div id="wizard_agents" class="agent-pick-list"></div>
             <div class="action-row">
               <button id="btn_save_agents" type="button">Save Agent Setup</button>
@@ -625,7 +605,6 @@
 
             <div id="wizard_external_access" class="wizard-external-access">
               <h4>External Agent Access</h4>
-              <p class="helper">Invite another user's agent, then manage membership and per-agent permission.</p>
               <form id="form_external_invite" class="stack">
                 <label>Target Email (optional)</label>
                 <input id="ext_target_email" type="email" placeholder="agent-owner@email.com">
