@@ -65,6 +65,7 @@ const AGENT_SECURITY_DOC_PATH = "/new-user/AGENT-SECURITY-RULES.MD";
 const CLAIM_ENV_PARAM = "claim_env_id";
 const CLAIM_CODE_PARAM = "claim_code";
 const PROJECT_INVITE_PARAM = "project_invite";
+const PROJECT_INVITE_CODE_PARAM = "project_invite_code";
 const OAUTH_ERROR_PARAM = "oauth_error";
 const PASSWORD_POLICY_MIN_LENGTH = 10;
 const CLAIM_SOCIAL_CTX_KEY = "hivee_claim_social_ctx_v1";
@@ -81,6 +82,7 @@ let claimSessionState = {
 let projectInviteContext = {
   active: false,
   token: "",
+  inviteCode: "",
   info: null,
   connections: [],
 };
@@ -157,9 +159,11 @@ function clearClaimParamsFromUrl() {
 function parseProjectInviteFromUrl() {
   const params = new URLSearchParams(window.location.search || "");
   const token = String(params.get(PROJECT_INVITE_PARAM) || "").trim();
+  const inviteCode = String(params.get(PROJECT_INVITE_CODE_PARAM) || "").trim().toUpperCase();
   projectInviteContext = {
     active: Boolean(token),
     token,
+    inviteCode,
     info: null,
     connections: [],
   };
@@ -168,6 +172,7 @@ function parseProjectInviteFromUrl() {
 function clearProjectInviteParamFromUrl() {
   const url = new URL(window.location.href);
   url.searchParams.delete(PROJECT_INVITE_PARAM);
+  url.searchParams.delete(PROJECT_INVITE_CODE_PARAM);
   const next = url.pathname + (url.search ? url.search : "") + (url.hash ? url.hash : "");
   window.history.replaceState({}, "", next);
 }
@@ -176,6 +181,7 @@ function clearProjectInviteContext({ clearUrl = false } = {}) {
   projectInviteContext = {
     active: false,
     token: "",
+    inviteCode: "",
     info: null,
     connections: [],
   };
@@ -471,6 +477,9 @@ function renderProjectInviteUI() {
   const title = $("project_invite_title");
   const meta = $("project_invite_meta");
   const setupLink = $("project_invite_setup_link");
+  const docLink = $("project_invite_doc_link");
+  const codeInput = $("invite_portal_code");
+  const codeHint = $("project_invite_code_hint");
   const connectionSelect = $("invite_connection_id");
   const agentIdInput = $("invite_agent_id");
   const agentNameInput = $("invite_agent_name");
@@ -483,6 +492,12 @@ function renderProjectInviteUI() {
     notice.textContent = "";
     card.classList.add("hidden");
     if (connectionSelect) connectionSelect.innerHTML = "";
+    if (codeInput) codeInput.value = "";
+    if (codeHint) codeHint.textContent = "";
+    if (docLink) {
+      docLink.href = "#";
+      docLink.textContent = "-";
+    }
     return;
   }
 
@@ -490,6 +505,9 @@ function renderProjectInviteUI() {
   const status = String(info.status || "pending").toLowerCase();
   const hasSession = Boolean(sessionToken);
   const canAccept = Boolean(info.can_accept);
+  const requiresInviteCode = Boolean(info.requires_invite_code);
+
+  const codeFromUrl = String(projectInviteContext.inviteCode || "").trim().toUpperCase();
 
   notice.classList.remove("hidden");
   if (!info.project_id) {
@@ -505,7 +523,9 @@ function renderProjectInviteUI() {
       notice.textContent = `Invite status: ${inviteStatusLabel(status)}.`;
     }
   } else if (!hasSession) {
-    notice.textContent = "Project invite detected. Login or sign up first, then accept invite.";
+    notice.textContent = "Project invite detected. Login or sign up first, then continue in portal.";
+  } else if (requiresInviteCode && !codeFromUrl && !String(codeInput?.value || "").trim()) {
+    notice.textContent = "Project invite ready. Enter invite code from Project-Invitation.md, then accept.";
   } else {
     notice.textContent = "Project invite ready. Choose connection and accept.";
   }
@@ -524,6 +544,27 @@ function renderProjectInviteUI() {
     const url = toAbsoluteAppUrl(info.setup_doc_url || AGENT_SETUP_DOC_PATH);
     setupLink.href = url;
     setupLink.textContent = url;
+  }
+  if (docLink) {
+    const docUrl = toAbsoluteAppUrl(
+      info.invitation_doc_url
+      || (`/api/projects/invites/${encodeURIComponent(projectInviteContext.token || "")}/Project-Invitation.md`)
+    );
+    docLink.href = docUrl;
+    docLink.textContent = docUrl;
+  }
+
+  if (codeInput) {
+    if (!String(codeInput.value || "").trim() && codeFromUrl) {
+      codeInput.value = codeFromUrl;
+    }
+    codeInput.disabled = !hasSession || !canAccept;
+  }
+  if (codeHint) {
+    const hint = String(info.invite_code_hint || "").trim();
+    codeHint.textContent = hint
+      ? `Invite code hint: ${hint}`
+      : (requiresInviteCode ? "Invite code is required for this invitation." : "");
   }
 
   if (connectionSelect) {
@@ -575,7 +616,9 @@ function renderProjectInviteUI() {
 
   if (acceptBtn) {
     const hasConnection = Boolean(String(connectionSelect?.value || "").trim());
-    acceptBtn.disabled = !hasSession || !canAccept || !hasConnection;
+    const codeValue = String(codeInput?.value || "").trim();
+    const hasRequiredCode = !requiresInviteCode || Boolean(codeValue);
+    acceptBtn.disabled = !hasSession || !canAccept || !hasConnection || !hasRequiredCode;
   }
 }
 
@@ -622,6 +665,13 @@ async function acceptProjectInviteFromUI() {
   const connectionId = String($("invite_connection_id")?.value || "").trim();
   if (!connectionId) throw new Error("Choose one of your OpenClaw connections first.");
 
+  const info = projectInviteContext.info || {};
+  const requiresCode = Boolean(info?.requires_invite_code);
+  const inviteCode = String($("invite_portal_code")?.value || projectInviteContext.inviteCode || "").trim().toUpperCase();
+  if (requiresCode && !inviteCode) {
+    throw new Error("Invite code is required. Open Project-Invitation.md to get the code.");
+  }
+
   const agentId = String($("invite_agent_id")?.value || "").trim();
   const agentName = String($("invite_agent_name")?.value || "").trim();
   const payload = {
@@ -629,6 +679,7 @@ async function acceptProjectInviteFromUI() {
   };
   if (agentId) payload.agent_id = agentId;
   if (agentName) payload.agent_name = agentName;
+  if (inviteCode) payload.invite_code = inviteCode;
 
   const tokenQuoted = encodeURIComponent(projectInviteContext.token);
   const res = await api(`/api/projects/invites/${tokenQuoted}/accept`, "POST", payload);
@@ -3116,6 +3167,8 @@ function renderWizardLatestExternalInviteDelivery() {
   const card = $("wizard_external_delivery");
   if (!card) return;
   const inviteUrl = String(wizardLatestExternalInvite?.invite_url || "").trim();
+  const portalUrl = String(wizardLatestExternalInvite?.portal_url || "").trim();
+  const inviteCode = String(wizardLatestExternalInvite?.invite_code || "").trim();
   const docUrl = String(
     wizardLatestExternalInvite?.project_invitations_preview_url
       || wizardProjectInvitationsPreviewUrl
@@ -3125,16 +3178,20 @@ function renderWizardLatestExternalInviteDelivery() {
   const emailBody = String(wizardLatestExternalInvite?.email_body || "").trim();
   const emailMailtoUrl = String(wizardLatestExternalInvite?.email_mailto_url || "").trim();
 
-  const hasAny = Boolean(inviteUrl || docUrl || emailSubject || emailBody || emailMailtoUrl);
+  const hasAny = Boolean(inviteUrl || portalUrl || inviteCode || docUrl || emailSubject || emailBody || emailMailtoUrl);
   card.classList.toggle("hidden", !hasAny);
   if (!hasAny) return;
 
   const inviteInput = $("ext_latest_invite_url");
+  const portalInput = $("ext_latest_portal_url");
+  const codeInput = $("ext_latest_invite_code");
   const docInput = $("ext_project_invitations_url");
   const subjectInput = $("ext_latest_email_subject");
   const bodyInput = $("ext_latest_email_body");
 
   if (inviteInput) inviteInput.value = inviteUrl;
+  if (portalInput) portalInput.value = portalUrl;
+  if (codeInput) codeInput.value = inviteCode;
   if (docInput) docInput.value = docUrl;
   if (subjectInput) subjectInput.value = emailSubject;
   if (bodyInput) bodyInput.value = emailBody;
@@ -3176,8 +3233,11 @@ async function tryAutoAcceptProjectInvite() {
   const payload = { connection_id: connectionId };
   const suggestedAgentId = String(info?.requested_agent_id || "").trim();
   const suggestedAgentName = String(info?.requested_agent_name || "").trim();
+  const inviteCode = String(projectInviteContext.inviteCode || $("invite_portal_code")?.value || "").trim().toUpperCase();
+  if (info?.requires_invite_code && !inviteCode) return false;
   if (suggestedAgentId) payload.agent_id = suggestedAgentId;
   if (suggestedAgentName) payload.agent_name = suggestedAgentName;
+  if (inviteCode) payload.invite_code = inviteCode;
 
   const tokenQuoted = encodeURIComponent(projectInviteContext.token);
   try {
@@ -3476,6 +3536,8 @@ async function createWizardExternalInvite(ev) {
   renderWizardLatestExternalInviteDelivery();
 
   const inviteUrl = String(res?.invite_url || "").trim();
+  const portalUrl = String(res?.portal_url || "").trim();
+  const inviteCode = String(res?.invite_code || "").trim();
   const docUrl = String(res?.project_invitations_preview_url || "").trim();
   let copied = false;
   if (inviteUrl && navigator.clipboard?.writeText) {
@@ -3490,7 +3552,10 @@ async function createWizardExternalInvite(ev) {
   const msgBits = ["External invite created."];
   if (copied) msgBits.push("Invite URL copied to clipboard.");
   else if (inviteUrl) msgBits.push(`Invite URL: ${inviteUrl}`);
+  if (portalUrl) msgBits.push(`Portal URL: ${portalUrl}`);
+  if (inviteCode) msgBits.push(`Invite Code: ${inviteCode}`);
   if (docUrl) msgBits.push(`Project invitations doc: ${docUrl}`);
+  if (res?.email_delivery_status) msgBits.push(`Email: ${res.email_delivery_status}`);
   setMessage("wizard_external_msg", msgBits.join(" "), "ok");
 
   await refreshWizardExternalAccess({ silent: true });
@@ -3984,6 +4049,13 @@ function bindAuthMethods() {
     ignoreProjectInviteFromUI();
   });
   $("invite_connection_id")?.addEventListener("change", () => renderProjectInviteUI());
+  $("invite_portal_code")?.addEventListener("input", (ev) => {
+    const el = ev?.target;
+    if (el && typeof el.value === "string") {
+      el.value = el.value.toUpperCase();
+    }
+    renderProjectInviteUI();
+  });
   refreshAgentGuideUrls();
   applyClaimAuthUI();
   renderProjectInviteUI();
@@ -4271,6 +4343,21 @@ function bindActions() {
       showUiError("wizard_external_msg", e);
     }
   });
+  $("btn_copy_latest_portal_url")?.addEventListener("click", () => {
+    _copyInviteDeliveryText($("ext_latest_portal_url")?.value, "Portal URL copied.")
+      .catch((e) => showUiError("wizard_external_msg", e));
+  });
+  $("btn_open_latest_portal_url")?.addEventListener("click", () => {
+    try {
+      _openInviteDeliveryUrl($("ext_latest_portal_url")?.value);
+    } catch (e) {
+      showUiError("wizard_external_msg", e);
+    }
+  });
+  $("btn_copy_latest_invite_code")?.addEventListener("click", () => {
+    _copyInviteDeliveryText($("ext_latest_invite_code")?.value, "Invite code copied.")
+      .catch((e) => showUiError("wizard_external_msg", e));
+  });
   $("btn_copy_project_invitations_url")?.addEventListener("click", () => {
     _copyInviteDeliveryText($("ext_project_invitations_url")?.value, "Project invitations URL copied.")
       .catch((e) => showUiError("wizard_external_msg", e));
@@ -4427,3 +4514,5 @@ if (oauthError) {
       setView("auth");
     });
 })();
+
+

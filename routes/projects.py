@@ -1,4 +1,6 @@
 from hivee_shared import *
+from email.message import EmailMessage
+import smtplib
 from services.project_runtime import simulate_run
 
 
@@ -27,6 +29,204 @@ def _mask_email_for_public(raw_email: str) -> Optional[str]:
     return f"{masked_local}@{domain}" if domain else masked_local
 
 
+def _new_project_invite_portal_code(length: int = 8) -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    n = max(6, min(int(length or 8), 16))
+    return "".join(secrets.choice(alphabet) for _ in range(n))
+
+
+def _normalize_invite_code(raw_code: Any) -> str:
+    text = re.sub(r"[^A-Za-z0-9]", "", str(raw_code or "").strip()).upper()
+    return text[:32]
+
+
+def _hash_invite_code(raw_code: Any) -> str:
+    normalized = _normalize_invite_code(raw_code)
+    return _hash_access_token(normalized) if normalized else ""
+
+
+def _mask_invite_code(raw_code: Any) -> str:
+    code = _normalize_invite_code(raw_code)
+    if not code:
+        return ""
+    if len(code) <= 4:
+        return (code[0] + ("*" * (len(code) - 1))) if len(code) > 1 else code
+    return f"{code[:2]}{'*' * (len(code) - 4)}{code[-2:]}"
+
+
+def _invite_email_settings() -> Dict[str, Any]:
+    host = str(os.getenv("INVITE_EMAIL_SMTP_HOST") or "").strip()
+    username = str(os.getenv("INVITE_EMAIL_SMTP_USERNAME") or "").strip()
+    password = str(os.getenv("INVITE_EMAIL_SMTP_PASSWORD") or "")
+    sender = str(os.getenv("INVITE_EMAIL_FROM") or username or "").strip()
+
+    port_raw = str(os.getenv("INVITE_EMAIL_SMTP_PORT") or "587").strip()
+    try:
+        port = max(1, min(int(port_raw), 65535))
+    except Exception:
+        port = 587
+
+    ssl_raw = str(os.getenv("INVITE_EMAIL_SMTP_SSL") or "").strip().lower()
+    tls_raw = str(os.getenv("INVITE_EMAIL_SMTP_STARTTLS") or "1").strip().lower()
+    use_ssl = ssl_raw in {"1", "true", "yes", "on"}
+    use_starttls = (not use_ssl) and (tls_raw not in {"0", "false", "no", "off"})
+
+    timeout_raw = str(os.getenv("INVITE_EMAIL_SMTP_TIMEOUT_SEC") or "12").strip()
+    try:
+        timeout_sec = max(3, min(int(timeout_raw), 60))
+    except Exception:
+        timeout_sec = 12
+
+    return {
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password,
+        "sender": sender,
+        "use_ssl": use_ssl,
+        "use_starttls": use_starttls,
+        "timeout_sec": timeout_sec,
+    }
+
+
+def _send_external_invite_email(
+    *,
+    target_email: Optional[str],
+    subject: str,
+    body: str,
+) -> Dict[str, Any]:
+    normalized_target = _normalize_email(str(target_email or ""))
+    if not normalized_target:
+        return {
+            "ok": False,
+            "status": "skipped_no_target_email",
+            "error": "target_email is empty",
+            "sent_at": None,
+        }
+
+    cfg = _invite_email_settings()
+    host = str(cfg.get("host") or "").strip()
+    sender = str(cfg.get("sender") or "").strip()
+    if not host or not sender:
+        return {
+            "ok": False,
+            "status": "skipped_not_configured",
+            "error": "Invite email SMTP is not configured",
+            "sent_at": None,
+        }
+
+    msg = EmailMessage()
+    msg["From"] = sender
+    msg["To"] = normalized_target
+    msg["Subject"] = str(subject or "Project Invitation")[:220]
+    msg.set_content(str(body or "").strip())
+
+    try:
+        if bool(cfg.get("use_ssl")):
+            smtp_client = smtplib.SMTP_SSL(
+                host,
+                int(cfg.get("port") or 465),
+                timeout=int(cfg.get("timeout_sec") or 12),
+            )
+        else:
+            smtp_client = smtplib.SMTP(
+                host,
+                int(cfg.get("port") or 587),
+                timeout=int(cfg.get("timeout_sec") or 12),
+            )
+
+        with smtp_client as smtp:
+            smtp.ehlo()
+            if bool(cfg.get("use_starttls")):
+                smtp.starttls()
+                smtp.ehlo()
+            username = str(cfg.get("username") or "").strip()
+            password = str(cfg.get("password") or "")
+            if username:
+                smtp.login(username, password)
+            smtp.send_message(msg)
+
+        sent_at = int(time.time())
+        return {"ok": True, "status": "sent", "error": None, "sent_at": sent_at}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "failed",
+            "error": detail_to_text(exc)[:1000],
+            "sent_at": None,
+        }
+
+
+async def _compose_external_invite_email_with_primary_agent(
+    *,
+    base_url: str,
+    api_key: str,
+    main_agent_id: str,
+    default_subject: str,
+    default_body: str,
+    target_email: Optional[str],
+    project_title: str,
+    role: str,
+    invitation_doc_url: str,
+    portal_url: str,
+    invite_code: str,
+) -> Dict[str, Any]:
+    fallback = {
+        "subject": str(default_subject or "").strip()[:220] or "You are invited to contribute to this project!",
+        "body": str(default_body or "").strip()[:6000],
+        "composed_by_agent": False,
+        "compose_error": None,
+    }
+    if not base_url or not api_key or not main_agent_id:
+        return fallback
+
+    prompt = (
+        "Compose a concise invitation email in JSON only."
+        " Return object with keys: subject, body."
+        " Mention this is a Hivee external agent invitation."
+        " Keep tone professional and clear."
+        "\n\n"
+        f"Project title: {project_title or '-'}\n"
+        f"Target email: {target_email or '-'}\n"
+        f"Suggested role: {role or '-'}\n"
+        f"Invitation doc URL: {invitation_doc_url}\n"
+        f"Portal URL: {portal_url}\n"
+        f"Portal code: {invite_code}\n"
+    )
+
+    try:
+        res = await openclaw_ws_chat(
+            base_url=base_url,
+            api_key=api_key,
+            message=prompt,
+            agent_id=main_agent_id,
+            session_key=f"external-invite-email:{_normalize_invite_code(invite_code) or 'default'}",
+            timeout_sec=30,
+        )
+    except Exception as exc:
+        fallback["compose_error"] = detail_to_text(exc)[:600]
+        return fallback
+
+    if not res.get("ok"):
+        fallback["compose_error"] = detail_to_text(res.get("error") or res.get("details") or "compose failed")[:600]
+        return fallback
+
+    text = str(res.get("text") or "").strip()
+    parsed = _extract_json_object(text) or {}
+    subject = str(parsed.get("subject") or "").strip()[:220]
+    body = str(parsed.get("body") or "").strip()[:6000]
+    if not subject or not body:
+        fallback["compose_error"] = "Primary agent response did not contain subject/body JSON"
+        return fallback
+
+    return {
+        "subject": subject,
+        "body": body,
+        "composed_by_agent": True,
+        "compose_error": None,
+    }
+
+
 def _build_external_agent_invite_markdown(
     *,
     owner_user_id: str,
@@ -39,7 +239,9 @@ def _build_external_agent_invite_markdown(
     note: str,
     invite_token: str,
     accept_api_url: str,
-    invite_url: str,
+    invitation_doc_url: str,
+    portal_url: str,
+    invite_code: str,
     created_at: int,
     expires_at: int,
 ) -> str:
@@ -48,6 +250,7 @@ def _build_external_agent_invite_markdown(
     target_agent = requested_agent_id or requested_agent_name or "(choose your agent_id when accepting)"
     role_text = role or "Not specified"
     note_text = note or "-"
+    code_text = _normalize_invite_code(invite_code)
     return (
         "# PROJECT-EXTERNAL-AGENT-INVITE\n\n"
         "This file is for an invited external agent to join a Hivee project.\n\n"
@@ -58,24 +261,30 @@ def _build_external_agent_invite_markdown(
         f"- Requested Agent: {target_agent}\n"
         f"- Suggested Role: {role_text}\n"
         f"- Owner Note: {note_text}\n"
-        f"- Invite URL: {invite_url}\n"
+        f"- Invitation Doc URL: {invitation_doc_url}\n"
+        f"- Portal URL: {portal_url}\n"
+        f"- Portal Code: {code_text}\n"
         f"- Accept API URL: {accept_api_url}\n"
+        f"- Invite Token: {invite_token}\n"
         f"- Created At: {format_ts(created_at)}\n"
         f"- Expires At: {format_ts(expires_at)}\n\n"
         "## Step 1 - If You Don't Have Hivee Account Yet\n"
         f"Read and follow: {setup_doc_url}\n"
         f"Security rules: {security_doc_url}\n\n"
-        "## Step 2 - Login, Then Accept Invite\n"
-        "Use your own Hivee account and your own OpenClaw connection.\n"
-        "Call accept API with your session bearer token:\n\n"
-        "```bash\n"
+        "## Step 2 - Open Portal + Login\n"
+        "Open the portal URL above. Login or sign up first.\n"
+        "The portal can auto-join after authentication if your account has one connection.\n\n"
+        "## Step 3 - Match Portal Code\n"
+        "Use this code in the portal when asked:\n"
+        f"{code_text}\n\n"
+        "## Manual Accept (Optional)\n"
+        "If needed, call accept API with your session bearer token:\n"
         f"curl -X POST '{accept_api_url}' \\\n"
         "  -H 'Authorization: Bearer <your_hivee_session_token>' \\\n"
         "  -H 'Content-Type: application/json' \\\n"
-        "  -d '{\"connection_id\":\"<your_connection_id>\",\"agent_id\":\"<your_agent_id>\"}'\n"
-        "```\n\n"
+        f"  -d '{{\"connection_id\":\"<your_connection_id>\",\"agent_id\":\"<your_agent_id>\",\"invite_code\":\"{code_text}\"}}'\n\n"
         "## Result\n"
-        "If accepted, your agent will become an active member of this project.\n"
+        "If accepted, your agent becomes an active member of this project.\n"
     )
 
 
@@ -83,19 +292,25 @@ def _build_external_invite_email_template(
     *,
     project_title: str,
     project_goal: str,
-    invite_url: str,
+    invitation_doc_url: str,
+    portal_url: str,
+    invite_code: str,
     target_email: Optional[str],
 ) -> Dict[str, str]:
     subject = "You are invited to contribute to this project!"
+    code_text = _normalize_invite_code(invite_code)
     body = (
         "Hello,\n\n"
         "You are invited to contribute to a Hivee project.\n\n"
         f"Project: {project_title or '-'}\n"
         f"Goal: {(project_goal or '-').strip()[:600]}\n\n"
-        "Open this invitation link:\n"
-        f"{invite_url}\n\n"
-        "If you do not have a Hivee account yet, register first and complete setup, "
-        "then reopen the same invite link to continue.\n\n"
+        "1) Read invitation doc:\n"
+        f"{invitation_doc_url}\n\n"
+        "2) Open portal and login/signup:\n"
+        f"{portal_url}\n\n"
+        "3) Match portal code:\n"
+        f"{code_text}\n\n"
+        "If you do not have a Hivee account yet, register first and complete setup, then reopen the same portal URL.\n"
         "Setup guide: https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD\n\n"
         "Thanks."
     )
@@ -117,7 +332,9 @@ def _append_project_invitations_record(
     project_title: str,
     invite_id: str,
     status: str,
-    invite_url: str,
+    invitation_doc_url: str,
+    portal_url: str,
+    invite_code: str,
     accept_api_url: str,
     target_email: Optional[str],
     requested_agent_id: str,
@@ -128,6 +345,7 @@ def _append_project_invitations_record(
     expires_at: int,
     email_subject: str,
     email_body: str,
+    email_delivery_status: str,
 ) -> None:
     project_dir = _resolve_owner_project_dir(owner_user_id, project_root).resolve()
     doc_path = (project_dir / PROJECT_INVITATIONS_FILE).resolve()
@@ -141,7 +359,7 @@ def _append_project_invitations_record(
             "This file collects all external invite links and email drafts for this project.\n\n"
             f"- Project ID: {project_id}\n"
             f"- Project Title: {project_title}\n\n"
-            "Share the invite URL below with external collaborators, or use the email draft section.\n"
+            "Share invitation doc URL + portal URL with external collaborators.\n"
         )
         doc_path.write_text(header, encoding="utf-8")
 
@@ -154,10 +372,14 @@ def _append_project_invitations_record(
         f"- Requested Agent: {requested_agent}\n"
         f"- Role: {role or '-'}\n"
         f"- Note: {note or '-'}\n"
+        f"- Invite Code: {_normalize_invite_code(invite_code) or '-'}\n"
+        f"- Email Delivery: {email_delivery_status or '-'}\n"
         f"- Created At: {format_ts(created_at)}\n"
         f"- Expires At: {format_ts(expires_at)}\n\n"
-        "### Invitation URL\n"
-        f"{invite_url}\n\n"
+        "### Invitation Doc URL\n"
+        f"{invitation_doc_url}\n\n"
+        "### Portal URL\n"
+        f"{portal_url}\n\n"
         "### Accept API URL\n"
         f"{accept_api_url}\n\n"
         "### Email Subject\n"
@@ -1587,7 +1809,16 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         proj = conn.execute(
-            "SELECT id, title, goal, project_root FROM projects WHERE id = ? AND user_id = ?",
+            """
+            SELECT p.id, p.title, p.goal, p.project_root, p.connection_id,
+                   c.base_url AS connection_base_url, c.api_key AS connection_api_key,
+                   cp.main_agent_id AS owner_main_agent_id
+            FROM projects p
+            LEFT JOIN openclaw_connections c ON c.id = p.connection_id AND c.user_id = p.user_id
+            LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
+            WHERE p.id = ? AND p.user_id = ?
+            LIMIT 1
+            """,
             (project_id, user_id),
         ).fetchone()
         if not proj:
@@ -1606,6 +1837,7 @@ def register_routes(app: FastAPI) -> None:
         ttl_sec = _clamp_external_invite_ttl(payload.expires_in_sec)
         expires_at = now + ttl_sec
         raw_invite_token = _new_project_external_invite_token()
+        raw_invite_code = _new_project_invite_portal_code(8)
 
         requested_agent_id = str(payload.requested_agent_id or "").strip()[:180]
         requested_agent_name = str(payload.requested_agent_name or requested_agent_id or "").strip()[:220]
@@ -1614,7 +1846,10 @@ def register_routes(app: FastAPI) -> None:
 
         origin = _request_origin(request)
         invite_token_quoted = url_quote(raw_invite_token, safe="")
-        invite_url = f"{origin}/?project_invite={invite_token_quoted}"
+        invite_code_quoted = url_quote(raw_invite_code, safe="")
+        portal_url = f"{origin}/?project_invite={invite_token_quoted}&project_invite_code={invite_code_quoted}"
+        invitation_doc_url = f"{origin}/api/projects/invites/{invite_token_quoted}/Project-Invitation.md"
+        invite_url = invitation_doc_url
         accept_api_url = f"{origin}/api/projects/invites/{invite_token_quoted}/accept"
         invite_relpath = f"{PROJECT_INFO_DIRNAME}/Invites/EXTERNAL-AGENT-INVITE-{invite_id}.MD"
         project_invitations_relpath = PROJECT_INVITATIONS_FILE
@@ -1638,24 +1873,61 @@ def register_routes(app: FastAPI) -> None:
             note=note,
             invite_token=raw_invite_token,
             accept_api_url=accept_api_url,
-            invite_url=invite_url,
+            invitation_doc_url=invitation_doc_url,
+            portal_url=portal_url,
+            invite_code=raw_invite_code,
             created_at=now,
             expires_at=expires_at,
         )
         invite_path.write_text(invite_md, encoding="utf-8")
+
         email_template = _build_external_invite_email_template(
             project_title=str(proj["title"] or ""),
             project_goal=str(proj["goal"] or ""),
-            invite_url=invite_url,
+            invitation_doc_url=invitation_doc_url,
+            portal_url=portal_url,
+            invite_code=raw_invite_code,
             target_email=target_email or None,
         )
+        composed = await _compose_external_invite_email_with_primary_agent(
+            base_url=str(proj["connection_base_url"] or ""),
+            api_key=str(proj["connection_api_key"] or ""),
+            main_agent_id=str(proj["owner_main_agent_id"] or "").strip(),
+            default_subject=str(email_template.get("subject") or ""),
+            default_body=str(email_template.get("body") or ""),
+            target_email=target_email or None,
+            project_title=str(proj["title"] or ""),
+            role=role,
+            invitation_doc_url=invitation_doc_url,
+            portal_url=portal_url,
+            invite_code=raw_invite_code,
+        )
+        email_subject = str(composed.get("subject") or email_template.get("subject") or "").strip()[:220]
+        email_body = str(composed.get("body") or email_template.get("body") or "").strip()[:6000]
+        email_to_value = str(target_email or "").strip()
+        email_mailto_url = (
+            f"mailto:{url_quote(email_to_value)}?{urlencode({'subject': email_subject, 'body': email_body})}"
+            if email_to_value
+            else f"mailto:?{urlencode({'subject': email_subject, 'body': email_body})}"
+        )
+
+        email_delivery = _send_external_invite_email(
+            target_email=target_email or None,
+            subject=email_subject,
+            body=email_body,
+        )
+        email_delivery_status = str(email_delivery.get("status") or "pending")
+        email_delivery_error = str(email_delivery.get("error") or "").strip() or None
+        email_sent_at = _to_int(email_delivery.get("sent_at")) if email_delivery.get("sent_at") else None
 
         conn.execute(
             """
             INSERT INTO project_external_agent_invites (
                 id, project_id, owner_user_id, target_email, requested_agent_id, requested_agent_name,
-                role, invite_note, token_hash, invite_doc_relpath, status, expires_at, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                role, invite_note, token_hash, invite_doc_relpath, portal_code_hash, portal_code_hint,
+                email_delivery_status, email_delivery_error, email_sent_at,
+                status, expires_at, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 invite_id,
@@ -1668,6 +1940,11 @@ def register_routes(app: FastAPI) -> None:
                 note,
                 _hash_access_token(raw_invite_token),
                 invite_relpath,
+                _hash_invite_code(raw_invite_code),
+                _mask_invite_code(raw_invite_code),
+                email_delivery_status,
+                email_delivery_error,
+                email_sent_at,
                 "pending",
                 expires_at,
                 now,
@@ -1685,7 +1962,9 @@ def register_routes(app: FastAPI) -> None:
             project_title=str(proj["title"] or ""),
             invite_id=invite_id,
             status="pending",
-            invite_url=invite_url,
+            invitation_doc_url=invitation_doc_url,
+            portal_url=portal_url,
+            invite_code=raw_invite_code,
             accept_api_url=accept_api_url,
             target_email=target_email or None,
             requested_agent_id=requested_agent_id,
@@ -1694,20 +1973,32 @@ def register_routes(app: FastAPI) -> None:
             note=note,
             created_at=now,
             expires_at=expires_at,
-            email_subject=str(email_template.get("subject") or ""),
-            email_body=str(email_template.get("body") or ""),
+            email_subject=email_subject,
+            email_body=email_body,
+            email_delivery_status=email_delivery_status,
         )
         _append_project_daily_log(
             owner_user_id=user_id,
             project_root=project_root,
             kind="external_agent.invite_created",
             text=f"External agent invite created: {invite_id}",
-            payload={"target_email": target_email or None, "expires_at": expires_at, "invite_doc": invite_relpath},
+            payload={
+                "target_email": target_email or None,
+                "expires_at": expires_at,
+                "invite_doc": invite_relpath,
+                "email_delivery_status": email_delivery_status,
+            },
         )
         await emit(
             project_id,
             "project.external_agent.invite_created",
-            {"invite_id": invite_id, "target_email": target_email or None, "expires_at": expires_at, "invite_doc": invite_relpath},
+            {
+                "invite_id": invite_id,
+                "target_email": target_email or None,
+                "expires_at": expires_at,
+                "invite_doc": invite_relpath,
+                "email_delivery_status": email_delivery_status,
+            },
         )
         return {
             "ok": True,
@@ -1716,14 +2007,24 @@ def register_routes(app: FastAPI) -> None:
             "status": "pending",
             "invite_token": raw_invite_token,
             "invite_url": invite_url,
+            "invitation_doc_url": invitation_doc_url,
+            "portal_url": portal_url,
+            "invite_code": raw_invite_code,
+            "invite_code_hint": _mask_invite_code(raw_invite_code),
+            "requires_invite_code": True,
             "accept_api_url": accept_api_url,
             "invite_doc_path": invite_relpath,
             "invite_doc_preview_url": preview_url,
             "project_invitations_doc_path": project_invitations_relpath,
             "project_invitations_preview_url": project_invitations_preview_url,
-            "email_subject": str(email_template.get("subject") or ""),
-            "email_body": str(email_template.get("body") or ""),
-            "email_mailto_url": str(email_template.get("mailto_url") or ""),
+            "email_subject": email_subject,
+            "email_body": email_body,
+            "email_mailto_url": email_mailto_url,
+            "email_delivery_status": email_delivery_status,
+            "email_delivery_error": email_delivery_error,
+            "email_sent_at": email_sent_at,
+            "email_composed_by_agent": bool(composed.get("composed_by_agent")),
+            "email_compose_error": str(composed.get("compose_error") or "") or None,
             "expires_at": expires_at,
             "target_email": target_email or None,
             "requested_agent_id": requested_agent_id or None,
@@ -1747,7 +2048,8 @@ def register_routes(app: FastAPI) -> None:
         rows = conn.execute(
             """
             SELECT id, target_email, requested_agent_id, requested_agent_name, role, invite_note, invite_doc_relpath,
-                   status, expires_at, created_at, accepted_at, accepted_by_user_id, accepted_connection_id, accepted_agent_id
+                   status, expires_at, created_at, accepted_at, accepted_by_user_id, accepted_connection_id, accepted_agent_id,
+                   portal_code_hash, portal_code_hint, email_delivery_status, email_delivery_error, email_sent_at
             FROM project_external_agent_invites
             WHERE project_id = ? AND owner_user_id = ?
             ORDER BY created_at DESC
@@ -1783,6 +2085,11 @@ def register_routes(app: FastAPI) -> None:
                     "note": str(row["invite_note"] or ""),
                     "invite_doc_path": invite_doc_relpath or None,
                     "invite_doc_preview_url": invite_doc_preview_url,
+                    "invite_code_hint": str(row["portal_code_hint"] or "") or None,
+                    "requires_invite_code": bool(str(row["portal_code_hash"] or "").strip()),
+                    "email_delivery_status": str(row["email_delivery_status"] or "") or None,
+                    "email_delivery_error": str(row["email_delivery_error"] or "") or None,
+                    "email_sent_at": _to_int(row["email_sent_at"]),
                     "status": status,
                     "expires_at": _to_int(row["expires_at"]),
                     "created_at": _to_int(row["created_at"]),
@@ -1801,8 +2108,64 @@ def register_routes(app: FastAPI) -> None:
             "project_invitations_preview_url": project_invitations_preview_url,
         }
 
+    @app.get("/api/projects/invites/{invite_token}/Project-Invitation.md")
+    async def get_project_external_agent_invitation_doc(invite_token: str):
+        token = str(invite_token or "").strip()
+        if not token:
+            raise HTTPException(400, "invite token is required")
+
+        now = int(time.time())
+        conn = db()
+        row = conn.execute(
+            """
+            SELECT pi.id, pi.status, pi.expires_at, pi.invite_doc_relpath,
+                   p.project_root, p.user_id AS owner_user_id, p.title AS project_title
+            FROM project_external_agent_invites pi
+            JOIN projects p ON p.id = pi.project_id
+            WHERE pi.token_hash = ?
+            LIMIT 1
+            """,
+            (_hash_access_token(token),),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "Invite not found")
+
+        status = str(row["status"] or "pending").strip().lower() or "pending"
+        expires_at = _to_int(row["expires_at"])
+        if status == "pending" and expires_at <= now:
+            status = "expired"
+            conn.execute(
+                "UPDATE project_external_agent_invites SET status = ? WHERE id = ?",
+                ("expired", str(row["id"])),
+            )
+            conn.commit()
+        conn.close()
+
+        owner_user_id = str(row["owner_user_id"] or "")
+        project_root = str(row["project_root"] or "")
+        doc_relpath = str(row["invite_doc_relpath"] or "").strip()
+        project_dir = _resolve_owner_project_dir(owner_user_id, project_root).resolve()
+        doc_path = (project_dir / doc_relpath).resolve() if doc_relpath else project_dir
+        if doc_relpath and _path_within(doc_path, project_dir) and doc_path.exists() and doc_path.is_file():
+            text = doc_path.read_text(encoding="utf-8", errors="replace")
+        else:
+            text = (
+                "# PROJECT-EXTERNAL-AGENT-INVITE\n\n"
+                f"- Project: {str(row['project_title'] or '')}\n"
+                f"- Invite Status: {status}\n"
+                "- Setup Guide: https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD\n"
+            )
+        if status in {"expired", "revoked"}:
+            text = (
+                f"# Invitation {status.title()}\n\n"
+                f"This invitation is {status}. Ask project owner for a fresh invite.\n\n"
+                + text
+            )
+        return Response(content=text, media_type="text/markdown; charset=utf-8")
+
     @app.get("/api/projects/invites/{invite_token}")
-    async def get_project_external_agent_invite_info(invite_token: str):
+    async def get_project_external_agent_invite_info(request: Request, invite_token: str):
         token = str(invite_token or "").strip()
         if not token:
             raise HTTPException(400, "invite token is required")
@@ -1814,6 +2177,8 @@ def register_routes(app: FastAPI) -> None:
             SELECT pi.id, pi.project_id, pi.owner_user_id, pi.target_email, pi.requested_agent_id, pi.requested_agent_name,
                    pi.role, pi.invite_note, pi.status, pi.expires_at, pi.created_at, pi.accepted_at,
                    pi.accepted_by_user_id, pi.accepted_connection_id, pi.accepted_agent_id,
+                   pi.portal_code_hash, pi.portal_code_hint, pi.invite_doc_relpath,
+                   pi.email_delivery_status, pi.email_delivery_error, pi.email_sent_at,
                    p.title AS project_title
             FROM project_external_agent_invites pi
             JOIN projects p ON p.id = pi.project_id
@@ -1837,6 +2202,13 @@ def register_routes(app: FastAPI) -> None:
             conn.commit()
         conn.close()
 
+        origin = _request_origin(request)
+        token_quoted = url_quote(token, safe="")
+        invitation_doc_url = f"{origin}/api/projects/invites/{token_quoted}/Project-Invitation.md"
+        portal_url = f"{origin}/?project_invite={token_quoted}"
+        invite_code_hint = str(row["portal_code_hint"] or "") or None
+        requires_invite_code = bool(str(row["portal_code_hash"] or "").strip())
+
         return {
             "ok": True,
             "invite_id": str(row["id"]),
@@ -1856,6 +2228,14 @@ def register_routes(app: FastAPI) -> None:
             "accepted_connection_id": str(row["accepted_connection_id"] or "") or None,
             "accepted_agent_id": str(row["accepted_agent_id"] or "") or None,
             "can_accept": status == "pending" and expires_at > now,
+            "requires_invite_code": requires_invite_code,
+            "invite_code_hint": invite_code_hint,
+            "invitation_doc_url": invitation_doc_url,
+            "portal_url": portal_url,
+            "invite_doc_path": str(row["invite_doc_relpath"] or "") or None,
+            "email_delivery_status": str(row["email_delivery_status"] or "") or None,
+            "email_delivery_error": str(row["email_delivery_error"] or "") or None,
+            "email_sent_at": _to_int(row["email_sent_at"]),
             "setup_doc_url": "https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD",
             "security_doc_url": "https://hivee.cloud/new-user/AGENT-SECURITY-RULES.MD",
         }
@@ -1926,7 +2306,7 @@ def register_routes(app: FastAPI) -> None:
         invite_row = conn.execute(
             """
             SELECT pi.id, pi.project_id, pi.owner_user_id, pi.target_email, pi.requested_agent_id, pi.requested_agent_name,
-                   pi.role, pi.status, pi.expires_at, pi.invite_doc_relpath,
+                   pi.role, pi.status, pi.expires_at, pi.invite_doc_relpath, pi.portal_code_hash, pi.portal_code_hint,
                    p.title AS project_title, p.project_root AS project_root
             FROM project_external_agent_invites pi
             JOIN projects p ON p.id = pi.project_id
@@ -1969,6 +2349,16 @@ def register_routes(app: FastAPI) -> None:
         if target_email and member_email != target_email:
             conn.close()
             raise HTTPException(403, "Invite was issued for a different email")
+
+        required_code_hash = str(invite_row["portal_code_hash"] or "").strip()
+        provided_invite_code = _normalize_invite_code(payload.invite_code)
+        if required_code_hash:
+            if not provided_invite_code:
+                conn.close()
+                raise HTTPException(400, "invite_code is required. Open Project-Invitation.md and input the portal code.")
+            if _hash_invite_code(provided_invite_code) != required_code_hash:
+                conn.close()
+                raise HTTPException(403, "invite_code does not match this invitation")
 
         connection_id = str(payload.connection_id or "").strip()
         if not connection_id:
@@ -2250,3 +2640,4 @@ def register_routes(app: FastAPI) -> None:
                     yield "event: ping\ndata: {}\n\n"
     
         return StreamingResponse(event_generator(), media_type="text/event-stream")
+

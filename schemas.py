@@ -113,6 +113,7 @@ class ProjectExternalAgentInviteAcceptIn(BaseModel):
     connection_id: str
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
+    invite_code: Optional[str] = None
 
 class ProjectAgentPermissionsUpdateIn(BaseModel):
     can_chat_project: Optional[bool] = None

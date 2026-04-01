@@ -147,6 +147,11 @@ def init_db() -> None:
             invite_note TEXT,
             token_hash TEXT NOT NULL UNIQUE,
             invite_doc_relpath TEXT,
+            portal_code_hash TEXT,
+            portal_code_hint TEXT,
+            email_delivery_status TEXT NOT NULL DEFAULT 'pending',
+            email_delivery_error TEXT,
+            email_sent_at INTEGER,
             status TEXT NOT NULL DEFAULT 'pending',
             expires_at INTEGER NOT NULL,
             created_at INTEGER NOT NULL,
@@ -462,6 +467,17 @@ def init_db() -> None:
         cur.execute("ALTER TABLE projects ADD COLUMN usage_total_tokens INTEGER NOT NULL DEFAULT 0")
     if "usage_updated_at" not in project_cols:
         cur.execute("ALTER TABLE projects ADD COLUMN usage_updated_at INTEGER")
+    invite_cols = [r[1] for r in cur.execute("PRAGMA table_info(project_external_agent_invites)").fetchall()]
+    if "portal_code_hash" not in invite_cols:
+        cur.execute("ALTER TABLE project_external_agent_invites ADD COLUMN portal_code_hash TEXT")
+    if "portal_code_hint" not in invite_cols:
+        cur.execute("ALTER TABLE project_external_agent_invites ADD COLUMN portal_code_hint TEXT")
+    if "email_delivery_status" not in invite_cols:
+        cur.execute("ALTER TABLE project_external_agent_invites ADD COLUMN email_delivery_status TEXT NOT NULL DEFAULT 'pending'")
+    if "email_delivery_error" not in invite_cols:
+        cur.execute("ALTER TABLE project_external_agent_invites ADD COLUMN email_delivery_error TEXT")
+    if "email_sent_at" not in invite_cols:
+        cur.execute("ALTER TABLE project_external_agent_invites ADD COLUMN email_sent_at INTEGER")
     policy_cols = [r[1] for r in cur.execute("PRAGMA table_info(connection_policies)").fetchall()]
     if "workspace_tree" not in policy_cols:
         cur.execute("ALTER TABLE connection_policies ADD COLUMN workspace_tree TEXT")

@@ -63,6 +63,10 @@
               <p id="project_invite_title" class="claim-connected-identity">-</p>
               <p id="project_invite_meta" class="helper claim-connected-provider"></p>
               <p class="helper">If needed, complete setup first: <a id="project_invite_setup_link" href="/new-user/NEW-ACCOUNT-SETUP.MD" target="_blank" rel="noopener">/new-user/NEW-ACCOUNT-SETUP.MD</a></p>
+              <p class="helper">Invitation Doc: <a id="project_invite_doc_link" href="#" target="_blank" rel="noopener">-</a></p>
+              <label>Invite Code (from Project-Invitation.md)</label>
+              <input id="invite_portal_code" type="text" placeholder="AB12CD34" autocomplete="off">
+              <p id="project_invite_code_hint" class="helper"></p>
               <label>Use Connection</label>
               <select id="invite_connection_id"></select>
               <label>Agent ID (optional if invite already specifies one)</label>
@@ -650,6 +654,17 @@
                 <div class="action-row">
                   <button id="btn_copy_latest_invite_url" type="button" class="secondary">Copy Invite URL</button>
                   <button id="btn_open_latest_invite_url" type="button" class="secondary">Open Invite URL</button>
+                </div>
+                <label>Portal URL</label>
+                <input id="ext_latest_portal_url" type="text" readonly>
+                <div class="action-row">
+                  <button id="btn_copy_latest_portal_url" type="button" class="secondary">Copy Portal URL</button>
+                  <button id="btn_open_latest_portal_url" type="button" class="secondary">Open Portal URL</button>
+                </div>
+                <label>Invite Code</label>
+                <input id="ext_latest_invite_code" type="text" readonly>
+                <div class="action-row">
+                  <button id="btn_copy_latest_invite_code" type="button" class="secondary">Copy Invite Code</button>
                 </div>
                 <label>Project-Invitations.md URL</label>
                 <input id="ext_project_invitations_url" type="text" readonly>
