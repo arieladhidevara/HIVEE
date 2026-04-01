@@ -1248,6 +1248,122 @@ label {
   .wizard-chat-input-row button { min-height: 44px; }
 }
 
+/* ===== STAGE 4: WORKSPACE POLISH ===== */
+
+/* --- Section title: gradient text for visual identity --- */
+#workspace_section_title {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* --- New Project button: gradient border, stands out in nav --- */
+#btn_new_project {
+  background: linear-gradient(var(--bg), var(--bg)) padding-box,
+              var(--gradient) border-box !important;
+  border: 1px solid transparent !important;
+  color: var(--text) !important;
+  font-weight: 700;
+}
+#btn_new_project:hover {
+  background: linear-gradient(var(--surface), var(--surface)) padding-box,
+              var(--gradient) border-box !important;
+  color: var(--text) !important;
+  opacity: 1;
+}
+
+/* --- Center pane h3: secondary label, not competing with section title --- */
+.center-pane > h3 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin: 0 0 14px;
+  opacity: 0.7;
+}
+
+/* --- Workspace brand h2 --- */
+.workspace-brand h2 {
+  font-size: 15px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+/* --- Live status dot: pulse animation when active --- */
+@keyframes pulse-cyan {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.4); }
+  50%       { box-shadow: 0 0 0 5px rgba(34, 211, 238, 0); }
+}
+.live-status-dot.approved {
+  animation: pulse-cyan 2s ease-in-out infinite;
+}
+
+/* --- Project head title refinement --- */
+#detail_title {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* --- Section run/delete buttons: compact in headbar --- */
+.project-head-actions button {
+  padding: 7px 14px;
+  font-size: 12px;
+}
+
+/* --- Agent summary section headers: already uppercase, add top spacing --- */
+.agent-summary + .agent-summary h4 { margin-top: 18px; }
+
+/* --- Tracker events: slightly better event row --- */
+.event .meta { font-weight: 600; }
+
+/* --- File dir rows: folder tint --- */
+.file-row.dir { color: var(--text); }
+.file-row.dir .file-kind-icon { color: var(--orange); opacity: 0.8; }
+
+/* --- Chat: tighten head area --- */
+.chat-head strong {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+/* --- Agent mention chip: individual agent colors via CSS vars (set inline by JS) --- */
+.agent-mention-chip[style*="--agent-color"] {
+  border-color: var(--agent-color, var(--line-2));
+}
+.agent-mention-chip[style*="--agent-color"]:hover {
+  border-color: var(--agent-color, var(--blue));
+  color: var(--text);
+}
+
+/* --- Account stat number refinement --- */
+.account-stat strong {
+  background: var(--gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* --- Config connection status section --- */
+.config-grid h3 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin: 0 0 10px;
+  opacity: 0.7;
+}
+
+/* --- Workspace topbar: tighter --- */
+.workspace-topbar { padding: 4px 2px 10px; }
+
 /* ===== STAGE 3: AUTH + SETUP + WIZARD POLISH ===== */
 
 /* --- Brand grid: no boxes, just icon + text --- */
