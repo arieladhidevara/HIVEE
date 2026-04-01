@@ -1,4 +1,4 @@
-﻿from hivee_shared import *
+from hivee_shared import *
 from email.message import EmailMessage
 import smtplib
 from services.project_runtime import simulate_run
@@ -1465,12 +1465,28 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         proj = conn.execute(
-            "SELECT id FROM projects WHERE id = ? AND user_id = ?",
-            (project_id, user_id),
+            "SELECT id, user_id FROM projects WHERE id = ? LIMIT 1",
+            (project_id,),
         ).fetchone()
         if not proj:
             conn.close()
             raise HTTPException(404, "Project not found")
+        owner_user_id = str(proj["user_id"] or "").strip()
+        is_owner = owner_user_id == user_id
+        member_rows = []
+        if not is_owner:
+            member_rows = conn.execute(
+                """
+                SELECT agent_id
+                FROM project_external_agent_memberships
+                WHERE project_id = ? AND member_user_id = ? AND status = 'active'
+                ORDER BY updated_at DESC, created_at DESC
+                """,
+                (project_id, user_id),
+            ).fetchall()
+            if not member_rows:
+                conn.close()
+                raise HTTPException(404, "Project not found")
         rows = conn.execute(
             """
             SELECT agent_id, agent_name, is_primary, role,
@@ -1482,6 +1498,11 @@ def register_routes(app: FastAPI) -> None:
             """,
             (project_id,),
         ).fetchall()
+        member_agent_ids = {
+            str(r["agent_id"] or "").strip()
+            for r in member_rows
+            if str(r["agent_id"] or "").strip()
+        }
         agents: List[Dict[str, Any]] = []
         for r in rows:
             agent_id = str(r["agent_id"] or "").strip()
@@ -1503,6 +1524,7 @@ def register_routes(app: FastAPI) -> None:
                     "source_connection_id": str(r["source_connection_id"] or "") or None,
                     "joined_via_invite_id": str(r["joined_via_invite_id"] or "") or None,
                     "added_at": _to_int(r["added_at"]),
+                    "is_member_agent": bool(agent_id and agent_id in member_agent_ids),
                     "permissions": {
                         "can_chat_project": bool(permissions.get("can_chat_project")),
                         "can_read_files": bool(permissions.get("can_read_files")),
@@ -1514,7 +1536,12 @@ def register_routes(app: FastAPI) -> None:
             )
         conn.close()
         primary = next((a for a in agents if a["is_primary"]), None)
-        return {"ok": True, "agents": agents, "primary_agent": primary}
+        return {
+            "ok": True,
+            "agents": agents,
+            "primary_agent": primary,
+            "access_mode": "owner" if is_owner else "member",
+        }
 
     @app.get("/api/projects/{project_id}/agent-permissions")
     async def list_project_agent_permissions(request: Request, project_id: str):
@@ -2482,88 +2509,252 @@ def register_routes(app: FastAPI) -> None:
         locked_requested_agent_name = str(invite_row["requested_agent_name"] or "").strip()[:220]
         default_main_agent_id = str(policy_row["main_agent_id"] or "").strip()[:180] if policy_row else ""
         default_main_agent_name = str(policy_row["main_agent_name"] or "").strip()[:220] if policy_row else ""
+        invite_role = str(invite_row["role"] or "").strip()[:500]
 
-        agent_id = str(payload.agent_id or locked_requested_agent_id or default_main_agent_id).strip()[:180]
-        if not agent_id:
+        requested_entries: List[Dict[str, str]] = []
+
+        def _push_candidate(raw_agent_id: Any, raw_agent_name: Any, raw_role: Any, *, source: str) -> None:
+            aid = str(raw_agent_id or "").strip()[:180]
+            if not aid:
+                return
+            requested_entries.append(
+                {
+                    "agent_id": aid,
+                    "agent_name": str(raw_agent_name or "").strip()[:220],
+                    "role": str(raw_role or "").strip()[:500],
+                    "source": source,
+                }
+            )
+
+        selected_agents_payload = payload.selected_agents or []
+        primary_requested_id = str(payload.agent_id or locked_requested_agent_id or default_main_agent_id).strip()[:180]
+        if (not primary_requested_id) and selected_agents_payload:
+            primary_requested_id = str(getattr(selected_agents_payload[0], "agent_id", "") or "").strip()[:180]
+        if not primary_requested_id:
             conn.close()
             raise HTTPException(400, "agent_id is required. Ensure this connection has a main agent or provide agent_id explicitly.")
-        if locked_requested_agent_id and agent_id != locked_requested_agent_id:
+        if locked_requested_agent_id and primary_requested_id != locked_requested_agent_id:
             conn.close()
             raise HTTPException(403, "Invite locks agent_id and cannot be overridden")
-        if managed_name_by_id and agent_id not in managed_name_by_id:
+
+        _push_candidate(
+            primary_requested_id,
+            payload.agent_name or locked_requested_agent_name or managed_name_by_id.get(primary_requested_id) or default_main_agent_name,
+            invite_role,
+            source="primary",
+        )
+
+        if len(selected_agents_payload) > 30:
             conn.close()
-            raise HTTPException(400, "agent_id is not provisioned on the selected connection")
+            raise HTTPException(400, "selected_agents supports up to 30 agents per accept request")
+        for item in selected_agents_payload:
+            _push_candidate(
+                getattr(item, "agent_id", ""),
+                getattr(item, "agent_name", ""),
+                getattr(item, "role", ""),
+                source="selected",
+            )
 
-        agent_name = str(payload.agent_name or locked_requested_agent_name or "").strip()[:220]
-        if not agent_name:
-            agent_name = str(managed_name_by_id.get(agent_id) or default_main_agent_name or agent_id).strip()[:220] or agent_id
+        if locked_requested_agent_id and not any(str(x.get("agent_id") or "") == locked_requested_agent_id for x in requested_entries):
+            _push_candidate(locked_requested_agent_id, locked_requested_agent_name, invite_role, source="locked")
 
-        role = str(invite_row["role"] or "").strip()[:500]
+        deduped_agents: List[Dict[str, str]] = []
+        seen_agent_ids: set[str] = set()
+        for item in requested_entries:
+            aid = str(item.get("agent_id") or "").strip()[:180]
+            if not aid:
+                continue
+            if aid in seen_agent_ids:
+                continue
+            seen_agent_ids.add(aid)
+            deduped_agents.append(item)
 
-        existing_agent = conn.execute(
-            "SELECT agent_id FROM project_agents WHERE project_id = ? AND agent_id = ?",
-            (project_id, agent_id),
-        ).fetchone()
-        if existing_agent:
+        if locked_requested_agent_id:
+            locked_row = next((x for x in deduped_agents if str(x.get("agent_id") or "") == locked_requested_agent_id), None)
+            if not locked_row:
+                conn.close()
+                raise HTTPException(403, "Invite locks agent_id and it must be included")
+            deduped_agents = [locked_row] + [x for x in deduped_agents if str(x.get("agent_id") or "") != locked_requested_agent_id]
+
+        if not deduped_agents:
             conn.close()
-            raise HTTPException(409, "agent_id already exists in this project")
+            raise HTTPException(400, "No valid agent selection found")
 
-        membership_id = new_id("pmem")
+        normalized_agents: List[Dict[str, str]] = []
+        for item in deduped_agents:
+            aid = str(item.get("agent_id") or "").strip()[:180]
+            if managed_name_by_id and aid not in managed_name_by_id:
+                conn.close()
+                raise HTTPException(400, f"agent_id '{aid}' is not provisioned on the selected connection")
+            resolved_name = str(item.get("agent_name") or "").strip()[:220]
+            if not resolved_name:
+                resolved_name = str(managed_name_by_id.get(aid) or (default_main_agent_name if aid == default_main_agent_id else "") or aid).strip()[:220] or aid
+            resolved_role = str(item.get("role") or invite_role or "").strip()[:500]
+            normalized_agents.append(
+                {
+                    "agent_id": aid,
+                    "agent_name": resolved_name,
+                    "role": resolved_role,
+                }
+            )
+
         invite_id = str(invite_row["id"])
-        conn.execute(
-            """
-            INSERT INTO project_external_agent_memberships (
-                id, project_id, owner_user_id, member_user_id, member_connection_id,
-                agent_id, agent_name, role, invite_id, status, created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                membership_id,
-                project_id,
-                owner_user_id,
-                member_user_id,
-                connection_id,
-                agent_id,
-                agent_name,
-                role,
-                invite_id,
-                "active",
-                now,
-                now,
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO project_agents (
-                project_id, agent_id, agent_name, is_primary, role,
-                source_type, source_user_id, source_connection_id, joined_via_invite_id, added_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                project_id,
-                agent_id,
-                agent_name,
-                0,
-                role,
-                "external",
-                member_user_id,
-                connection_id,
-                invite_id,
-                now,
-            ),
-        )
-        raw_project_agent_token = _new_agent_access_token()
-        conn.execute(
-            "INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, created_at) VALUES (?,?,?,?)",
-            (project_id, agent_id, _hash_access_token(raw_project_agent_token), now),
-        )
+        joined_agents: List[Dict[str, Any]] = []
+        for item in normalized_agents:
+            agent_id = str(item.get("agent_id") or "").strip()
+            agent_name = str(item.get("agent_name") or agent_id).strip()[:220] or agent_id
+            role = str(item.get("role") or "").strip()[:500]
+
+            existing_agent_row = conn.execute(
+                """
+                SELECT agent_id, COALESCE(source_type, 'owner') AS source_type,
+                       source_user_id, source_connection_id
+                FROM project_agents
+                WHERE project_id = ? AND agent_id = ?
+                LIMIT 1
+                """,
+                (project_id, agent_id),
+            ).fetchone()
+            created_project_agent = False
+            if existing_agent_row:
+                existing_source = str(existing_agent_row["source_type"] or "owner").strip() or "owner"
+                existing_source_user = str(existing_agent_row["source_user_id"] or "").strip()
+                existing_source_conn = str(existing_agent_row["source_connection_id"] or "").strip()
+                if existing_source != "external" or existing_source_user != member_user_id or existing_source_conn != connection_id:
+                    conn.close()
+                    raise HTTPException(409, f"agent_id '{agent_id}' already exists in this project")
+                conn.execute(
+                    """
+                    UPDATE project_agents
+                    SET agent_name = ?, role = ?, source_type = ?, source_user_id = ?,
+                        source_connection_id = ?, joined_via_invite_id = ?, added_at = ?
+                    WHERE project_id = ? AND agent_id = ?
+                    """,
+                    (
+                        agent_name,
+                        role,
+                        "external",
+                        member_user_id,
+                        connection_id,
+                        invite_id,
+                        now,
+                        project_id,
+                        agent_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO project_agents (
+                        project_id, agent_id, agent_name, is_primary, role,
+                        source_type, source_user_id, source_connection_id, joined_via_invite_id, added_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        project_id,
+                        agent_id,
+                        agent_name,
+                        0,
+                        role,
+                        "external",
+                        member_user_id,
+                        connection_id,
+                        invite_id,
+                        now,
+                    ),
+                )
+                created_project_agent = True
+
+            membership_row = conn.execute(
+                """
+                SELECT id, status
+                FROM project_external_agent_memberships
+                WHERE project_id = ? AND member_user_id = ? AND member_connection_id = ? AND agent_id = ?
+                LIMIT 1
+                """,
+                (project_id, member_user_id, connection_id, agent_id),
+            ).fetchone()
+            created_membership = False
+            if membership_row:
+                membership_id = str(membership_row["id"] or "").strip() or new_id("pmem")
+                conn.execute(
+                    """
+                    UPDATE project_external_agent_memberships
+                    SET owner_user_id = ?, agent_name = ?, role = ?, invite_id = ?, status = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        owner_user_id,
+                        agent_name,
+                        role,
+                        invite_id,
+                        "active",
+                        now,
+                        membership_id,
+                    ),
+                )
+            else:
+                membership_id = new_id("pmem")
+                conn.execute(
+                    """
+                    INSERT INTO project_external_agent_memberships (
+                        id, project_id, owner_user_id, member_user_id, member_connection_id,
+                        agent_id, agent_name, role, invite_id, status, created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        membership_id,
+                        project_id,
+                        owner_user_id,
+                        member_user_id,
+                        connection_id,
+                        agent_id,
+                        agent_name,
+                        role,
+                        invite_id,
+                        "active",
+                        now,
+                        now,
+                    ),
+                )
+                created_membership = True
+
+            raw_project_agent_token = _new_agent_access_token()
+            conn.execute(
+                """
+                INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, created_at)
+                VALUES (?,?,?,?)
+                ON CONFLICT(project_id, agent_id) DO UPDATE SET
+                    token_hash = excluded.token_hash,
+                    created_at = excluded.created_at
+                """,
+                (project_id, agent_id, _hash_access_token(raw_project_agent_token), now),
+            )
+
+            joined_agents.append(
+                {
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "role": role,
+                    "membership_id": membership_id,
+                    "project_agent_access_token": raw_project_agent_token,
+                    "created_membership": created_membership,
+                    "created_project_agent": created_project_agent,
+                }
+            )
+
+        accepted_primary_agent_id = str((joined_agents[0] or {}).get("agent_id") or "").strip()
+        accepted_primary_agent_name = str((joined_agents[0] or {}).get("agent_name") or accepted_primary_agent_id).strip()[:220]
+        accepted_membership_id = str((joined_agents[0] or {}).get("membership_id") or "").strip() or None
+        accepted_project_agent_token = str((joined_agents[0] or {}).get("project_agent_access_token") or "").strip() or None
+
         conn.execute(
             """
             UPDATE project_external_agent_invites
             SET status = ?, accepted_at = ?, accepted_by_user_id = ?, accepted_connection_id = ?, accepted_agent_id = ?
             WHERE id = ?
             """,
-            ("accepted", now, member_user_id, connection_id, agent_id, invite_id),
+            ("accepted", now, member_user_id, connection_id, accepted_primary_agent_id, invite_id),
         )
         all_rows = conn.execute(
             "SELECT agent_id, agent_name, is_primary, role FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
@@ -2579,7 +2770,7 @@ def register_routes(app: FastAPI) -> None:
             invite_id=invite_id,
             status="accepted",
             ts_value=now,
-            note=f"accepted_by:{member_user_id}:{agent_id}",
+            note=f"accepted_by:{member_user_id}:{accepted_primary_agent_id}:count={len(joined_agents)}",
         )
         _write_project_agent_roles_file(
             owner_user_id=owner_user_id,
@@ -2596,34 +2787,48 @@ def register_routes(app: FastAPI) -> None:
         )
         _refresh_project_documents(project_id)
 
-        _append_project_daily_log(
-            owner_user_id=owner_user_id,
-            project_root=project_root,
-            kind="external_agent.joined",
-            text=f"External agent joined project: {agent_id} ({agent_name})",
-            payload={"member_user_id": member_user_id, "connection_id": connection_id, "invite_id": invite_id},
-        )
-        await emit(
-            project_id,
-            "project.external_agent.joined",
-            {
-                "agent_id": agent_id,
-                "agent_name": agent_name,
-                "member_user_id": member_user_id,
-                "source_connection_id": connection_id,
-                "invite_id": invite_id,
-            },
-        )
+        for joined in joined_agents:
+            joined_agent_id = str(joined.get("agent_id") or "").strip() or "agent"
+            joined_agent_name = str(joined.get("agent_name") or joined_agent_id).strip()
+            _append_project_daily_log(
+                owner_user_id=owner_user_id,
+                project_root=project_root,
+                kind="external_agent.joined",
+                text=f"External agent joined project: {joined_agent_id} ({joined_agent_name})",
+                payload={
+                    "member_user_id": member_user_id,
+                    "connection_id": connection_id,
+                    "invite_id": invite_id,
+                    "membership_id": str(joined.get("membership_id") or ""),
+                },
+            )
+            await emit(
+                project_id,
+                "project.external_agent.joined",
+                {
+                    "agent_id": joined_agent_id,
+                    "agent_name": joined_agent_name,
+                    "role": str(joined.get("role") or ""),
+                    "member_user_id": member_user_id,
+                    "source_connection_id": connection_id,
+                    "invite_id": invite_id,
+                    "membership_id": str(joined.get("membership_id") or ""),
+                },
+            )
+
         return {
             "ok": True,
             "project_id": project_id,
             "project_title": str(invite_row["project_title"] or ""),
-            "agent_id": agent_id,
-            "agent_name": agent_name,
+            "agent_id": accepted_primary_agent_id,
+            "agent_name": accepted_primary_agent_name,
             "source_type": "external",
-            "membership_id": membership_id,
+            "membership_id": accepted_membership_id,
             "invite_id": invite_id,
-            "project_agent_access_token": raw_project_agent_token,
+            "project_agent_access_token": accepted_project_agent_token,
+            "accepted_connection_id": connection_id,
+            "joined_agents": joined_agents,
+            "joined_agents_count": len(joined_agents),
         }
 
     @app.get("/api/projects/{project_id}/readiness", response_model=ProjectReadinessOut)
@@ -2703,15 +2908,31 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         proj = conn.execute(
-            "SELECT id FROM projects WHERE id = ? AND user_id = ?",
-            (project_id, user_id),
+            "SELECT id, user_id FROM projects WHERE id = ? LIMIT 1",
+            (project_id,),
         ).fetchone()
-        conn.close()
         if not proj:
+            conn.close()
             raise HTTPException(404, "Project not found")
-    
+        owner_user_id = str(proj["user_id"] or "").strip()
+        is_owner = owner_user_id == user_id
+        if not is_owner:
+            membership = conn.execute(
+                """
+                SELECT id
+                FROM project_external_agent_memberships
+                WHERE project_id = ? AND member_user_id = ? AND status = 'active'
+                LIMIT 1
+                """,
+                (project_id, user_id),
+            ).fetchone()
+            if not membership:
+                conn.close()
+                raise HTTPException(404, "Project not found")
+        conn.close()
+
         q = get_queue(project_id)
-    
+
         async def event_generator():
             yield "event: hello\ndata: {}\n\n"
             while True:
@@ -2723,7 +2944,7 @@ def register_routes(app: FastAPI) -> None:
                     yield f"event: {ev.kind}\ndata: {json.dumps(payload)}\n\n"
                 except asyncio.TimeoutError:
                     yield "event: ping\ndata: {}\n\n"
-    
+
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 

@@ -109,11 +109,17 @@ class ProjectExternalAgentInviteCreateIn(BaseModel):
     note: str = ""
     expires_in_sec: int = PROJECT_EXTERNAL_INVITE_TTL_SEC
 
+class ProjectExternalAgentInviteSelectedAgentIn(BaseModel):
+    agent_id: str
+    agent_name: Optional[str] = None
+    role: Optional[str] = None
+
 class ProjectExternalAgentInviteAcceptIn(BaseModel):
     connection_id: str
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
     invite_code: Optional[str] = None
+    selected_agents: Optional[List[ProjectExternalAgentInviteSelectedAgentIn]] = None
 
 class ProjectAgentPermissionsUpdateIn(BaseModel):
     can_chat_project: Optional[bool] = None

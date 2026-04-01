@@ -1,5 +1,6 @@
 ﻿let sessionToken = null;
 let activeConnectionId = null;
+let preferredConnectionId = null;
 let selectedProjectId = null;
 let selectedProjectData = null;
 let selectedProjectPlan = null;
@@ -107,6 +108,8 @@ let projectInviteContext = {
   info: null,
   connections: [],
 };
+let projectInviteManagedAgents = [];
+let projectInviteAgentSelections = new Map();
 let projectDeepLinkContext = {
   active: false,
   projectId: "",
@@ -233,6 +236,7 @@ function clearAuthSession() {
   persistSessionToken(null);
   sessionToken = null;
   activeConnectionId = null;
+  preferredConnectionId = null;
   selectedProjectId = null;
   selectedProjectData = null;
   selectedProjectPlan = null;
@@ -298,6 +302,9 @@ function clearProjectInviteContext({ clearUrl = false } = {}) {
     info: null,
     connections: [],
   };
+  projectInviteManagedAgents = [];
+  projectInviteAgentSelections = new Map();
+  closeProjectInviteAgentModal({ reset: true });
   if (clearUrl) clearProjectInviteParamFromUrl();
   renderProjectInviteUI();
 }
@@ -684,6 +691,7 @@ function renderProjectInviteUI() {
   const card = $("project_invite_card");
   const title = $("project_invite_title");
   const meta = $("project_invite_meta");
+  const loggedIn = $("project_invite_logged_in");
   const setupLink = $("project_invite_setup_link");
   const docLink = $("project_invite_doc_link");
   const codeInput = $("invite_portal_code");
@@ -699,6 +707,7 @@ function renderProjectInviteUI() {
     notice.classList.add("hidden");
     notice.textContent = "";
     card.classList.add("hidden");
+    if (loggedIn) loggedIn.textContent = "";
     if (connectionSelect) connectionSelect.innerHTML = "";
     if (codeInput) codeInput.value = "";
     if (codeHint) codeHint.textContent = "";
@@ -712,6 +721,7 @@ function renderProjectInviteUI() {
   const info = projectInviteContext.info || {};
   const status = String(info.status || "pending").toLowerCase();
   const hasSession = Boolean(sessionToken);
+  const sessionIdentity = String(currentAccountProfile?.email || "").trim();
   const canAccept = Boolean(info.can_accept);
   const requiresInviteCode = Boolean(info.requires_invite_code);
 
@@ -733,17 +743,30 @@ function renderProjectInviteUI() {
   } else if (!hasSession) {
     notice.textContent = "Project invite detected. Login or sign up first, then continue in portal.";
   } else if (requiresInviteCode && !codeFromUrl && !String(codeInput?.value || "").trim()) {
-    notice.textContent = "Project invite ready. Enter invite code from Project-Invitation.md, then accept.";
+    notice.textContent = "Project invite ready. Enter invite code from Project-Invitation.md, then click Accept to pick agents + roles.";
   } else {
-    notice.textContent = "Project invite ready. Choose connection and accept.";
+    notice.textContent = "Project invite ready. Choose connection, then click Accept to pick agents + roles.";
   }
 
   card.classList.remove("hidden");
+  if (loggedIn) {
+    if (!hasSession) {
+      loggedIn.textContent = "Not signed in yet.";
+    } else if (sessionIdentity) {
+      loggedIn.textContent = `Logged in as ${sessionIdentity}`;
+    } else {
+      loggedIn.textContent = "Signed in. Loading account identity...";
+    }
+  }
   if (title) title.textContent = String(info.project_title || "External Project");
   if (meta) {
     const parts = [];
     if (info.project_id) parts.push(`Project ID: ${info.project_id}`);
     if (info.target_email_masked) parts.push(`Target: ${info.target_email_masked}`);
+    if (info.requested_agent_id || info.requested_agent_name) {
+      parts.push(`Requested Agent: ${String(info.requested_agent_name || info.requested_agent_id || "").trim()}`);
+    }
+    if (info.role) parts.push(`Role: ${String(info.role || "").trim()}`);
     parts.push(`Status: ${inviteStatusLabel(status)}`);
     if (info.expires_at) parts.push(`Expires: ${formatTs(info.expires_at)}`);
     meta.textContent = parts.join(" | ");
@@ -856,6 +879,9 @@ async function initializeProjectInviteContext({ refreshConnections = true, autoA
   const tokenQuoted = encodeURIComponent(projectInviteContext.token);
   const info = await api(`/api/projects/invites/${tokenQuoted}`);
   projectInviteContext.info = info || null;
+  if (sessionToken) {
+    await loadAccountProfile({ silent: true }).catch(() => {});
+  }
   if (refreshConnections) {
     await loadProjectInviteConnections().catch(() => {});
   } else {
@@ -866,7 +892,178 @@ async function initializeProjectInviteContext({ refreshConnections = true, autoA
   }
   return projectInviteContext.info;
 }
-async function acceptProjectInviteFromUI() {
+function closeProjectInviteAgentModal({ reset = true } = {}) {
+  $("project_invite_agent_modal")?.classList.add("hidden");
+  setMessage("project_invite_agent_modal_msg", "");
+  if (!reset) return;
+  projectInviteManagedAgents = [];
+  projectInviteAgentSelections = new Map();
+  const picker = $("project_invite_agent_picker");
+  if (picker) picker.innerHTML = "";
+  const meta = $("project_invite_agent_modal_meta");
+  if (meta) meta.textContent = "";
+}
+
+async function loadProjectInviteManagedAgents(connectionId) {
+  const cid = String(connectionId || "").trim();
+  if (!cid) return [];
+  const q = `?connection_id=${encodeURIComponent(cid)}`;
+  const res = await api(`/api/a2a/agents${q}`);
+  const rows = Array.isArray(res?.agents) ? res.agents : [];
+  projectInviteManagedAgents = rows
+    .map((item) => {
+      const id = String(item?.agent_id || item?.id || "").trim();
+      const name = String(item?.agent_name || item?.name || id).trim() || id;
+      const status = String(item?.status || "").trim();
+      const connId = String(item?.connection_id || cid).trim() || cid;
+      if (!id) return null;
+      return { id, name, status, connection_id: connId };
+    })
+    .filter(Boolean);
+  return projectInviteManagedAgents;
+}
+
+function renderProjectInviteAgentPicker() {
+  const picker = $("project_invite_agent_picker");
+  if (!picker) return;
+  picker.innerHTML = "";
+
+  const info = projectInviteContext.info || {};
+  const inviteRole = String(info?.role || "").trim();
+  const lockedAgentId = String(info?.requested_agent_id || "").trim();
+  const lockedAgentName = String(info?.requested_agent_name || "").trim();
+
+  const managed = Array.isArray(projectInviteManagedAgents) ? projectInviteManagedAgents : [];
+  const displayRows = [...managed];
+  for (const selected of projectInviteAgentSelections.values()) {
+    const sid = String(selected?.agent_id || "").trim();
+    if (!sid) continue;
+    if (displayRows.some((row) => String(row?.id || "").trim() === sid)) continue;
+    displayRows.push({
+      id: sid,
+      name: String(selected?.agent_name || sid).trim() || sid,
+      status: "manual",
+      connection_id: String($("invite_connection_id")?.value || "").trim(),
+      manual: true,
+    });
+  }
+
+  if (!displayRows.length) {
+    const empty = document.createElement("div");
+    empty.className = "helper";
+    empty.textContent = "No managed agents found on this connection. Fill Agent ID manually in the invite card first.";
+    picker.appendChild(empty);
+    return;
+  }
+
+  for (const row of displayRows) {
+    const agentId = String(row?.id || "").trim();
+    if (!agentId) continue;
+    const isLocked = Boolean(lockedAgentId && agentId === lockedAgentId);
+    const selected = projectInviteAgentSelections.get(agentId) || null;
+    const isChecked = Boolean(selected || isLocked);
+    const roleValue = String(selected?.role || inviteRole || "").trim();
+
+    const item = document.createElement("article");
+    item.className = "agent-pick";
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = isChecked;
+    check.disabled = isLocked;
+
+    const labelWrap = document.createElement("div");
+    const strong = document.createElement("strong");
+    strong.textContent = `${String(row?.name || agentId)} (${agentId})`;
+    const meta = document.createElement("span");
+    meta.className = "small";
+    const infoBits = [];
+    if (row?.status) infoBits.push(`status: ${String(row.status)}`);
+    if (isLocked) infoBits.push("locked by invite");
+    if (row?.manual) infoBits.push("manual");
+    meta.textContent = infoBits.join(" | ") || "managed agent";
+    labelWrap.appendChild(strong);
+    labelWrap.appendChild(meta);
+
+    const source = document.createElement("span");
+    source.className = "small";
+    source.textContent = row?.manual ? "custom" : "managed";
+
+    const roleInput = document.createElement("input");
+    roleInput.type = "text";
+    roleInput.dataset.agentRole = "1";
+    roleInput.placeholder = "Role in project";
+    roleInput.value = roleValue;
+    roleInput.disabled = !isChecked;
+
+    if (isChecked) {
+      projectInviteAgentSelections.set(agentId, {
+        agent_id: agentId,
+        agent_name: String(row?.name || selected?.agent_name || agentId).trim() || agentId,
+        role: roleValue,
+        locked: isLocked,
+      });
+    } else if (!isLocked) {
+      projectInviteAgentSelections.delete(agentId);
+    }
+
+    check.addEventListener("change", () => {
+      if (check.checked) {
+        projectInviteAgentSelections.set(agentId, {
+          agent_id: agentId,
+          agent_name: String(row?.name || agentId).trim() || agentId,
+          role: String(roleInput.value || "").trim(),
+          locked: isLocked,
+        });
+        roleInput.disabled = false;
+      } else if (!isLocked) {
+        projectInviteAgentSelections.delete(agentId);
+        roleInput.disabled = true;
+      }
+      setMessage("project_invite_agent_modal_msg", "");
+    });
+
+    roleInput.addEventListener("input", () => {
+      if (!projectInviteAgentSelections.has(agentId)) return;
+      const prev = projectInviteAgentSelections.get(agentId) || {};
+      projectInviteAgentSelections.set(agentId, {
+        ...prev,
+        role: String(roleInput.value || "").trim(),
+      });
+    });
+
+    item.appendChild(check);
+    item.appendChild(labelWrap);
+    item.appendChild(source);
+    item.appendChild(roleInput);
+    picker.appendChild(item);
+  }
+}
+
+function collectProjectInviteSelectedAgents({ fallbackToManual = true } = {}) {
+  const selected = [...projectInviteAgentSelections.values()]
+    .map((item) => ({
+      agent_id: String(item?.agent_id || "").trim(),
+      agent_name: String(item?.agent_name || "").trim(),
+      role: String(item?.role || "").trim(),
+    }))
+    .filter((item) => Boolean(item.agent_id));
+
+  if (selected.length || !fallbackToManual) return selected;
+
+  const info = projectInviteContext.info || {};
+  const fallbackId = String($("invite_agent_id")?.value || info?.requested_agent_id || "").trim();
+  if (!fallbackId) return [];
+  return [
+    {
+      agent_id: fallbackId,
+      agent_name: String($("invite_agent_name")?.value || info?.requested_agent_name || fallbackId).trim() || fallbackId,
+      role: String(info?.role || "").trim(),
+    },
+  ];
+}
+
+async function openProjectInviteAgentModal() {
   if (!projectInviteContext.active) throw new Error("No active project invite.");
   if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
 
@@ -880,21 +1077,120 @@ async function acceptProjectInviteFromUI() {
     throw new Error("Invite code is required. Open Project-Invitation.md to get the code.");
   }
 
-  const agentId = String($("invite_agent_id")?.value || "").trim();
-  const agentName = String($("invite_agent_name")?.value || "").trim();
+  await loadProjectInviteManagedAgents(connectionId);
+  const lockId = String(info?.requested_agent_id || "").trim();
+  const lockName = String(info?.requested_agent_name || lockId).trim() || lockId;
+  const inviteRole = String(info?.role || "").trim();
+  const typedId = String($("invite_agent_id")?.value || "").trim();
+  const typedName = String($("invite_agent_name")?.value || typedId).trim() || typedId;
+
+  projectInviteAgentSelections = new Map();
+  if (lockId) {
+    const lockedManaged = projectInviteManagedAgents.find((x) => String(x?.id || "").trim() === lockId);
+    projectInviteAgentSelections.set(lockId, {
+      agent_id: lockId,
+      agent_name: String(lockedManaged?.name || lockName || lockId).trim() || lockId,
+      role: inviteRole,
+      locked: true,
+    });
+  } else if (typedId) {
+    const typedManaged = projectInviteManagedAgents.find((x) => String(x?.id || "").trim() === typedId);
+    projectInviteAgentSelections.set(typedId, {
+      agent_id: typedId,
+      agent_name: String(typedManaged?.name || typedName || typedId).trim() || typedId,
+      role: inviteRole,
+      locked: false,
+    });
+  } else if (projectInviteManagedAgents.length) {
+    const first = projectInviteManagedAgents[0];
+    projectInviteAgentSelections.set(String(first.id), {
+      agent_id: String(first.id),
+      agent_name: String(first.name || first.id).trim() || String(first.id),
+      role: inviteRole,
+      locked: false,
+    });
+  }
+
+  const activeConn = projectInviteContext.connections.find((c) => String(c?.id || "").trim() === connectionId);
+  const metaText = [
+    `Project: ${String(info?.project_title || info?.project_id || "External Project")}`,
+    `Connection: ${String(activeConn?.name || connectionId)}`,
+    lockId ? `Locked Agent: ${lockName} (${lockId})` : "Locked Agent: none",
+  ].join(" | ");
+  const meta = $("project_invite_agent_modal_meta");
+  if (meta) meta.textContent = metaText;
+
+  renderProjectInviteAgentPicker();
+  setMessage("project_invite_agent_modal_msg", "");
+  $("project_invite_agent_modal")?.classList.remove("hidden");
+}
+
+async function acceptProjectInviteFromUI({ connectionId: overrideConnectionId = "", selectedAgents = null } = {}) {
+  if (!projectInviteContext.active) throw new Error("No active project invite.");
+  if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
+
+  const connectionId = String(overrideConnectionId || $("invite_connection_id")?.value || "").trim();
+  if (!connectionId) throw new Error("Choose one of your OpenClaw connections first.");
+
+  const info = projectInviteContext.info || {};
+  const requiresCode = Boolean(info?.requires_invite_code);
+  const inviteCode = String($("invite_portal_code")?.value || projectInviteContext.inviteCode || "").trim().toUpperCase();
+  if (requiresCode && !inviteCode) {
+    throw new Error("Invite code is required. Open Project-Invitation.md to get the code.");
+  }
+
   const payload = {
     connection_id: connectionId,
   };
-  if (agentId) payload.agent_id = agentId;
-  if (agentName) payload.agent_name = agentName;
   if (inviteCode) payload.invite_code = inviteCode;
+
+  const selected = Array.isArray(selectedAgents) ? selectedAgents : null;
+  if (selected && selected.length) {
+    const normalized = [];
+    const seen = new Set();
+    for (const item of selected) {
+      const agentId = String(item?.agent_id || item?.agentId || "").trim();
+      if (!agentId || seen.has(agentId)) continue;
+      seen.add(agentId);
+      normalized.push({
+        agent_id: agentId,
+        agent_name: String(item?.agent_name || item?.agentName || "").trim() || undefined,
+        role: String(item?.role || "").trim() || undefined,
+      });
+    }
+    if (!normalized.length) {
+      throw new Error("Pick at least one agent to join this project.");
+    }
+    payload.selected_agents = normalized;
+    const lockedAgentId = String(info?.requested_agent_id || "").trim();
+    const primary = (lockedAgentId && normalized.find((x) => String(x.agent_id || "") === lockedAgentId)) || normalized[0];
+    payload.agent_id = String(primary?.agent_id || "").trim();
+    if (primary?.agent_name) payload.agent_name = String(primary.agent_name).trim();
+  } else {
+    const agentId = String($("invite_agent_id")?.value || "").trim();
+    const agentName = String($("invite_agent_name")?.value || "").trim();
+    if (agentId) payload.agent_id = agentId;
+    if (agentName) payload.agent_name = agentName;
+  }
 
   const tokenQuoted = encodeURIComponent(projectInviteContext.token);
   const res = await api(`/api/projects/invites/${tokenQuoted}/accept`, "POST", payload);
   const acceptedProjectId = String(res?.project_id || "").trim();
+  const acceptedConnectionId = String(res?.accepted_connection_id || connectionId).trim();
+  if (acceptedConnectionId) preferredConnectionId = acceptedConnectionId;
   setMessage("project_invite_msg", "Invite accepted. Opening project...", "ok");
+  closeProjectInviteAgentModal({ reset: true });
   clearProjectInviteContext({ clearUrl: true });
   await fetchInitial({ preferredProjectId: acceptedProjectId || null });
+}
+
+async function confirmProjectInviteFromModal() {
+  const selected = collectProjectInviteSelectedAgents({ fallbackToManual: true });
+  if (!selected.length) {
+    throw new Error("Pick at least one agent to join this project.");
+  }
+  const connectionId = String($("invite_connection_id")?.value || "").trim();
+  await acceptProjectInviteFromUI({ connectionId, selectedAgents: selected });
 }
 
 function ignoreProjectInviteFromUI() {
@@ -1203,12 +1499,20 @@ function renderConnections(connections) {
 
   if (!connectionsCache.length) {
     activeConnectionId = null;
+    preferredConnectionId = null;
     connectionHealthy = false;
     renderConfigConnectionDetails();
     return;
   }
 
-  if (!activeConnectionId || !connectionsCache.some((c) => c.id === activeConnectionId)) {
+  const hasPreferredConnection = Boolean(
+    preferredConnectionId
+    && connectionsCache.some((c) => c.id === preferredConnectionId)
+  );
+  if (hasPreferredConnection) {
+    activeConnectionId = preferredConnectionId;
+    preferredConnectionId = null;
+  } else if (!activeConnectionId || !connectionsCache.some((c) => c.id === activeConnectionId)) {
     activeConnectionId = connectionsCache[0].id;
   }
   if (sel) sel.value = activeConnectionId;
@@ -1469,6 +1773,7 @@ function eventSummary(kind, payload) {
   if (kind === "run.completed") return "Run completed.";
   if (kind === "run.stopped") return "Run stopped.";
   if (kind === "project.plan.ready") return "Plan ready. Waiting for approval.";
+  if (kind === "project.external_agent.joined") return `${name} joined this project${data.role ? ` as ${data.role}` : ""}.`;
   return "";
 }
 
@@ -1500,6 +1805,15 @@ function eventChatMessage(kind, payload) {
   if (kind === "agent.task.started") return { role: "agent", agentId: data.agent_id || name, text: "I started working on my assigned task.", meta: `${name}` };
   if (kind === "agent.task.reported") return { role: "agent", agentId: data.agent_id || name, text: data.text || "I finished this step and shared my output.", meta: `${name}` };
   if (kind === "agent.chat.update") return { role: "agent", agentId: data.agent_id || name, text: data.text || "Update posted.", meta: `${name}` };
+  if (kind === "project.external_agent.joined") {
+    const roleText = String(data.role || "").trim();
+    const roleSuffix = roleText ? ` as ${roleText}` : "";
+    return {
+      role: "system",
+      text: `${name} joined the project${roleSuffix}.`,
+      meta: "membership",
+    };
+  }
   if (kind === "project.execution.auto_paused") {
     const reason = detailToText(data.reason || "Execution paused. Waiting for your approval/input.");
     const hint = detailToText(data.resume_hint || "Reply with required info, then say CONTINUE or press Resume.");
@@ -4071,6 +4385,8 @@ async function tryAutoAcceptProjectInvite() {
   try {
     const res = await api(`/api/projects/invites/${tokenQuoted}/accept`, "POST", payload);
     const acceptedProjectId = String(res?.project_id || "").trim();
+    const acceptedConnectionId = String(res?.accepted_connection_id || connectionId).trim();
+    if (acceptedConnectionId) preferredConnectionId = acceptedConnectionId;
     setMessage("project_invite_msg", "Invite auto-accepted. Opening project...", "ok");
     clearProjectInviteContext({ clearUrl: true });
     await fetchInitial({ preferredProjectId: acceptedProjectId || null });
@@ -4742,7 +5058,7 @@ async function login(ev) {
 
   if (projectInviteContext.active) {
     setView("auth");
-    await initializeProjectInviteContext({ refreshConnections: true, autoAccept: true }).catch((e) => {
+    await initializeProjectInviteContext({ refreshConnections: true, autoAccept: false }).catch((e) => {
       setMessage("project_invite_msg", detailToText(e?.message || e), "error");
     });
     if (projectInviteContext.active) {
@@ -4800,7 +5116,7 @@ async function signup(ev) {
 
   if (projectInviteContext.active) {
     setView("auth");
-    await initializeProjectInviteContext({ refreshConnections: true, autoAccept: true }).catch((e) => {
+    await initializeProjectInviteContext({ refreshConnections: true, autoAccept: false }).catch((e) => {
       setMessage("project_invite_msg", detailToText(e?.message || e), "error");
     });
     if (projectInviteContext.active) {
@@ -4967,7 +5283,7 @@ function bindAuthMethods() {
   $("method_agent").onclick = () => setAuthMethod("agent");
   $("btn_copy_agent_url").onclick = () => copyAgentUrl().catch(() => {});
   $("btn_accept_project_invite")?.addEventListener("click", () => {
-    acceptProjectInviteFromUI().catch((e) => setMessage("project_invite_msg", detailToText(e?.message || e), "error"));
+    openProjectInviteAgentModal().catch((e) => setMessage("project_invite_msg", detailToText(e?.message || e), "error"));
   });
   $("btn_invite_open_setup")?.addEventListener("click", () => {
     setView("setup");
@@ -4975,7 +5291,10 @@ function bindAuthMethods() {
   $("btn_ignore_project_invite")?.addEventListener("click", () => {
     ignoreProjectInviteFromUI();
   });
-  $("invite_connection_id")?.addEventListener("change", () => renderProjectInviteUI());
+  $("invite_connection_id")?.addEventListener("change", () => {
+    closeProjectInviteAgentModal({ reset: true });
+    renderProjectInviteUI();
+  });
   $("invite_portal_code")?.addEventListener("input", (ev) => {
     const el = ev?.target;
     if (el && typeof el.value === "string") {
@@ -4983,6 +5302,13 @@ function bindAuthMethods() {
     }
     renderProjectInviteUI();
   });
+  $("btn_confirm_project_invite_accept")?.addEventListener("click", () => {
+    confirmProjectInviteFromModal().catch((e) => {
+      setMessage("project_invite_agent_modal_msg", detailToText(e?.message || e), "error");
+    });
+  });
+  $("btn_cancel_project_invite_accept")?.addEventListener("click", () => closeProjectInviteAgentModal({ reset: false }));
+  $("btn_close_project_invite_agent_modal")?.addEventListener("click", () => closeProjectInviteAgentModal({ reset: false }));
   refreshAgentGuideUrls();
   applyClaimAuthUI();
   renderProjectInviteUI();
@@ -5113,7 +5439,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
   }
   if (projectInviteContext.active) {
     setView("auth");
-    await initializeProjectInviteContext({ refreshConnections: true, autoAccept: true }).catch((e) => {
+    await initializeProjectInviteContext({ refreshConnections: true, autoAccept: false }).catch((e) => {
       setMessage("project_invite_msg", detailToText(e?.message || e), "error");
     });
     if (projectInviteContext.active) {
@@ -5569,7 +5895,7 @@ if (oauthError) {
 
   if (projectInviteContext.active) {
     setView("auth");
-    initializeProjectInviteContext({ refreshConnections: true, autoAccept: Boolean(sessionToken) })
+    initializeProjectInviteContext({ refreshConnections: true, autoAccept: false })
       .catch((e) => {
         setMessage("project_invite_msg", detailToText(e?.message || e), "error");
       });

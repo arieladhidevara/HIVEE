@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260401d"/>
+  <link rel="stylesheet" href="/static/styles.css?v=20260401e"/>
 </head>
 <body>
   <div class="bg-noise"></div>
@@ -64,6 +64,7 @@
               <p class="claim-connected-title">Project Invite</p>
               <p id="project_invite_title" class="claim-connected-identity">-</p>
               <p id="project_invite_meta" class="helper claim-connected-provider"></p>
+              <p id="project_invite_logged_in" class="helper"></p>
               <p class="helper">If needed, complete setup first: <a id="project_invite_setup_link" href="/new-user/NEW-ACCOUNT-SETUP.MD" target="_blank" rel="noopener">/new-user/NEW-ACCOUNT-SETUP.MD</a></p>
               <p class="helper">Invitation Doc: <a id="project_invite_doc_link" href="#" target="_blank" rel="noopener">-</a></p>
               <label>Invite Code (from Project-Invitation.md)</label>
@@ -730,9 +731,25 @@
           <p id="wizard_msg" class="helper"></p>
         </div>
       </section>
+
+      <section id="project_invite_agent_modal" class="wizard hidden">
+        <div class="wizard-card invite-agent-modal-card">
+          <div class="title-row">
+            <h3>Accept Invite - Pick Agents</h3>
+            <button id="btn_close_project_invite_agent_modal" class="secondary" type="button">Close</button>
+          </div>
+          <p id="project_invite_agent_modal_meta" class="helper"></p>
+          <div id="project_invite_agent_picker" class="agent-pick-list"></div>
+          <div class="action-row">
+            <button id="btn_confirm_project_invite_accept" type="button" class="primary">Accept Invite</button>
+            <button id="btn_cancel_project_invite_accept" type="button" class="secondary">Cancel</button>
+          </div>
+          <p id="project_invite_agent_modal_msg" class="helper"></p>
+        </div>
+      </section>
     </section>
   </main>
 
-  <script src="/static/app.js?v=20260401a"></script>
+  <script src="/static/app.js?v=20260401b"></script>
 </body>
 </html>

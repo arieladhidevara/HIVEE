@@ -409,6 +409,7 @@ label {
 #project_invite_card .action-row { margin-top: 8px; }
 #project_invite_card input,
 #project_invite_card select      { margin-top: 2px; }
+#project_invite_logged_in        { margin-top: 4px; }
 
 /* ===== SOCIAL AUTH ===== */
 .social-auth-block { margin-top: 8px; display: grid; gap: 8px; }
@@ -1197,6 +1198,7 @@ label {
 .wizard-chat-input-row button  { min-height: 80px; white-space: nowrap; }
 
 /* ===== AGENT PICK ===== */
+.invite-agent-modal-card { width: min(860px, calc(100vw - 30px)); }
 .agent-pick-list { display: grid; gap: 8px; max-height: 280px; overflow: auto; }
 .agent-pick {
   display: grid;
@@ -1210,6 +1212,7 @@ label {
 }
 .agent-pick .small { display: block; color: var(--muted); font-size: 12px; }
 .agent-pick [data-agent-role] { min-height: 34px; }
+.agent-pick input[type="checkbox"] { width: 16px; height: 16px; }
 
 .wizard-agent-row {
   border: 1px solid var(--line);
@@ -1387,27 +1390,26 @@ label {
 
 /* --- Section title: yellow-to-red gradient, project identity --- */
 #workspace_section_title {
-  background: none;
-  -webkit-background-clip: border-box;
-  -webkit-text-fill-color: var(--text);
-  background-clip: border-box;
-  color: var(--text);
+  background: linear-gradient(90deg, #facc15 0%, #f97316 52%, #ff4d4d 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  color: transparent;
 }
 
-/* --- New Project button: transparent fill with gradient outline --- */
+/* --- New Project button: plain border (no gradient outline) --- */
 #btn_new_project {
-  background: linear-gradient(var(--bg), var(--bg)) padding-box,
-              var(--gradient) border-box !important;
-  border: 1px solid transparent !important;
-  color: var(--text) !important;
+  background: transparent !important;
+  border: 1px solid var(--line-2) !important;
+  color: var(--muted) !important;
   font-weight: 600;
 }
 #btn_new_project:hover {
-  background: linear-gradient(var(--bg), var(--bg)) padding-box,
-              var(--gradient) border-box !important;
+  background: rgba(255, 255, 255, 0.05) !important;
   color: var(--text) !important;
   opacity: 1;
-  border-color: transparent !important;
+  border-color: rgba(255, 255, 255, 0.2) !important;
+  transform: none;
 }
 
 /* --- Center pane h3: secondary label, not competing with section title --- */
