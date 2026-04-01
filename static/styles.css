@@ -410,6 +410,8 @@ label {
 #project_invite_card input,
 #project_invite_card select      { margin-top: 2px; }
 #project_invite_logged_in        { margin-top: 4px; }
+#project_invite_card .helper     { overflow-wrap: anywhere; word-break: break-word; }
+#project_invite_card .claim-connected-identity { overflow-wrap: anywhere; word-break: break-word; }
 
 /* ===== SOCIAL AUTH ===== */
 .social-auth-block { margin-top: 8px; display: grid; gap: 8px; }
@@ -973,6 +975,7 @@ label {
 .file-preview img         { display: block; max-width: 100%; border-radius: 10px; border: 1px solid var(--line); }
 .file-preview iframe      { width: 100%; min-height: 460px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
 .file-preview video       { width: 100%; max-height: 520px; border: 1px solid var(--line); border-radius: 10px; background: #000; }
+.workspace-files-panel    { margin-top: 0; }
 
 /* ===== USAGE ===== */
 .usage-shell {
@@ -1000,6 +1003,36 @@ label {
 .usage-bar-fill.completion { background: var(--cyan); }
 .usage-bar-fill.total      { background: var(--orange); }
 .usage-footnote    { color: var(--muted); font-size: 11px; }
+.usage-project-list {
+  display: grid;
+  gap: 6px;
+}
+.usage-project-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.01);
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+.usage-project-row .name {
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.usage-project-row .tokens {
+  color: var(--muted);
+  font-size: 12px;
+}
+.usage-project-row .cost {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
 
 /* ===== LIVE PREVIEW ===== */
 .live-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -1368,6 +1401,7 @@ label {
   .usage-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .usage-bar-row  { grid-template-columns: 72px minmax(0, 1fr); }
   .usage-bar-row strong { grid-column: 1 / -1; justify-self: end; }
+  .usage-project-row { grid-template-columns: 1fr; }
 
   .live-preview-stage { min-height: 260px; max-height: 520px; }
   .live-preview-mount iframe { min-height: 360px; }

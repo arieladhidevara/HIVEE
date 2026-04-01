@@ -594,6 +594,7 @@ async function loadOAuthProviders() {
 
 function applyClaimAuthUI() {
   const notice = $("claim_notice");
+  const methodRow = document.querySelector("#view_auth .method-row");
   const methodAgent = $("method_agent");
   const btnLogin = $("btn_login");
   const btnSignup = $("btn_signup");
@@ -607,6 +608,7 @@ function applyClaimAuthUI() {
   const claimOnlyBlocks = document.querySelectorAll(".claim-only");
   const credentialBlocks = document.querySelectorAll(".credential-only");
   if (!claimAuthContext.active) {
+    const inviteSignedInMode = Boolean(projectInviteContext.active && sessionToken);
     setClaimSessionState({ connected: false, email: "", providers: [] });
     if (notice) {
       notice.classList.add("hidden");
@@ -617,8 +619,9 @@ function applyClaimAuthUI() {
       methodAgent.disabled = false;
       methodAgent.classList.remove("hidden");
     }
-    if (switchRow) switchRow.classList.remove("hidden");
-    if (loginForm) loginForm.classList.remove("hidden");
+    if (methodRow) methodRow.classList.toggle("hidden", inviteSignedInMode);
+    if (switchRow) switchRow.classList.toggle("hidden", inviteSignedInMode);
+    if (loginForm) loginForm.classList.toggle("hidden", inviteSignedInMode);
     if (signupForm) signupForm.classList.add("hidden");
     $("tab_login")?.classList.add("active");
     $("tab_signup")?.classList.remove("active");
@@ -626,7 +629,7 @@ function applyClaimAuthUI() {
     if (btnSignup) btnSignup.textContent = "Create Account";
     setClaimCredentialRequired(true);
     credentialBlocks.forEach((el) => el.classList.remove("hidden"));
-    if (socialAuthBlock) socialAuthBlock.classList.remove("hidden");
+    if (socialAuthBlock) socialAuthBlock.classList.toggle("hidden", inviteSignedInMode);
     applyOAuthProvidersUI();
     claimOnlyBlocks.forEach((el) => el.classList.add("hidden"));
     renderProjectInviteUI();
@@ -638,6 +641,7 @@ function applyClaimAuthUI() {
     methodAgent.disabled = true;
     methodAgent.classList.add("hidden");
   }
+  if (methodRow) methodRow.classList.remove("hidden");
   if (notice) {
     const shortEnv = claimAuthContext.environmentId.length > 18
       ? claimAuthContext.environmentId.slice(0, 18) + "..."
@@ -692,8 +696,9 @@ function renderProjectInviteUI() {
   const title = $("project_invite_title");
   const meta = $("project_invite_meta");
   const loggedIn = $("project_invite_logged_in");
-  const setupLink = $("project_invite_setup_link");
-  const docLink = $("project_invite_doc_link");
+  const setupBtn = $("btn_open_project_setup_doc");
+  const docBtn = $("btn_open_project_invite_doc");
+  const linksHint = $("project_invite_links_hint");
   const codeInput = $("invite_portal_code");
   const codeHint = $("project_invite_code_hint");
   const connectionSelect = $("invite_connection_id");
@@ -708,13 +713,17 @@ function renderProjectInviteUI() {
     notice.textContent = "";
     card.classList.add("hidden");
     if (loggedIn) loggedIn.textContent = "";
+    if (docBtn) {
+      docBtn.disabled = true;
+      docBtn.dataset.url = "";
+    }
+    if (setupBtn) {
+      setupBtn.disabled = true;
+      setupBtn.dataset.url = "";
+    }
     if (connectionSelect) connectionSelect.innerHTML = "";
     if (codeInput) codeInput.value = "";
     if (codeHint) codeHint.textContent = "";
-    if (docLink) {
-      docLink.href = "#";
-      docLink.textContent = "-";
-    }
     return;
   }
 
@@ -729,39 +738,59 @@ function renderProjectInviteUI() {
 
   notice.classList.remove("hidden");
   if (!info.project_id) {
-    notice.textContent = "Project invite detected. Loading invite details...";
+    notice.textContent = "Invitation link detected. Loading details...";
   } else if (status !== "pending") {
     if (status === "expired") {
-      notice.textContent = "Invite is expired. Ask project owner to generate a new invite link.";
+      notice.textContent = "This invitation is expired. Ask the project owner to generate a new link.";
     } else if (status === "accepted") {
-      notice.textContent = "Invite has already been accepted.";
+      notice.textContent = "This invitation has already been accepted.";
     } else if (status === "revoked") {
-      notice.textContent = "Invite was revoked by project owner.";
+      notice.textContent = "This invitation was revoked by the project owner.";
     } else {
-      notice.textContent = `Invite status: ${inviteStatusLabel(status)}.`;
+      notice.textContent = `Invitation status: ${inviteStatusLabel(status)}.`;
     }
   } else if (!hasSession) {
-    notice.textContent = "Project invite detected. Login or sign up first, then continue in portal.";
+    notice.textContent = "Log in or sign up to accept this invitation.";
   } else if (requiresInviteCode && !codeFromUrl && !String(codeInput?.value || "").trim()) {
-    notice.textContent = "Project invite ready. Enter invite code from Project-Invitation.md, then click Accept to pick agents + roles.";
+    notice.textContent = "You are signed in. Enter invite code from the invitation document, then continue.";
   } else {
-    notice.textContent = "Project invite ready. Choose connection, then click Accept to pick agents + roles.";
+    notice.textContent = "You are signed in. Choose connection, then continue to agent selection.";
+  }
+
+  const inviteDocUrl = toAbsoluteAppUrl(
+    info.invitation_doc_url
+    || (`/api/projects/invites/${encodeURIComponent(projectInviteContext.token || "")}/Project-Invitation.md`)
+  );
+  const setupDocUrl = toAbsoluteAppUrl(info.setup_doc_url || AGENT_SETUP_DOC_PATH);
+
+  if (docBtn) {
+    docBtn.dataset.url = inviteDocUrl || "";
+    docBtn.disabled = !Boolean(inviteDocUrl);
+  }
+  if (setupBtn) {
+    setupBtn.dataset.url = setupDocUrl || "";
+    setupBtn.disabled = !Boolean(setupDocUrl);
+  }
+
+  if (!hasSession) {
+    card.classList.add("hidden");
+    if (loggedIn) loggedIn.textContent = "";
+    if (acceptBtn) acceptBtn.disabled = true;
+    return;
   }
 
   card.classList.remove("hidden");
   if (loggedIn) {
-    if (!hasSession) {
-      loggedIn.textContent = "Not signed in yet.";
-    } else if (sessionIdentity) {
+    if (sessionIdentity) {
       loggedIn.textContent = `Logged in as ${sessionIdentity}`;
     } else {
       loggedIn.textContent = "Signed in. Loading account identity...";
     }
   }
-  if (title) title.textContent = String(info.project_title || "External Project");
+  if (title) title.textContent = String(info.project_title || "Accept Invitation");
   if (meta) {
     const parts = [];
-    if (info.project_id) parts.push(`Project ID: ${info.project_id}`);
+    if (info.project_id) parts.push(`Project: ${info.project_id}`);
     if (info.target_email_masked) parts.push(`Target: ${info.target_email_masked}`);
     if (info.requested_agent_id || info.requested_agent_name) {
       parts.push(`Requested Agent: ${String(info.requested_agent_name || info.requested_agent_id || "").trim()}`);
@@ -771,18 +800,10 @@ function renderProjectInviteUI() {
     if (info.expires_at) parts.push(`Expires: ${formatTs(info.expires_at)}`);
     meta.textContent = parts.join(" | ");
   }
-  if (setupLink) {
-    const url = toAbsoluteAppUrl(info.setup_doc_url || AGENT_SETUP_DOC_PATH);
-    setupLink.href = url;
-    setupLink.textContent = url;
-  }
-  if (docLink) {
-    const docUrl = toAbsoluteAppUrl(
-      info.invitation_doc_url
-      || (`/api/projects/invites/${encodeURIComponent(projectInviteContext.token || "")}/Project-Invitation.md`)
-    );
-    docLink.href = docUrl;
-    docLink.textContent = docUrl;
+  if (linksHint) {
+    linksHint.textContent = canAccept
+      ? "Open docs if you need details, then continue with connection and agent selection."
+      : "Open docs if needed. This invitation is not currently accept-able.";
   }
 
   if (codeInput) {
@@ -1533,6 +1554,7 @@ function renderProjects(projects) {
 
   if (!projectsCache.length) {
     box.innerHTML = '<p class="helper">No projects yet. Create your first project.</p>';
+    renderWorkspaceUsage();
     return;
   }
 
@@ -1588,6 +1610,7 @@ function renderProjects(projects) {
       }
     }
   }
+  renderWorkspaceUsage();
 }
 
 function showEmptyProject() {
@@ -1631,10 +1654,12 @@ function showEmptyProject() {
   const live = $("overview_live_updates");
   if (live) live.innerHTML = "";
   syncPrimaryNavState();
+  syncProjectContextSidebar();
   syncChatContextControls();
   updateChatProjectName();
   renderFolderBrowsers();
   renderProjectUsage();
+  renderWorkspaceUsage();
   renderProjectPlanInfo();
   renderProjectFiles(null);
   renderWorkspaceFiles(null);
@@ -1648,6 +1673,7 @@ function showProjectDetails() {
   const details = $("project_details");
   if (empty) empty.classList.add("hidden");
   if (details) details.classList.remove("hidden");
+  syncProjectContextSidebar();
   syncProjectHeadbar();
   syncWorkspaceSectionTitle();
 }
@@ -1677,6 +1703,13 @@ function syncPrimaryNavState() {
   if (projectsBtn) {
     projectsBtn.classList.toggle("project-selected", inProjects && Boolean(selectedProjectId));
   }
+}
+
+function syncProjectContextSidebar() {
+  const context = $("context_sidebar");
+  if (!context) return;
+  const shouldShow = activeNavTab === "projects" && Boolean(selectedProjectId);
+  context.classList.toggle("hidden", !shouldShow);
 }
 
 function syncProjectHeadbar() {
@@ -3373,9 +3406,10 @@ function renderWorkspaceFiles(payload) {
 
   workspaceFilesPayload = payload;
   workspaceFilesCurrentPath = payload.current_path || "";
-  hint.textContent = "Browse owner workspace folder (scoped to your account only).";
+  const workspaceRoot = String(payload.workspace_root || "").trim() || "HIVEE";
+  hint.textContent = `Workspace root: ${workspaceRoot}. Open PROJECTS folder to access all project directories.`;
   crumbs.innerHTML = "";
-  const ownerRootLabel = String(payload.workspace_root || "")
+  const ownerRootLabel = workspaceRoot
     .trim()
     .split("/")
     .filter(Boolean)
@@ -3576,6 +3610,94 @@ function renderProjectUsage() {
     </div>
     <div class="usage-footnote">
       Project: ${selectedProjectData.title} | Connection: ${selectedProjectData.connection_id} | Assigned agents: ${selectedAssignedAgents.length} | Primary: ${primary ? primary.name : "Not set"}.
+      Cost is an estimate using a generic token rate and may differ from provider billing.
+    </div>
+  `;
+}
+
+function renderWorkspaceUsage() {
+  const box = $("workspace_usage_box");
+  if (!box) return;
+
+  const rows = Array.isArray(projectsCache) ? projectsCache : [];
+  if (!rows.length) {
+    box.textContent = "No project usage data yet.";
+    return;
+  }
+
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let totalTokens = 0;
+  let latestUpdateTs = 0;
+  const byProject = [];
+
+  for (const p of rows) {
+    const title = String(p?.title || p?.id || "Project").trim();
+    const prompt = Math.max(0, Number(p?.usage_prompt_tokens || 0));
+    const completion = Math.max(0, Number(p?.usage_completion_tokens || 0));
+    const total = Math.max(0, Number(p?.usage_total_tokens || (prompt + completion)));
+    const updatedAt = Math.max(0, Number(p?.usage_updated_at || 0));
+    promptTokens += prompt;
+    completionTokens += completion;
+    totalTokens += total;
+    latestUpdateTs = Math.max(latestUpdateTs, updatedAt);
+    byProject.push({ title, total });
+  }
+
+  const promptRatePerM = 0.5;
+  const completionRatePerM = 1.5;
+  const promptCost = (promptTokens / 1_000_000) * promptRatePerM;
+  const completionCost = (completionTokens / 1_000_000) * completionRatePerM;
+  const totalCost = promptCost + completionCost;
+  const safeTotal = Math.max(1, totalTokens);
+  const promptPct = totalTokens <= 0 ? 0 : Math.max(3, Math.round((promptTokens / safeTotal) * 100));
+  const completionPct = totalTokens <= 0 ? 0 : Math.max(3, Math.round((completionTokens / safeTotal) * 100));
+  const topProjects = byProject
+    .filter((x) => Number(x.total || 0) > 0)
+    .sort((a, b) => Number(b.total || 0) - Number(a.total || 0))
+    .slice(0, 8);
+
+  const topHtml = topProjects.length
+    ? topProjects
+      .map((x) => `
+        <div class="usage-project-row">
+          <span class="name" title="${x.title}">${x.title}</span>
+          <span class="tokens">${Number(x.total || 0).toLocaleString()} tokens</span>
+          <span class="cost">$${(((Number(x.total || 0) * 0.5) / 1_000_000)).toFixed(4)}</span>
+        </div>
+      `)
+      .join("")
+    : '<p class="helper">No tokens recorded yet across projects.</p>';
+
+  box.innerHTML = `
+    <div class="usage-kpi-grid">
+      <div class="usage-kpi"><span class="label">Projects</span><span class="value">${rows.length.toLocaleString()}</span></div>
+      <div class="usage-kpi"><span class="label">Prompt Tokens</span><span class="value">${promptTokens.toLocaleString()}</span></div>
+      <div class="usage-kpi"><span class="label">Completion Tokens</span><span class="value">${completionTokens.toLocaleString()}</span></div>
+      <div class="usage-kpi"><span class="label">Total Tokens</span><span class="value">${totalTokens.toLocaleString()}</span></div>
+    </div>
+    <div class="usage-chart">
+      <div class="usage-bar-row">
+        <span>Prompt</span>
+        <div class="usage-bar-track"><div class="usage-bar-fill prompt" style="width:${promptPct}%"></div></div>
+        <strong>$${promptCost.toFixed(4)}</strong>
+      </div>
+      <div class="usage-bar-row">
+        <span>Completion</span>
+        <div class="usage-bar-track"><div class="usage-bar-fill completion" style="width:${completionPct}%"></div></div>
+        <strong>$${completionCost.toFixed(4)}</strong>
+      </div>
+      <div class="usage-bar-row">
+        <span>Total</span>
+        <div class="usage-bar-track"><div class="usage-bar-fill total" style="width:${totalTokens > 0 ? 100 : 0}%"></div></div>
+        <strong>$${totalCost.toFixed(4)}</strong>
+      </div>
+    </div>
+    <div class="usage-project-list">
+      ${topHtml}
+    </div>
+    <div class="usage-footnote">
+      Aggregated usage from all projects${latestUpdateTs ? ` | Last update: ${formatTs(latestUpdateTs)}` : ""}.
       Cost is an estimate using a generic token rate and may differ from provider billing.
     </div>
   `;
@@ -3796,8 +3918,7 @@ function setNavTab(tab) {
     pane.classList.toggle("hidden", pane.dataset.centerTab !== tab);
   }
 
-  const context = $("context_sidebar");
-  if (context) context.classList.toggle("hidden", tab !== "projects");
+  syncProjectContextSidebar();
   syncPrimaryNavState();
   syncWorkspaceSectionTitle();
   syncProjectHeadbar();
@@ -3805,6 +3926,9 @@ function setNavTab(tab) {
   if (tab === "files") {
     renderFolderBrowsers();
     loadWorkspaceFiles(workspaceFilesCurrentPath || DEFAULT_OWNER_FILES_PATH).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  }
+  if (tab === "usage") {
+    renderWorkspaceUsage();
   }
   if (tab === "agents") {
     loadSummaryAgents().catch(() => {});
@@ -5251,6 +5375,13 @@ function toAbsoluteAppUrl(path) {
   }
 }
 
+function openProjectInviteDocFromButton(buttonId, emptyMsg = "Link is not available yet.") {
+  const btn = $(buttonId);
+  const url = String(btn?.dataset?.url || "").trim();
+  if (!url) throw new Error(emptyMsg);
+  window.open(url, "_blank", "noopener");
+}
+
 function refreshAgentGuideUrls() {
   const setupUrl = toAbsoluteAppUrl(AGENT_SETUP_DOC_PATH);
   const securityUrl = toAbsoluteAppUrl(AGENT_SECURITY_DOC_PATH);
@@ -5284,6 +5415,20 @@ function bindAuthMethods() {
   $("btn_copy_agent_url").onclick = () => copyAgentUrl().catch(() => {});
   $("btn_accept_project_invite")?.addEventListener("click", () => {
     openProjectInviteAgentModal().catch((e) => setMessage("project_invite_msg", detailToText(e?.message || e), "error"));
+  });
+  $("btn_open_project_invite_doc")?.addEventListener("click", () => {
+    try {
+      openProjectInviteDocFromButton("btn_open_project_invite_doc", "Invitation document is not available.");
+    } catch (e) {
+      setMessage("project_invite_msg", detailToText(e?.message || e), "error");
+    }
+  });
+  $("btn_open_project_setup_doc")?.addEventListener("click", () => {
+    try {
+      openProjectInviteDocFromButton("btn_open_project_setup_doc", "Setup guide is not available.");
+    } catch (e) {
+      setMessage("project_invite_msg", detailToText(e?.message || e), "error");
+    }
   });
   $("btn_invite_open_setup")?.addEventListener("click", () => {
     setView("setup");
@@ -5489,8 +5634,15 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     const preferred = String(preferredProjectId || deepPreferred || "").trim();
     const hasPreferred = Boolean(preferred && projects.some((p) => p.id === preferred));
     const hasSelected = Boolean(selectedProjectId && projects.some((p) => p.id === selectedProjectId));
-    const pick = hasPreferred ? preferred : (hasSelected ? selectedProjectId : projects[0].id);
-    await selectProject(pick);
+    if (hasPreferred) {
+      await selectProject(preferred);
+    } else if (hasSelected) {
+      await selectProject(selectedProjectId);
+    } else {
+      showEmptyProject();
+      await loadWorkspaceFiles(DEFAULT_OWNER_FILES_PATH).catch(() => {});
+      await loadChatAgents().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+    }
   } else {
     showEmptyProject();
     await loadWorkspaceFiles(DEFAULT_OWNER_FILES_PATH).catch(() => {});

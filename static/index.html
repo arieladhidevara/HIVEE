@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260401e"/>
+  <link rel="stylesheet" href="/static/styles.css?v=20260401f"/>
 </head>
 <body>
   <div class="bg-noise"></div>
@@ -61,12 +61,15 @@
 
             <p id="project_invite_notice" class="helper hidden"></p>
             <div id="project_invite_card" class="claim-connected-card hidden">
-              <p class="claim-connected-title">Project Invite</p>
-              <p id="project_invite_title" class="claim-connected-identity">-</p>
+              <p class="claim-connected-title">Invitation</p>
+              <p id="project_invite_title" class="claim-connected-identity">Accept Your Invitation</p>
               <p id="project_invite_meta" class="helper claim-connected-provider"></p>
               <p id="project_invite_logged_in" class="helper"></p>
-              <p class="helper">If needed, complete setup first: <a id="project_invite_setup_link" href="/new-user/NEW-ACCOUNT-SETUP.MD" target="_blank" rel="noopener">/new-user/NEW-ACCOUNT-SETUP.MD</a></p>
-              <p class="helper">Invitation Doc: <a id="project_invite_doc_link" href="#" target="_blank" rel="noopener">-</a></p>
+              <p id="project_invite_links_hint" class="helper">Need context first? Open the invitation document or setup guide.</p>
+              <div class="action-row">
+                <button id="btn_open_project_invite_doc" class="secondary" type="button">Open Invitation Doc</button>
+                <button id="btn_open_project_setup_doc" class="secondary" type="button">Open Setup Guide</button>
+              </div>
               <label>Invite Code (from Project-Invitation.md)</label>
               <input id="invite_portal_code" type="text" placeholder="AB12CD34" autocomplete="off">
               <p id="project_invite_code_hint" class="helper"></p>
@@ -77,7 +80,7 @@
               <label>Agent Name (optional)</label>
               <input id="invite_agent_name" type="text" placeholder="My Agent Name">
               <div class="action-row">
-                <button id="btn_accept_project_invite" type="button" class="primary">Accept Project Invite</button>
+                <button id="btn_accept_project_invite" type="button" class="primary">Continue to Agent Selection</button>
                 <button id="btn_invite_open_setup" class="secondary" type="button">Open Connection Setup</button>
                 <button id="btn_ignore_project_invite" class="secondary" type="button">Ignore Invite</button>
               </div>
@@ -433,9 +436,13 @@
 
           <div id="center_files" class="center-pane hidden" data-center-tab="files">
             <h3>Files</h3>
-            <div id="workspace_files_breadcrumbs" class="file-breadcrumbs"></div>
-            <div id="workspace_files_list" class="folder-browser file-list"></div>
-            <div id="workspace_file_preview" class="text-block file-preview"><p class="helper">Select a file to preview.</p></div>
+            <section class="project-panel workspace-files-panel">
+              <h4>Workspace Files</h4>
+              <p id="workspace_files_hint" class="helper"></p>
+              <div id="workspace_files_breadcrumbs" class="file-breadcrumbs"></div>
+              <div id="workspace_files_list" class="folder-browser file-list"></div>
+              <div id="workspace_file_preview" class="text-block file-preview"><p class="helper">Select a file to preview.</p></div>
+            </section>
           </div>
 
           <div id="center_overview" class="center-pane hidden" data-center-tab="overview">
@@ -444,6 +451,10 @@
 
           <div id="center_usage" class="center-pane hidden" data-center-tab="usage">
             <h3>Usage</h3>
+            <section class="project-panel">
+              <h4>Total Usage Across Projects</h4>
+              <div id="workspace_usage_box" class="usage-shell">No usage data yet.</div>
+            </section>
           </div>
 
           <div id="center_summary" class="center-pane hidden" data-center-tab="summary">
@@ -750,6 +761,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20260401b"></script>
+  <script src="/static/app.js?v=20260401d"></script>
 </body>
 </html>
