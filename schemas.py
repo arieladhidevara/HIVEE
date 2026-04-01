@@ -101,6 +101,19 @@ class ProjectAgentsIn(BaseModel):
     agent_roles: Optional[List[str]] = None
     primary_agent_id: Optional[str] = None
 
+class ProjectExternalAgentInviteCreateIn(BaseModel):
+    target_email: Optional[str] = None
+    requested_agent_id: Optional[str] = None
+    requested_agent_name: Optional[str] = None
+    role: str = ""
+    note: str = ""
+    expires_in_sec: int = PROJECT_EXTERNAL_INVITE_TTL_SEC
+
+class ProjectExternalAgentInviteAcceptIn(BaseModel):
+    connection_id: str
+    agent_id: Optional[str] = None
+    agent_name: Optional[str] = None
+
 class OpenClawChatIn(BaseModel):
     message: str = Field(..., min_length=1)
     agent_id: Optional[str] = None

@@ -78,6 +78,11 @@ def init_db() -> None:
             agent_name TEXT NOT NULL,
             is_primary INTEGER NOT NULL DEFAULT 0,
             role TEXT NOT NULL DEFAULT '',
+            source_type TEXT NOT NULL DEFAULT 'owner',
+            source_user_id TEXT,
+            source_connection_id TEXT,
+            joined_via_invite_id TEXT,
+            added_at INTEGER,
             PRIMARY KEY(project_id, agent_id),
             FOREIGN KEY(project_id) REFERENCES projects(id)
         )
@@ -113,6 +118,59 @@ def init_db() -> None:
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_external_agent_invites (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            owner_user_id TEXT NOT NULL,
+            target_email TEXT,
+            requested_agent_id TEXT,
+            requested_agent_name TEXT,
+            role TEXT NOT NULL DEFAULT '',
+            invite_note TEXT,
+            token_hash TEXT NOT NULL UNIQUE,
+            invite_doc_relpath TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            expires_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            accepted_at INTEGER,
+            accepted_by_user_id TEXT,
+            accepted_connection_id TEXT,
+            accepted_agent_id TEXT,
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(owner_user_id) REFERENCES users(id),
+            FOREIGN KEY(accepted_by_user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_external_agent_invites_project ON project_external_agent_invites(project_id, status, created_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_external_agent_invites_expiry ON project_external_agent_invites(expires_at)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_external_agent_memberships (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            owner_user_id TEXT NOT NULL,
+            member_user_id TEXT NOT NULL,
+            member_connection_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            agent_name TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT '',
+            invite_id TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(project_id, member_user_id, member_connection_id, agent_id),
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(owner_user_id) REFERENCES users(id),
+            FOREIGN KEY(member_user_id) REFERENCES users(id),
+            FOREIGN KEY(member_connection_id) REFERENCES openclaw_connections(id),
+            FOREIGN KEY(invite_id) REFERENCES project_external_agent_invites(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_external_agent_memberships_project ON project_external_agent_memberships(project_id, status, updated_at DESC)")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS environments (
@@ -342,6 +400,16 @@ def init_db() -> None:
         cur.execute("ALTER TABLE project_agents ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0")
     if "role" not in cols:
         cur.execute("ALTER TABLE project_agents ADD COLUMN role TEXT NOT NULL DEFAULT ''")
+    if "source_type" not in cols:
+        cur.execute("ALTER TABLE project_agents ADD COLUMN source_type TEXT NOT NULL DEFAULT 'owner'")
+    if "source_user_id" not in cols:
+        cur.execute("ALTER TABLE project_agents ADD COLUMN source_user_id TEXT")
+    if "source_connection_id" not in cols:
+        cur.execute("ALTER TABLE project_agents ADD COLUMN source_connection_id TEXT")
+    if "joined_via_invite_id" not in cols:
+        cur.execute("ALTER TABLE project_agents ADD COLUMN joined_via_invite_id TEXT")
+    if "added_at" not in cols:
+        cur.execute("ALTER TABLE project_agents ADD COLUMN added_at INTEGER")
     project_cols = [r[1] for r in cur.execute("PRAGMA table_info(projects)").fetchall()]
     conn_cols = [r[1] for r in cur.execute("PRAGMA table_info(openclaw_connections)").fetchall()]
     if "env_id" not in conn_cols:
