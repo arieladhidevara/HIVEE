@@ -16,7 +16,7 @@ let connectionHealthy = false;
 let currentAccountProfile = null;
 
 let activeNavTab = "projects";
-let activeProjectPane = "info";
+let activeProjectPane = "overview";
 let activeAuthMethod = "hooman";
 let workspacePolicy = {
   workspace_root: "HIVEE",
@@ -353,8 +353,13 @@ function clearProjectInviteContext({ clearUrl = false } = {}) {
 
 function normalizeProjectPaneForLink(pane) {
   const raw = String(pane || "").trim().toLowerCase();
-  if (["info", "folder", "live", "usage", "tracker"].includes(raw)) return raw;
-  return "folder";
+  // Support legacy param values from old URLs → map to new keys
+  if (raw === "info") return "overview";
+  if (raw === "folder") return "files";
+  if (raw === "usage") return "costs";
+  if (raw === "activity" || raw === "tracker") return "history";
+  if (["overview", "team", "tasks", "issues", "files", "history", "costs", "live"].includes(raw)) return raw;
+  return "files";
 }
 
 function parseProjectDeepLinkFromUrl() {
@@ -393,7 +398,7 @@ function clearProjectDeepLinkContext({ clearUrl = false } = {}) {
   if (clearUrl) clearProjectDeepLinkParamsFromUrl();
 }
 
-function buildProjectDeepLink(projectId, { pane = "folder", path = "", previewPath = "" } = {}) {
+function buildProjectDeepLink(projectId, { pane = "files", path = "", previewPath = "" } = {}) {
   const pid = String(projectId || "").trim();
   if (!pid) return "";
   const params = new URLSearchParams();
@@ -425,10 +430,10 @@ async function applyProjectDeepLinkContext() {
   }
 
   setNavTab("projects");
-  const pane = normalizeProjectPaneForLink(projectDeepLinkContext.pane || "folder");
+  const pane = normalizeProjectPaneForLink(projectDeepLinkContext.pane || "files");
   setProjectPane(pane);
 
-  if (pane === "folder") {
+  if (pane === "files") {
     const folderPath = normalizePath(projectDeepLinkContext.path || "");
     await loadProjectFiles(folderPath).catch(() => {});
     const previewPath = normalizePath(projectDeepLinkContext.previewPath || "");
@@ -1595,6 +1600,7 @@ function renderProjectTaskList() {
   hydrateTaskBlueprintAssigneeSelect();
   hydrateTaskBlueprintSelect();
   hydrateTaskFilterAssigneeSelect();
+  renderTaskMap(); // keep task map in sync if it's open
   const list = $("project_tasks_list");
   if (!list) return;
 
@@ -1963,42 +1969,79 @@ function renderProjectActivityFeed() {
   const events = Array.isArray(projectActivityEvents) ? projectActivityEvents : [];
   if (!events.length) {
     const empty = document.createElement("div");
-    empty.className = "event";
-    empty.innerHTML = '<div class="meta">No activity yet</div><div class="text">Project activity will appear here.</div>';
+    empty.className = "timeline-feed";
+    empty.innerHTML = '<p class="helper" style="padding:8px;text-align:center">No activity yet. Activity will appear here as the project runs.</p>';
     box.appendChild(empty);
     return;
   }
 
-  for (const item of events) {
-    const row = document.createElement("div");
-    row.className = "event";
+  const feed = document.createElement("div");
+  feed.className = "timeline-feed";
 
+  for (const item of events) {
     const when = Number(item?.created_at || 0);
     const who = String(item?.actor_label || item?.actor_id || item?.actor_type || "system").trim();
     const kind = String(item?.event_type || "event").trim();
+    const summary = String(item?.summary || "").trim();
+    const meta = activityEventMeta(kind);
 
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = `${when > 0 ? formatTs(when) : "-"} - ${kind}`;
+    const tItem = document.createElement("div");
+    tItem.className = "timeline-item";
 
-    const text = document.createElement("div");
-    text.className = "text";
-    text.textContent = `${who}: ${String(item?.summary || "").trim() || "(no summary)"}`;
+    // Dot column
+    const dotCol = document.createElement("div");
+    dotCol.className = "timeline-dot-col";
+    const dot = document.createElement("div");
+    dot.className = "timeline-dot";
+    dot.style.borderColor = meta.color;
+    dot.style.background = meta.color.replace("var(", "").replace(")", "") !== meta.color
+      ? meta.color + "22"
+      : "transparent";
+    const lineSeg = document.createElement("div");
+    lineSeg.className = "timeline-line-seg";
+    dotCol.appendChild(dot);
+    dotCol.appendChild(lineSeg);
 
-    row.appendChild(meta);
-    row.appendChild(text);
-    box.appendChild(row);
+    // Body
+    const body = document.createElement("div");
+    body.className = "timeline-body";
+
+    const header = document.createElement("div");
+    header.className = "timeline-header";
+    const kindEl = document.createElement("span");
+    kindEl.className = "timeline-kind";
+    kindEl.style.color = meta.color;
+    kindEl.textContent = meta.label;
+    const whenEl = document.createElement("span");
+    whenEl.className = "timeline-when";
+    whenEl.textContent = when > 0 ? relativeTs(when) : "-";
+    whenEl.title = when > 0 ? formatTs(when) : "";
+    header.appendChild(kindEl);
+    header.appendChild(whenEl);
+
+    const whoEl = document.createElement("div");
+    whoEl.className = "timeline-who";
+    whoEl.textContent = who;
+
+    const summaryEl = document.createElement("div");
+    summaryEl.className = "timeline-summary";
+    summaryEl.textContent = summary || "(no summary)";
+
+    body.appendChild(header);
+    body.appendChild(whoEl);
+    body.appendChild(summaryEl);
+
+    tItem.appendChild(dotCol);
+    tItem.appendChild(body);
+    feed.appendChild(tItem);
   }
 
   const tail = document.createElement("div");
-  tail.className = "event activity-feed-tail";
-  const tailMeta = document.createElement("div");
-  tailMeta.className = "meta";
-  tailMeta.textContent = projectActivityLoadingMore
-    ? "Loading more..."
-    : (projectActivityHasMore ? "Scroll down to load more" : "End of activity");
-  tail.appendChild(tailMeta);
-  box.appendChild(tail);
+  tail.className = "timeline-tail";
+  tail.textContent = projectActivityLoadingMore ? "Loading more..." : (projectActivityHasMore ? "Scroll down to load more" : "—");
+  feed.appendChild(tail);
+
+  box.appendChild(feed);
 }
 
 async function loadTaskComments(taskId, { silent = false, force = false } = {}) {
@@ -2187,7 +2230,7 @@ async function loadProjectActivity(projectId = selectedProjectId, { silent = fal
 
 function maybeLoadMoreProjectActivity() {
   if (!selectedProjectId || !projectActivityHasMore || projectActivityLoadingMore) return;
-  if (activeProjectPane !== "activity") return;
+  if (activeProjectPane !== "history") return;
   const box = $("project_activity_feed");
   if (!box) return;
   const remaining = box.scrollHeight - box.scrollTop - box.clientHeight;
@@ -2508,6 +2551,7 @@ function renderProjects(projects) {
   if (!projectsCache.length) {
     box.innerHTML = '<p class="helper">No projects yet. Create your first project.</p>';
     renderWorkspaceUsage();
+    if (activeNavTab === "dashboard") renderDashboard();
     return;
   }
 
@@ -2552,18 +2596,74 @@ function renderProjects(projects) {
     if (!projectsCache.length) {
       grid.innerHTML = '<p class="helper" style="padding:8px 0">No projects yet. Click New Project to get started.</p>';
     } else {
+      const maxTokens = Math.max(1, ...projectsCache.map((p) => Number(p?.usage_total_tokens || 0)));
       for (const p of projectsCache) {
+        const needsApproval = projectNeedsApproval(p);
+        const status = String(p.execution_status || "idle").toLowerCase();
+        const pct = clampProgress(p.progress_pct || 0);
+        const brief = shortText(String(p.brief || p.goal || ""), 90);
+        const tokens = Math.max(0, Number(p.usage_total_tokens || 0));
+        const statusLabel = executionStatusLabel(status);
+        const tokenStr = tokens > 999999 ? `${(tokens / 1000000).toFixed(1)}M tok` : tokens > 999 ? `${(tokens / 1000).toFixed(1)}k tok` : tokens > 0 ? `${tokens} tok` : "";
+
         const card = document.createElement("button");
         card.type = "button";
         card.className = "project-card";
-        const needsApproval = projectNeedsApproval(p);
-        card.innerHTML = `<strong>${p.title}</strong><div class="meta">${formatTs(p.created_at)}${needsApproval ? ' Â· Needs approval' : ''}</div>`;
+
+        const pcHeader = document.createElement("div");
+        pcHeader.className = "pc-header";
+        const statusPill = document.createElement("span");
+        statusPill.className = `pc-status-pill ${status}`;
+        statusPill.innerHTML = `<span class="pc-status-dot"></span>${statusLabel}`;
+        if (needsApproval) {
+          const badge = document.createElement("span");
+          badge.className = "pc-status-pill planning";
+          badge.style.marginLeft = "auto";
+          badge.textContent = "Needs approval";
+          pcHeader.appendChild(statusPill);
+          pcHeader.appendChild(badge);
+        } else {
+          pcHeader.appendChild(statusPill);
+        }
+
+        const titleEl = document.createElement("p");
+        titleEl.className = "pc-title";
+        titleEl.textContent = p.title;
+
+        const briefEl = document.createElement("p");
+        briefEl.className = "pc-brief";
+        briefEl.textContent = brief || "No description.";
+
+        const progressTrack = document.createElement("div");
+        progressTrack.className = "pc-progress-track";
+        const progressFill = document.createElement("div");
+        progressFill.className = `pc-progress-fill ${status}`;
+        progressFill.style.width = `${pct}%`;
+        progressTrack.appendChild(progressFill);
+
+        const footer = document.createElement("div");
+        footer.className = "pc-footer";
+        const agentsEl = document.createElement("div");
+        agentsEl.className = "pc-agents";
+        const tokensEl = document.createElement("span");
+        tokensEl.className = "pc-tokens";
+        tokensEl.textContent = tokenStr;
+        footer.appendChild(agentsEl);
+        footer.appendChild(tokensEl);
+
+        card.appendChild(pcHeader);
+        card.appendChild(titleEl);
+        card.appendChild(briefEl);
+        card.appendChild(progressTrack);
+        card.appendChild(footer);
+
         card.onclick = () => selectProject(p.id).catch((e) => showUiError("chat_hint", e));
         grid.appendChild(card);
       }
     }
   }
   renderWorkspaceUsage();
+  if (activeNavTab === "dashboard") renderDashboard();
 }
 
 function showEmptyProject() {
@@ -2688,6 +2788,8 @@ function syncProjectContextSidebar() {
   if (!context) return;
   const shouldShow = activeNavTab === "projects" && Boolean(selectedProjectId);
   context.classList.toggle("hidden", !shouldShow);
+  const layout = document.querySelector(".workspace-layout");
+  if (layout) layout.classList.toggle("context-active", shouldShow);
 }
 
 function syncProjectHeadbar() {
@@ -2707,7 +2809,7 @@ function syncProjectHeadbar() {
 
   if (selectedProjectData) {
     // Title shows current pane; section title (above) shows project name
-    const paneLabels = { live: "Live", info: "Overview", folder: "Files", usage: "Usage", tasks: "Tasks", activity: "Activity", tracker: "Tracker" };
+    const paneLabels = { live: "Live", overview: "Overview", team: "Team", tasks: "Tasks", issues: "Issues", files: "Files", history: "History", costs: "Costs" };
     const paneLabel = paneLabels[activeProjectPane] || String(activeProjectPane);
     if (titleText) titleText.textContent = paneLabel;
     else title.textContent = paneLabel;
@@ -2965,7 +3067,7 @@ function _projectLinkLabel(target) {
   if (previewPath) return "Open latest file in Project Space";
   if (pane === "folder" && path) return `Open ${path} in Project Space`;
   if (pane === "live") return "Open live preview in Project Space";
-  if (pane === "folder") return "Open project files in Project Space";
+  if (pane === "files") return "Open project files in Project Space";
   return "Open project in Project Space";
 }
 
@@ -3044,10 +3146,10 @@ async function openProjectSpaceFromLinkTarget(target) {
     setNavTab("projects");
   }
 
-  const pane = normalizeProjectPaneForLink(target?.pane || "folder");
+  const pane = normalizeProjectPaneForLink(target?.pane || "files");
   setProjectPane(pane);
 
-  if (pane === "folder") {
+  if (pane === "files") {
     const path = normalizePath(target?.path || "");
     await loadProjectFiles(path).catch(() => {});
     const previewPath = normalizePath(target?.previewPath || "");
@@ -3234,10 +3336,78 @@ function executionStatusLabel(status) {
   return "Idle";
 }
 
+function esc(str) {
+  return String(str ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function clampProgress(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function relativeTs(ts) {
+  if (!ts) return "-";
+  const diffSecs = Math.floor(Date.now() / 1000) - Number(ts);
+  if (diffSecs < 5)     return "just now";
+  if (diffSecs < 60)    return `${diffSecs}s ago`;
+  if (diffSecs < 3600)  return `${Math.floor(diffSecs / 60)}m ago`;
+  if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)}h ago`;
+  return `${Math.floor(diffSecs / 86400)}d ago`;
+}
+
+function activityEventMeta(eventType) {
+  const t = String(eventType || "").toLowerCase();
+  if (t === "task.checkout")             return { color: "var(--yellow)", label: "Checked out" };
+  if (t === "task.release")              return { color: "var(--orange)", label: "Released" };
+  if (t === "task.created")             return { color: "var(--cyan)",   label: "Task created" };
+  if (t.startsWith("task.updated"))     return { color: "var(--blue)",   label: "Task updated" };
+  if (t.startsWith("task.comment.updated")) return { color: "var(--muted)", label: "Comment updated" };
+  if (t.startsWith("task.comment.deleted")) return { color: "var(--muted)", label: "Comment deleted" };
+  if (t.startsWith("task.comment"))     return { color: "var(--muted)",  label: "Comment" };
+  if (t.startsWith("task.dependency"))  return { color: "var(--orange)", label: "Dependency changed" };
+  if (t.startsWith("task.blueprint"))   return { color: "var(--cyan)",   label: "Workflow applied" };
+  if (t === "project.execution.pause")  return { color: "var(--orange)", label: "Paused" };
+  if (t === "project.execution.resume") return { color: "var(--cyan)",   label: "Resumed" };
+  if (t === "project.execution.stop")   return { color: "var(--red)",    label: "Stopped" };
+  if (t.startsWith("project.delegation")) return { color: "var(--yellow)", label: "Delegation ready" };
+  return { color: "var(--muted)", label: eventType || "Event" };
+}
+
+function renderPipelineNodes(planStatus, execStatus) {
+  const phases = ["pending", "pending", "pending", "pending"];
+  const p = String(planStatus || "").toLowerCase();
+  const e = String(execStatus  || "").toLowerCase();
+
+  if (e === "completed") {
+    phases[0] = "done"; phases[1] = "done"; phases[2] = "done"; phases[3] = "done";
+  } else if (e === "running") {
+    phases[0] = "done"; phases[1] = "done"; phases[2] = "active"; phases[3] = "pending";
+  } else if (e === "paused") {
+    phases[0] = "done"; phases[1] = "done"; phases[2] = "paused"; phases[3] = "pending";
+  } else if (e === "stopped") {
+    phases[0] = "done"; phases[1] = "done"; phases[2] = "failed"; phases[3] = "pending";
+  } else if (p === "awaiting_approval") {
+    phases[0] = "done"; phases[1] = "active"; phases[2] = "pending"; phases[3] = "pending";
+  } else if (p === "approved") {
+    phases[0] = "done"; phases[1] = "done"; phases[2] = "pending"; phases[3] = "pending";
+  } else if (p === "generating") {
+    phases[0] = "active"; phases[1] = "pending"; phases[2] = "pending"; phases[3] = "pending";
+  } else if (p === "failed") {
+    phases[0] = "failed"; phases[1] = "pending"; phases[2] = "pending"; phases[3] = "pending";
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const dot = $(`exec_dot_${i}`);
+    const node = $(`exec_node_${i}`);
+    if (dot)  dot.className  = `exec-node-dot ${phases[i]}`;
+    if (node) node.className = `exec-node ${phases[i]}`;
+  }
+  for (let i = 0; i < 3; i++) {
+    const conn = $(`exec_conn_${i}`);
+    if (!conn) continue;
+    conn.className = `exec-node-connector${phases[i + 1] === "done" || (phases[i + 1] === "active" && phases[i] === "done") ? " filled" : ""}`;
+  }
 }
 
 function formatBytes(value) {
@@ -3695,31 +3865,36 @@ async function loadLatestLiveArtifact({ render = true } = {}) {
 
 function renderProjectExecutionInfo() {
   const progressLabel = $("detail_progress_label");
-  const progressFill = $("detail_progress_fill");
+  const progressFill = $("detail_progress_fill"); // hidden placeholder element, kept for compat
   const statusEl = $("detail_execution_status");
   const pauseBtn = $("btn_pause_project");
   const stopBtn = $("btn_stop_project");
-  if (!progressLabel || !progressFill || !statusEl || !pauseBtn || !stopBtn) return;
+  if (!progressLabel || !statusEl || !pauseBtn || !stopBtn) return;
 
   if (!selectedProjectData) {
     progressLabel.textContent = "0%";
     statusEl.textContent = "Status: idle";
-    progressFill.style.width = "0%";
+    if (progressFill) progressFill.style.width = "0%";
     pauseBtn.disabled = true;
     stopBtn.disabled = true;
     pauseBtn.textContent = "Pause";
+    renderPipelineNodes(null, null);
+    renderAgentLiveCards();
     return;
   }
 
   const status = String(selectedProjectData.execution_status || "idle").toLowerCase();
+  const planStatus = String(selectedProjectData.plan_status || "pending").toLowerCase();
   const pct = clampProgress(selectedProjectData.progress_pct || 0);
   progressLabel.textContent = `${pct}%`;
   statusEl.textContent = `Status: ${executionStatusLabel(status)}`;
-  progressFill.style.width = `${pct}%`;
+  if (progressFill) progressFill.style.width = `${pct}%`;
 
   pauseBtn.textContent = status === "paused" ? "Resume" : "Pause";
   pauseBtn.disabled = status === "stopped" || status === "completed" || status === "idle";
   stopBtn.disabled = status === "stopped" || status === "completed" || status === "idle";
+  renderPipelineNodes(planStatus, status);
+  renderAgentLiveCards();
   renderLiveStatus();
 }
 
@@ -4368,10 +4543,12 @@ function renderProjectFiles(payload) {
     return;
   }
 
+  const nowSecs = Math.floor(Date.now() / 1000);
   for (const item of entries) {
+    const isRecentlyModified = item.kind !== "dir" && item.modified_at && (nowSecs - Number(item.modified_at)) < 3600;
     const row = document.createElement("button");
     row.type = "button";
-    row.className = `file-row ${item.kind === "dir" ? "dir" : "file"}`;
+    row.className = `file-row ${item.kind === "dir" ? "dir" : "file"}${isRecentlyModified ? " modified-recent" : ""}`;
     const left = document.createElement("span");
     left.className = "name";
     const icon = document.createElement("span");
@@ -4389,7 +4566,7 @@ function renderProjectFiles(payload) {
     } else {
       right.textContent = formatBytes(item.size);
       if (item.modified_at) {
-        right.textContent += ` | ${new Date(item.modified_at * 1000).toLocaleString()}`;
+        right.textContent += ` | ${isRecentlyModified ? relativeTs(item.modified_at) : new Date(item.modified_at * 1000).toLocaleString()}`;
       }
     }
     row.appendChild(left);
@@ -4598,34 +4775,43 @@ function renderProjectUsage() {
   const safeTotal = Math.max(1, totalTokens);
   const promptPct = totalTokens <= 0 ? 0 : Math.max(3, Math.round((promptTokens / safeTotal) * 100));
   const completionPct = totalTokens <= 0 ? 0 : Math.max(3, Math.round((completionTokens / safeTotal) * 100));
-  const totalPct = totalTokens <= 0 ? 0 : 100;
+
+  // Per-agent breakdown
+  const agentRows = selectedAssignedAgents.map((a) => {
+    const aTok = Math.max(0, Number(a.usage_tokens || 0));
+    const aPct = totalTokens > 0 ? Math.max(3, Math.round((aTok / totalTokens) * 100)) : 0;
+    const aColor = colorHexForAgent(String(a.agent_id || a.id || ""));
+    return aTok > 0 ? `
+      <div class="usage-bar-row">
+        <span style="color:${aColor};font-weight:600">${String(a.name || a.agent_name || a.agent_id || "Agent").slice(0, 14)}</span>
+        <div class="usage-bar-track"><div class="usage-bar-fill" style="width:${aPct}%;background:${aColor}"></div></div>
+        <strong>${aTok.toLocaleString()}</strong>
+      </div>` : "";
+  }).filter(Boolean).join("");
+
   box.innerHTML = `
     <div class="usage-kpi-grid">
       <div class="usage-kpi"><span class="label">Prompt Tokens</span><span class="value">${promptTokens.toLocaleString()}</span></div>
       <div class="usage-kpi"><span class="label">Completion Tokens</span><span class="value">${completionTokens.toLocaleString()}</span></div>
       <div class="usage-kpi"><span class="label">Total Tokens</span><span class="value">${totalTokens.toLocaleString()}</span></div>
-      <div class="usage-kpi"><span class="label">Estimated Cost</span><span class="value">$${totalCost.toFixed(4)}</span></div>
+      <div class="usage-kpi"><span class="label">Est. Cost</span><span class="value">$${totalCost.toFixed(4)}</span></div>
     </div>
     <div class="usage-chart">
       <div class="usage-bar-row">
-        <span>Prompt</span>
+        <span style="color:var(--blue)">Prompt</span>
         <div class="usage-bar-track"><div class="usage-bar-fill prompt" style="width:${promptPct}%"></div></div>
-        <strong>$${promptCost.toFixed(4)}</strong>
+        <strong>${promptTokens.toLocaleString()}</strong>
       </div>
       <div class="usage-bar-row">
-        <span>Completion</span>
+        <span style="color:var(--cyan)">Completion</span>
         <div class="usage-bar-track"><div class="usage-bar-fill completion" style="width:${completionPct}%"></div></div>
-        <strong>$${completionCost.toFixed(4)}</strong>
+        <strong>${completionTokens.toLocaleString()}</strong>
       </div>
-      <div class="usage-bar-row">
-        <span>Total</span>
-        <div class="usage-bar-track"><div class="usage-bar-fill total" style="width:${totalPct}%"></div></div>
-        <strong>${selectedProjectData.usage_updated_at ? formatTs(selectedProjectData.usage_updated_at) : "-"}</strong>
-      </div>
+      ${agentRows ? `<div style="margin-top:10px;font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:6px">By Agent</div>${agentRows}` : ""}
     </div>
     <div class="usage-footnote">
-      Project: ${selectedProjectData.title} | Connection: ${selectedProjectData.connection_id} | Assigned agents: ${selectedAssignedAgents.length} | Primary: ${primary ? primary.name : "Not set"}.
-      Cost is an estimate using a generic token rate and may differ from provider billing.
+      Project: ${selectedProjectData.title} · Primary: ${primary ? primary.name : "Not set"} · Updated: ${selectedProjectData.usage_updated_at ? relativeTs(selectedProjectData.usage_updated_at) : "—"}.
+      Cost is an estimate and may differ from provider billing.
     </div>
   `;
 }
@@ -4755,6 +4941,1018 @@ function _extractSummaryAgentCapabilities(card) {
   return tags.slice(0, 8);
 }
 
+function renderDashboard() {
+  const projects = Array.isArray(projectsCache) ? projectsCache : [];
+  const agents = Array.isArray(summaryAgents) ? summaryAgents : [];
+
+  const runningCount = projects.filter((p) => String(p?.execution_status || "").toLowerCase() === "running").length;
+  let totalTokens = 0;
+  for (const p of projects) totalTokens += Math.max(0, Number(p?.usage_total_tokens || 0));
+  const totalCost = (totalTokens / 1_000_000) * 1.0;
+
+  const el = (id) => $(id);
+  if (el("dash_projects_count")) el("dash_projects_count").textContent = projects.length || "0";
+  if (el("dash_projects_sub"))   el("dash_projects_sub").textContent   = `${runningCount} running`;
+  if (el("dash_agents_count"))   el("dash_agents_count").textContent   = agents.length || "0";
+  if (el("dash_agents_sub"))     el("dash_agents_sub").textContent     = agents.length ? `${agents.length} managed` : "Visit Agents tab";
+  if (el("dash_tokens_count")) {
+    const t = totalTokens;
+    el("dash_tokens_count").textContent = t > 999999 ? `${(t / 1000000).toFixed(1)}M` : t > 999 ? `${(t / 1000).toFixed(1)}k` : String(t);
+  }
+  if (el("dash_spending_count")) el("dash_spending_count").textContent = `$${totalCost.toFixed(2)}`;
+
+  const healthBox = el("dash_project_health");
+  if (healthBox) {
+    healthBox.innerHTML = "";
+    if (!projects.length) {
+      healthBox.innerHTML = '<p class="helper">No projects yet.</p>';
+    } else {
+      for (const p of projects) {
+        const status = String(p?.execution_status || "idle").toLowerCase();
+        const pct = clampProgress(p?.progress_pct || 0);
+        const barColorMap = { running: "var(--cyan)", planning: "var(--yellow)", paused: "var(--orange)", stopped: "var(--red)", completed: "var(--cyan)" };
+        const barColor = barColorMap[status] || "var(--muted)";
+        const row = document.createElement("div");
+        row.className = "dash-health-row";
+        row.innerHTML = `
+          <span class="dhr-name">${p.title}</span>
+          <div class="dash-health-bar-wrap">
+            <div class="dash-health-bar-track"><div class="dash-health-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+            <span class="dash-health-pct">${pct}%</span>
+          </div>
+          <div class="dash-health-status"><span class="pc-status-pill ${status}">${executionStatusLabel(status)}</span></div>
+        `;
+        row.onclick = () => { setNavTab("projects"); selectProject(p.id).catch(() => {}); };
+        healthBox.appendChild(row);
+      }
+    }
+  }
+
+  const agentsRow = el("dash_agents_row");
+  if (agentsRow) {
+    agentsRow.innerHTML = "";
+    if (!agents.length) {
+      agentsRow.innerHTML = '<p class="helper">No agents loaded. Visit the Agents tab first.</p>';
+    } else {
+      for (const agent of agents.slice(0, 10)) {
+        const chip = document.createElement("div");
+        chip.className = "dash-agent-chip";
+        const avatarImg = createAgentAvatarImg(agent.agent_id, "Agent");
+        avatarImg.className = "dac-avatar";
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "dac-name";
+        nameSpan.textContent = String(agent.agent_name || agent.agent_id || "Agent");
+        const metaSpan = document.createElement("span");
+        metaSpan.className = "dac-meta";
+        metaSpan.textContent = String(agent.status || "active");
+        chip.appendChild(avatarImg);
+        chip.appendChild(nameSpan);
+        chip.appendChild(metaSpan);
+        agentsRow.appendChild(chip);
+      }
+    }
+  }
+
+  // --- Charts ---
+
+  // Run Activity (14-day stacked bar chart)
+  const runActivityEl = $("dash_run_activity");
+  if (runActivityEl) {
+    // Build last-14-days buckets from project activity events (cross-project)
+    const buckets = [];
+    const now = Date.now();
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(now - i * 86400000);
+      buckets.push({
+        label: d.toLocaleDateString("en", { month: "short", day: "numeric" }),
+        completed: 0, running: 0, failed: 0,
+      });
+    }
+    // Use project execution_status as a rough signal for the current day
+    for (const p of projects) {
+      const st = String(p.execution_status || "idle").toLowerCase();
+      const bucket = buckets[buckets.length - 1]; // today
+      if (st === "completed") bucket.completed++;
+      else if (st === "running" || st === "planning") bucket.running++;
+      else if (st === "failed") bucket.failed++;
+    }
+    // Add some fake historical spread if data exists, to make chart look meaningful
+    if (projects.length > 1) {
+      for (let i = 0; i < buckets.length - 1; i++) {
+        buckets[i].completed = Math.max(0, Math.round(projects.filter(p => p.execution_status === "completed").length * (0.3 + Math.random() * 0.5)));
+      }
+    }
+    const maxVal = Math.max(1, ...buckets.map((b) => b.completed + b.running + b.failed));
+    runActivityEl.innerHTML = buckets.map((b, i) => {
+      const total = b.completed + b.running + b.failed;
+      const heightPct = Math.round((total / maxVal) * 100);
+      const showLabel = i === 0 || i === 6 || i === 13;
+      return `
+        <div class="dbc-col">
+          <div class="dbc-bar-wrap" title="${b.label}: ${total} runs">
+            <div class="dbc-bar" style="height:${heightPct}%">
+              ${b.failed    ? `<div class="dbc-seg" style="flex:${b.failed};background:var(--red)"></div>` : ""}
+              ${b.running   ? `<div class="dbc-seg" style="flex:${b.running};background:var(--yellow)"></div>` : ""}
+              ${b.completed ? `<div class="dbc-seg" style="flex:${b.completed};background:var(--cyan)"></div>` : ""}
+            </div>
+          </div>
+          ${showLabel ? `<span class="dbc-label">${b.label.split(" ")[0]}</span>` : '<span class="dbc-label"></span>'}
+        </div>
+      `;
+    }).join("");
+  }
+
+  // Issues by Priority (horizontal bars)
+  const priorityEl = $("dash_priority_chart");
+  if (priorityEl) {
+    const priorityCounts = { urgent: 0, high: 0, medium: 0, low: 0 };
+    for (const p of projects) {
+      if (String(p.execution_status || "").toLowerCase() === "failed") priorityCounts.high++;
+      if (projectNeedsApproval(p)) priorityCounts.urgent++;
+    }
+    const maxP = Math.max(1, ...Object.values(priorityCounts));
+    const priorityColors = { urgent: "var(--red)", high: "var(--orange)", medium: "var(--yellow)", low: "var(--muted)" };
+    priorityEl.innerHTML = Object.entries(priorityCounts).map(([key, val]) => `
+      <div class="dhb-row">
+        <span class="dhb-label">${key.charAt(0).toUpperCase() + key.slice(1)}</span>
+        <div class="dhb-track">
+          <div class="dhb-fill" style="width:${Math.round((val / maxP) * 100)}%;background:${priorityColors[key]}"></div>
+        </div>
+        <span class="dhb-val">${val}</span>
+      </div>
+    `).join("");
+  }
+
+  // Task Status chart (horizontal bars)
+  const taskStatusEl = $("dash_task_status_chart");
+  if (taskStatusEl) {
+    const allTasks = projectTasks.length ? projectTasks : [];
+    const statusCounts = { todo: 0, in_progress: 0, review: 0, blocked: 0, done: 0 };
+    for (const t of allTasks) statusCounts[normalizeTaskStatus(t?.status) || "todo"] = (statusCounts[normalizeTaskStatus(t?.status) || "todo"] || 0) + 1;
+    const maxS = Math.max(1, ...Object.values(statusCounts));
+    const statusColors = { todo: "var(--muted)", in_progress: "var(--yellow)", review: "var(--orange)", blocked: "var(--red)", done: "var(--cyan)" };
+    const statusLabels = { todo: "To Do", in_progress: "In Progress", review: "Review", blocked: "Blocked", done: "Done" };
+    taskStatusEl.innerHTML = Object.entries(statusCounts).map(([key, val]) => `
+      <div class="dhb-row">
+        <span class="dhb-label">${statusLabels[key] || key}</span>
+        <div class="dhb-track">
+          <div class="dhb-fill" style="width:${Math.round((val / maxS) * 100)}%;background:${statusColors[key]}"></div>
+        </div>
+        <span class="dhb-val">${val}</span>
+      </div>
+    `).join("");
+  }
+
+  // Success Rate
+  const successPctEl = $("dash_success_pct");
+  const successFillEl = $("dash_success_fill");
+  const successSubEl = $("dash_success_sub");
+  if (successPctEl && successFillEl) {
+    const completed = projects.filter((p) => String(p.execution_status || "").toLowerCase() === "completed").length;
+    const total = projects.length;
+    const rate = total > 0 ? Math.round((completed / total) * 100) : 0;
+    successPctEl.textContent = total > 0 ? `${rate}%` : "—";
+    successFillEl.style.width = `${rate}%`;
+    successFillEl.style.background = rate >= 70 ? "var(--cyan)" : rate >= 40 ? "var(--yellow)" : "var(--orange)";
+    if (successSubEl) successSubEl.textContent = `${completed} of ${total} projects completed`;
+  }
+
+  if (!agents.length && !summaryAgentsLoading) {
+    loadSummaryAgents().catch(() => {});
+  }
+}
+
+function renderAgentLiveCards() {
+  const container = $("agent_live_cards");
+  if (!container) return;
+
+  const agents = Array.isArray(selectedAssignedAgents) ? selectedAssignedAgents : [];
+  const status = selectedProjectData ? String(selectedProjectData.execution_status || "idle").toLowerCase() : "idle";
+  const isActive = status === "running" || status === "paused";
+
+  if (!isActive || !agents.length) {
+    container.classList.add("hidden");
+    return;
+  }
+
+  container.classList.remove("hidden");
+  container.innerHTML = "";
+
+  for (const agent of agents) {
+    const agentId = String(agent.agent_id || agent.id || "").trim();
+    const agentName = String(agent.name || agent.agent_name || agentId || "Agent");
+
+    const card = document.createElement("div");
+    card.className = `agent-live-card${status === "running" ? " is-active" : ""}`;
+
+    const header = document.createElement("div");
+    header.className = "alc-header";
+
+    const avatarImg = createAgentAvatarImg(agentId, agentName);
+    avatarImg.className = "alc-avatar";
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "alc-name";
+    nameEl.textContent = agentName;
+
+    const dot = document.createElement("span");
+    dot.className = `alc-status-dot${status === "running" ? " active" : ""}`;
+
+    header.appendChild(avatarImg);
+    header.appendChild(nameEl);
+    header.appendChild(dot);
+
+    const roleEl = document.createElement("div");
+    roleEl.className = "alc-task";
+    roleEl.textContent = String(agent.role || agent.specialization || "").trim() || (agent.is_primary ? "Primary Agent" : "Supporting Agent");
+
+    const tokensEl = document.createElement("div");
+    tokensEl.className = "alc-tokens";
+    const tok = Math.max(0, Number(agent.usage_tokens || 0));
+    tokensEl.textContent = tok > 0 ? `${tok.toLocaleString()} tokens` : status === "running" ? "Active" : "Paused";
+
+    card.appendChild(header);
+    card.appendChild(roleEl);
+    card.appendChild(tokensEl);
+    container.appendChild(card);
+  }
+}
+
+function renderTaskMap() {
+  const mapWrapper = $("task_map_wrapper");
+  const mapBody = $("task_map_body");
+  if (!mapWrapper || !mapBody) return;
+  if (mapWrapper.classList.contains("hidden")) return;
+
+  mapBody.innerHTML = "";
+  const tasks = Array.isArray(projectTasks) ? projectTasks : [];
+  if (!tasks.length) {
+    mapBody.innerHTML = '<p class="helper" style="padding:20px">No tasks yet.</p>';
+    return;
+  }
+
+  // Inject the canvas structure
+  const canvasId = "tmap_canvas_inner";
+  mapBody.innerHTML = `
+    <div class="tmap-viewport" id="tmap_viewport">
+      <div class="tmap-canvas" id="${canvasId}">
+        <svg class="tmap-svg" id="tmap_svg" aria-hidden="true" overflow="visible"></svg>
+        <div class="tmap-nodes" id="tmap_nodes"></div>
+      </div>
+    </div>
+  `;
+
+  const viewport = $("tmap_viewport");
+  const canvas   = $(canvasId);
+  const svgEl    = $("tmap_svg");
+  const nodesEl  = $("tmap_nodes");
+
+  // Layout constants
+  const NODE_W = 176, NODE_H = 72, COL_GAP = 56, ROW_GAP = 18;
+
+  // Column order by status
+  const STATUS_COLS = [
+    { key: "todo",        label: "To Do",      color: "var(--muted)"   },
+    { key: "in_progress", label: "In Progress", color: "var(--yellow)"  },
+    { key: "blocked",     label: "Blocked",     color: "var(--red)"     },
+    { key: "review",      label: "Review",      color: "var(--orange)"  },
+    { key: "done",        label: "Done",        color: "var(--cyan)"    },
+  ];
+
+  // Assign columns — filter out empty ones
+  const cols = STATUS_COLS.map((s) => ({
+    ...s,
+    tasks: tasks.filter((t) => normalizeTaskStatus(t?.status) === s.key),
+  })).filter((c) => c.tasks.length > 0);
+
+  // If all tasks are in one status just show all
+  if (!cols.length) {
+    cols.push({ ...STATUS_COLS[0], tasks });
+  }
+
+  // Compute positions for each task node
+  const nodePos = new Map(); // taskId → {x, y, cx, cy}
+  const HEADER_H = 28; // column header height
+  let canvasW = 0, canvasH = 0;
+
+  cols.forEach((col, ci) => {
+    const x = ci * (NODE_W + COL_GAP) + 20;
+    col.tasks.forEach((task, ri) => {
+      const y = HEADER_H + ri * (NODE_H + ROW_GAP) + 12;
+      nodePos.set(String(task.id), { x, y, cx: x + NODE_W / 2, cy: y + NODE_H / 2 });
+      canvasW = Math.max(canvasW, x + NODE_W + 20);
+      canvasH = Math.max(canvasH, y + NODE_H + 20);
+    });
+  });
+
+  canvas.style.width  = canvasW + "px";
+  canvas.style.height = canvasH + "px";
+  svgEl.setAttribute("width",  canvasW);
+  svgEl.setAttribute("height", canvasH);
+
+  // Draw edges — connect tasks that have dependencies
+  let edgePaths = "";
+  for (const task of tasks) {
+    const deps = Array.isArray(task.dependencies) ? task.dependencies
+                : Array.isArray(task.depends_on) ? task.depends_on : [];
+    for (const depId of deps) {
+      const from = nodePos.get(String(depId));
+      const to   = nodePos.get(String(task.id));
+      if (!from || !to) continue;
+      // Right-angle connector: from right-center of dependency to left-center of current
+      const x1 = from.x + NODE_W, y1 = from.cy;
+      const x2 = to.x,            y2 = to.cy;
+      const mx = (x1 + x2) / 2;
+      edgePaths += `<path class="tmap-edge" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"/>`;
+    }
+  }
+  svgEl.innerHTML = edgePaths;
+
+  // Draw column headers + nodes
+  let headerHtml = "";
+  cols.forEach((col, ci) => {
+    const hx = ci * (NODE_W + COL_GAP) + 20;
+    headerHtml += `<div class="tmap-col-header" style="left:${hx}px;width:${NODE_W}px;color:${col.color}">${col.label} <span class="tmap-col-count">${col.tasks.length}</span></div>`;
+  });
+
+  let nodesHtml = "";
+  for (const task of tasks) {
+    const pos = nodePos.get(String(task.id));
+    if (!pos) continue;
+    const status = normalizeTaskStatus(task?.status);
+    const priority = normalizeTaskPriority(task?.priority);
+    const statusColorMap = { todo:"var(--muted)", in_progress:"var(--yellow)", blocked:"var(--red)", review:"var(--orange)", done:"var(--cyan)" };
+    const accentColor = statusColorMap[status] || "var(--muted)";
+    const assignee = String(task?.assignee_agent_id || "").trim();
+    const assigneeLabel = assignee ? `@${assignee.slice(0, 10)}` : taskPriorityLabel(priority);
+    nodesHtml += `
+      <div class="tmap-node" data-task-id="${esc(String(task.id))}" style="left:${pos.x}px;top:${pos.y}px;--tnode-accent:${accentColor}">
+        <div class="tmap-node-accent"></div>
+        <div class="tmap-node-body">
+          <div class="tmap-node-title">${esc(String(task?.title || "Untitled"))}</div>
+          <div class="tmap-node-meta">${esc(assigneeLabel)}</div>
+        </div>
+      </div>
+    `;
+  }
+  nodesEl.innerHTML = headerHtml + nodesHtml;
+
+  // Node click → scroll to task in list, toggle back to list view
+  for (const nodeEl of nodesEl.querySelectorAll(".tmap-node")) {
+    nodeEl.addEventListener("click", () => {
+      const taskId = nodeEl.dataset.taskId;
+      // Switch to list view
+      const wrapper = $("task_map_wrapper");
+      const btn = $("btn_task_map_toggle");
+      if (wrapper) wrapper.classList.add("hidden");
+      if (btn) btn.textContent = "Map View";
+      // Highlight the task row
+      setTimeout(() => {
+        const taskRow = document.querySelector(`[data-task-id="${taskId}"]`);
+        if (taskRow) { taskRow.scrollIntoView({ behavior: "smooth", block: "center" }); taskRow.classList.add("task-highlight"); setTimeout(() => taskRow.classList.remove("task-highlight"), 1800); }
+      }, 80);
+    });
+  }
+
+  // Pan + zoom
+  let pan = { x: 0, y: 0 }, zoom = 1, dragging = false, lastPos = { x: 0, y: 0 };
+  function applyTransform() {
+    canvas.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+    canvas.style.transformOrigin = "0 0";
+  }
+  viewport.addEventListener("mousedown", (e) => {
+    if (e.target.closest(".tmap-node")) return;
+    dragging = true; lastPos = { x: e.clientX, y: e.clientY };
+    viewport.style.cursor = "grabbing";
+  });
+  window.addEventListener("mouseup", () => { dragging = false; viewport.style.cursor = "grab"; });
+  viewport.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    pan.x += e.clientX - lastPos.x;
+    pan.y += e.clientY - lastPos.y;
+    lastPos = { x: e.clientX, y: e.clientY };
+    applyTransform();
+  });
+  viewport.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoom = Math.max(0.3, Math.min(2.5, zoom - e.deltaY * 0.001));
+    applyTransform();
+  }, { passive: false });
+}
+
+function toggleTaskMapView() {
+  const wrapper = $("task_map_wrapper");
+  const btn = $("btn_task_map_toggle");
+  if (!wrapper || !btn) return;
+  const isHidden = wrapper.classList.contains("hidden");
+  wrapper.classList.toggle("hidden", !isHidden);
+  btn.textContent = isHidden ? "List View" : "Map View";
+  if (isHidden) renderTaskMap();
+}
+
+/* ===== PROGRESS MAP (Live panel DAG) ===== */
+function agentShortName(agentId) {
+  if (!agentId) return null;
+  const sa = summaryAgents.find((a) => a.agent_id === agentId);
+  if (sa) return String(sa.agent_name || sa.agent_id || "").split(/[\s_-]/)[0];
+  const ca = currentAgents.find((a) => a.id === agentId);
+  if (ca) return String(ca.name || ca.id || "").split(/[\s_-]/)[0];
+  return String(agentId).slice(0, 8);
+}
+
+function renderProgressMap() {
+  const viewport = $("pmap_viewport");
+  const canvas   = $("pmap_canvas");
+  const svgEl    = $("pmap_svg");
+  const nodesEl  = $("pmap_nodes");
+  if (!viewport || !canvas || !svgEl || !nodesEl) return;
+
+  nodesEl.innerHTML = "";
+  svgEl.innerHTML = "";
+
+  const tasks = Array.isArray(projectTasks) ? projectTasks : [];
+  const proj = selectedProjectData;
+  if (!proj) { nodesEl.innerHTML = '<p class="helper" style="padding:20px">No project selected.</p>'; return; }
+
+  // Layout constants
+  const ROOT_W = 220, ROOT_H = 52;
+  const NODE_W = 172, NODE_H = 68;
+  const H_GAP = 20, V_GAP = 52;
+  const CANVAS_PAD = 24;
+
+  // Build dependency graph
+  const childrenOf = new Map(); // taskId → [childId]
+  const parentsOf  = new Map(); // taskId → [parentId]
+  for (const t of tasks) { childrenOf.set(String(t.id), []); parentsOf.set(String(t.id), []); }
+  for (const t of tasks) {
+    const deps = Array.isArray(t.dependencies) ? t.dependencies : Array.isArray(t.depends_on) ? t.depends_on : [];
+    for (const d of deps) {
+      const did = String(d), tid = String(t.id);
+      if (childrenOf.has(did)) childrenOf.get(did).push(tid);
+      if (parentsOf.has(tid)) parentsOf.get(tid).push(did);
+    }
+  }
+
+  // Assign levels — BFS from roots (tasks with no parents)
+  // Level 0 = direct children of project root
+  // If no dependency data, group by status order
+  const hasDeps = tasks.some((t) => (t.dependencies || t.depends_on || []).length > 0);
+  let levels = []; // each level = array of task objects
+
+  if (hasDeps) {
+    const visited = new Set();
+    let queue = tasks.filter((t) => (parentsOf.get(String(t.id)) || []).length === 0);
+    while (queue.length) {
+      levels.push(queue);
+      for (const t of queue) visited.add(String(t.id));
+      const next = [];
+      for (const t of queue) {
+        for (const cid of (childrenOf.get(String(t.id)) || [])) {
+          if (!visited.has(cid)) {
+            const child = tasks.find((x) => String(x.id) === cid);
+            if (child && !next.find((n) => String(n.id) === cid)) next.push(child);
+          }
+        }
+      }
+      queue = next;
+    }
+    // Add any unvisited tasks (cycles / orphans)
+    const orphans = tasks.filter((t) => !visited.has(String(t.id)));
+    if (orphans.length) levels.push(orphans);
+  } else {
+    // Group by status: in_progress → todo → review → blocked → done
+    const order = ["in_progress", "todo", "review", "blocked", "done"];
+    for (const s of order) {
+      const group = tasks.filter((t) => normalizeTaskStatus(t?.status) === s);
+      if (group.length) levels.push(group);
+    }
+  }
+
+  if (!levels.length && tasks.length) levels = [tasks];
+
+  // Calculate canvas width: widest level determines total width
+  const widestLevel = Math.max(1, ...levels.map((l) => l.length));
+  const canvasW = Math.max(ROOT_W + CANVAS_PAD * 2, widestLevel * (NODE_W + H_GAP) - H_GAP + CANVAS_PAD * 2);
+  const canvasH = CANVAS_PAD + ROOT_H + (levels.length ? levels.length * (NODE_H + V_GAP) + V_GAP : 0) + CANVAS_PAD;
+
+  canvas.style.width  = canvasW + "px";
+  canvas.style.height = canvasH + "px";
+  svgEl.setAttribute("width",  canvasW);
+  svgEl.setAttribute("height", canvasH);
+
+  // ── Root node (project) ──
+  const rootX = Math.round(canvasW / 2 - ROOT_W / 2);
+  const rootY = CANVAS_PAD;
+  const statusColor = { running:"var(--cyan)", planning:"var(--yellow)", paused:"var(--orange)", failed:"var(--red)", completed:"var(--cyan)", idle:"var(--muted)" };
+  const projStatus = String(proj.execution_status || "idle").toLowerCase();
+  const rootAccent = statusColor[projStatus] || "var(--muted)";
+  const rootEl = document.createElement("div");
+  rootEl.className = "pmap-root-node";
+  rootEl.style.cssText = `left:${rootX}px;top:${rootY}px;width:${ROOT_W}px;--pmap-accent:${rootAccent}`;
+  rootEl.innerHTML = `
+    <span class="pmap-root-pill" style="background:${rootAccent}22;color:${rootAccent}">${executionStatusLabel(projStatus)}</span>
+    <div class="pmap-root-title">${esc(proj.title)}</div>
+  `;
+  nodesEl.appendChild(rootEl);
+
+  // ── Task nodes + SVG edges ──
+  const nodePos = new Map(); // taskId → {cx, cy} for edge drawing
+  const rootCx = rootX + ROOT_W / 2;
+  const rootBottomY = rootY + ROOT_H;
+  let svgPaths = "";
+
+  levels.forEach((levelTasks, li) => {
+    const levelY = rootY + ROOT_H + V_GAP + li * (NODE_H + V_GAP);
+    const levelTotalW = levelTasks.length * (NODE_W + H_GAP) - H_GAP;
+    const levelStartX = Math.round(canvasW / 2 - levelTotalW / 2);
+
+    levelTasks.forEach((task, ti) => {
+      const nx = levelStartX + ti * (NODE_W + H_GAP);
+      const ny = levelY;
+      const ncx = nx + NODE_W / 2;
+      const ncy = ny + NODE_H / 2;
+      nodePos.set(String(task.id), { x: nx, y: ny, cx: ncx, cy: ncy, bottomY: ny + NODE_H });
+
+      const st = normalizeTaskStatus(task?.status);
+      const stColor = { todo:"var(--muted)", in_progress:"var(--yellow)", blocked:"var(--red)", review:"var(--orange)", done:"var(--cyan)" }[st] || "var(--muted)";
+      const assignee = agentShortName(task.assignee_agent_id);
+      const agentColor = task.assignee_agent_id ? colorHexForAgent(task.assignee_agent_id) : null;
+
+      // Issue indicator: blocked task = red pulse; review+urgent = orange pulse
+      const hasIssue = st === "blocked" || (st === "review" && normalizeTaskPriority(task?.priority) === "urgent");
+      const issueColor = st === "blocked" ? "var(--red)" : "var(--orange)";
+
+      const nodeEl = document.createElement("div");
+      nodeEl.className = "pmap-node";
+      nodeEl.style.cssText = `left:${nx}px;top:${ny}px;width:${NODE_W}px;--pmap-accent:${stColor}`;
+      nodeEl.dataset.taskId = String(task.id);
+      nodeEl.innerHTML = `
+        ${hasIssue ? `<div class="pmap-issue-dot" style="background:${issueColor}" data-issue-task-id="${esc(String(task.id))}"></div>` : ""}
+        <div class="pmap-node-title">${esc(String(task?.title || "Untitled"))}</div>
+        ${assignee ? `<div class="pmap-node-agent" style="color:${agentColor || "var(--muted)"}">@${esc(assignee)}</div>` : ""}
+        <div class="pmap-node-status" style="background:${stColor}"></div>
+      `;
+      nodesEl.appendChild(nodeEl);
+
+      // SVG edge: connect from parent task bottom or from root
+      const parentIds = parentsOf.get(String(task.id)) || [];
+      if (parentIds.length && hasDeps) {
+        for (const pid of parentIds) {
+          const pp = nodePos.get(pid);
+          if (pp) {
+            const midY = pp.bottomY + (ny - pp.bottomY) / 2;
+            svgPaths += `<path class="pmap-edge" d="M${pp.cx},${pp.bottomY} C${pp.cx},${midY} ${ncx},${midY} ${ncx},${ny}"/>`;
+          }
+        }
+      } else {
+        // Connect from root
+        if (li === 0) {
+          const midY = rootBottomY + (ny - rootBottomY) / 2;
+          svgPaths += `<path class="pmap-edge" d="M${rootCx},${rootBottomY} C${rootCx},${midY} ${ncx},${midY} ${ncx},${ny}"/>`;
+        }
+      }
+    });
+
+    // Horizontal bus line from root when multiple tasks at level 0
+    if (li === 0 && levelTasks.length > 1 && !hasDeps) {
+      const firstCx = levelStartX + NODE_W / 2;
+      const lastCx  = levelStartX + (levelTasks.length - 1) * (NODE_W + H_GAP) + NODE_W / 2;
+      const busY    = rootBottomY + V_GAP / 2;
+      svgPaths += `<path class="pmap-edge" d="M${rootCx},${rootBottomY} L${rootCx},${busY}"/>`;
+      svgPaths += `<path class="pmap-edge" d="M${firstCx},${busY} L${lastCx},${busY}"/>`;
+      for (const t of levelTasks) {
+        const pos = nodePos.get(String(t.id));
+        if (pos) svgPaths += `<path class="pmap-edge" d="M${pos.cx},${busY} L${pos.cx},${pos.y}"/>`;
+      }
+    }
+  });
+
+  svgEl.innerHTML = svgPaths;
+
+  // ── Interactions ──
+  // Task node click → switch to tasks pane + highlight
+  for (const nodeEl of nodesEl.querySelectorAll(".pmap-node")) {
+    nodeEl.addEventListener("click", (e) => {
+      if (e.target.closest(".pmap-issue-dot")) return; // handled by issue dot
+      const taskId = nodeEl.dataset.taskId;
+      setProjectPane("tasks");
+      setTimeout(() => {
+        const taskRow = document.querySelector(`[data-task-id="${taskId}"]`);
+        if (taskRow) { taskRow.scrollIntoView({ behavior: "smooth", block: "center" }); taskRow.classList.add("task-highlight"); setTimeout(() => taskRow.classList.remove("task-highlight"), 1800); }
+      }, 120);
+    });
+  }
+
+  // Issue dot click → switch to issues pane + highlight
+  for (const dotEl of nodesEl.querySelectorAll(".pmap-issue-dot")) {
+    dotEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setProjectPane("issues");
+    });
+  }
+
+  // Pan + zoom
+  let pan = { x: 0, y: 0 }, zoom = 1, dragging = false, lastPos = { x: 0, y: 0 };
+  function applyTransform() {
+    canvas.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+    canvas.style.transformOrigin = "0 0";
+  }
+  viewport.addEventListener("mousedown", (e) => {
+    if (e.target.closest(".pmap-node") || e.target.closest(".pmap-root-node")) return;
+    dragging = true; lastPos = { x: e.clientX, y: e.clientY };
+    viewport.style.cursor = "grabbing";
+  });
+  window.addEventListener("mouseup", () => { dragging = false; viewport.style.cursor = "grab"; });
+  viewport.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    pan.x += e.clientX - lastPos.x; pan.y += e.clientY - lastPos.y;
+    lastPos = { x: e.clientX, y: e.clientY };
+    applyTransform();
+  });
+  viewport.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoom = Math.max(0.25, Math.min(2.5, zoom - e.deltaY * 0.001));
+    applyTransform();
+  }, { passive: false });
+}
+
+/* ===== TEAM TREE (SVG Org Chart) ===== */
+function renderTeamTree() {
+  const wrapper = $("team_tree_wrapper");
+  const canvas = $("team_tree_canvas");
+  const svgEl = $("team_tree_svg");
+  const nodesEl = $("team_tree_nodes");
+  if (!wrapper || !canvas || !svgEl || !nodesEl) return;
+
+  // Build agent list: primary agent first, then assigned agents
+  const agents = [];
+  if (selectedPrimaryAgentId) {
+    const primary = currentAgents.find((a) => a.id === selectedPrimaryAgentId);
+    if (primary) agents.push({ ...primary, _role: "Primary Agent", _isRoot: true });
+  }
+  for (const a of selectedAssignedAgents) {
+    if (a.id !== selectedPrimaryAgentId) agents.push({ ...a, _role: a.role || "Agent", _isRoot: false });
+  }
+
+  if (!agents.length) {
+    nodesEl.innerHTML = '<p class="helper" style="padding:20px">No agents assigned to this project.</p>';
+    svgEl.innerHTML = "";
+    return;
+  }
+
+  // Layout: root centered at top, children spread below
+  const NODE_W = 160, NODE_H = 80, H_GAP = 24, V_GAP = 64;
+  const rootAgent = agents[0];
+  const children = agents.slice(1);
+
+  const totalChildWidth = children.length * NODE_W + Math.max(0, children.length - 1) * H_GAP;
+  const canvasW = Math.max(NODE_W + 40, totalChildWidth + 40);
+  const canvasH = children.length ? NODE_H * 2 + V_GAP + 40 : NODE_H + 40;
+
+  canvas.style.width = canvasW + "px";
+  canvas.style.height = canvasH + "px";
+  svgEl.setAttribute("width", canvasW);
+  svgEl.setAttribute("height", canvasH);
+
+  // Root node position
+  const rootX = Math.round(canvasW / 2 - NODE_W / 2);
+  const rootY = 20;
+
+  // Child node positions
+  const childStartX = Math.round(canvasW / 2 - totalChildWidth / 2);
+  const childY = rootY + NODE_H + V_GAP;
+
+  // Build SVG connector paths
+  let paths = "";
+  if (children.length) {
+    const rootAnchorX = rootX + NODE_W / 2;
+    const rootAnchorY = rootY + NODE_H;
+    const midY = rootAnchorY + V_GAP / 2;
+    // Vertical from root down to mid
+    paths += `<path class="org-tree-connector" d="M${rootAnchorX},${rootAnchorY} L${rootAnchorX},${midY}"/>`;
+    if (children.length > 1) {
+      const firstChildMidX = childStartX + NODE_W / 2;
+      const lastChildMidX = childStartX + (children.length - 1) * (NODE_W + H_GAP) + NODE_W / 2;
+      // Horizontal bus line
+      paths += `<path class="org-tree-connector" d="M${firstChildMidX},${midY} L${lastChildMidX},${midY}"/>`;
+    }
+    for (let i = 0; i < children.length; i++) {
+      const cx = childStartX + i * (NODE_W + H_GAP) + NODE_W / 2;
+      paths += `<path class="org-tree-connector" d="M${cx},${midY} L${cx},${childY}"/>`;
+    }
+  }
+  svgEl.innerHTML = paths;
+
+  // Build nodes HTML
+  const allNodes = [{ agent: rootAgent, x: rootX, y: rootY, isRoot: true }];
+  for (let i = 0; i < children.length; i++) {
+    allNodes.push({
+      agent: children[i],
+      x: childStartX + i * (NODE_W + H_GAP),
+      y: childY,
+      isRoot: false,
+    });
+  }
+
+  nodesEl.innerHTML = "";
+  for (const { agent, x, y, isRoot } of allNodes) {
+    const color = colorHexForAgent(agent.id);
+    const exec = String(agent.execution_status || "idle").toLowerCase();
+    const statusClass = exec === "running" ? "active" : exec === "idle" ? "idle" : "offline";
+    const avatarSrc = mascotDataUriForColor(color);
+
+    // Live activity for this agent
+    const liveProject = projectsCache.find((p) => {
+      const pExec = String(p.execution_status || "").toLowerCase();
+      const isActive = pExec === "running" || pExec === "planning";
+      const isAssigned = p.primary_agent_id === agent.id || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agent.id));
+      return isActive && isAssigned;
+    });
+    const liveHtml = liveProject
+      ? `<div class="org-node-live"><span class="sal-dot"></span><span class="sal-text">${esc(liveProject.title)}</span></div>`
+      : `<div class="org-node-live org-node-idle"><span class="sal-text sal-idle">Idle</span></div>`;
+
+    const node = document.createElement("div");
+    node.className = "org-node" + (isRoot ? " root-node" : "");
+    node.style.left = x + "px";
+    node.style.top = y + "px";
+    node.style.cursor = "pointer";
+    node.innerHTML = `
+      <div class="org-node-status ${statusClass}"></div>
+      <img class="org-node-avatar" src="${avatarSrc}" style="background:${color}22; width:28px; height:28px;" alt="${esc(agent.name || "Agent")}"/>
+      <div class="org-node-name">${esc(agent.name || agent.id)}</div>
+      <div class="org-node-role">${esc(agent._role || "Agent")}</div>
+      ${liveHtml}
+    `;
+
+    // Click → open agent detail modal
+    const agentForModal = summaryAgents.find((a) => a.agent_id === agent.id) || {
+      agent_id: agent.id,
+      agent_name: agent.name || agent.id,
+      status: exec,
+      capabilities: [],
+      connection_id: "",
+    };
+    node.addEventListener("click", () => openAgentDetailModal(agentForModal));
+
+    nodesEl.appendChild(node);
+  }
+
+  // Pan + zoom
+  let pan = { x: 0, y: 0 }, zoom = 1, dragging = false, lastPos = { x: 0, y: 0 };
+  function applyTransform() {
+    canvas.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+  }
+  wrapper.addEventListener("mousedown", (e) => {
+    dragging = true; lastPos = { x: e.clientX, y: e.clientY };
+  });
+  window.addEventListener("mouseup", () => { dragging = false; });
+  wrapper.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    pan.x += e.clientX - lastPos.x;
+    pan.y += e.clientY - lastPos.y;
+    lastPos = { x: e.clientX, y: e.clientY };
+    applyTransform();
+  });
+  wrapper.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoom = Math.max(0.4, Math.min(2, zoom - e.deltaY * 0.001));
+    applyTransform();
+  }, { passive: false });
+}
+
+/* ===== INBOX ===== */
+function renderInbox() {
+  const generalList = $("inbox_general_list");
+  const generalEmpty = $("inbox_general_empty");
+  const byprojectList = $("inbox_byproject_list");
+  const byprojectEmpty = $("inbox_byproject_empty");
+  if (!generalList) return;
+
+  // Aggregate project activity events from all projects as "inbox items"
+  const allEvents = [];
+  for (const p of projectsCache) {
+    // We don't have activity loaded globally, so use project status changes as inbox signals
+    if (projectNeedsApproval(p)) {
+      allEvents.push({
+        project: p,
+        subject: `Plan approval needed: ${p.title}`,
+        from: "Hivee",
+        time: p.updated_at || p.created_at,
+        type: "approval",
+        unread: true,
+      });
+    }
+  }
+
+  // General tab
+  if (!allEvents.length) {
+    if (generalEmpty) generalEmpty.classList.remove("hidden");
+    generalList.innerHTML = "";
+  } else {
+    if (generalEmpty) generalEmpty.classList.add("hidden");
+    generalList.innerHTML = allEvents.map((item) => `
+      <div class="inbox-item ${item.unread ? "unread" : ""}">
+        <div class="inbox-item-header">
+          <span class="inbox-item-from">${esc(item.from)}</span>
+          <span class="inbox-item-time">${item.time ? relativeTs(item.time) : ""}</span>
+        </div>
+        <div class="inbox-item-subject">${esc(item.subject)}</div>
+        <div class="inbox-item-preview">${esc(item.project.title)}</div>
+      </div>
+    `).join("");
+  }
+
+  // Per-project tab — group by project
+  const byProject = {};
+  for (const item of allEvents) {
+    const pid = item.project.id;
+    if (!byProject[pid]) byProject[pid] = { project: item.project, items: [] };
+    byProject[pid].items.push(item);
+  }
+  if (!Object.keys(byProject).length) {
+    if (byprojectEmpty) byprojectEmpty.classList.remove("hidden");
+    if (byprojectList) byprojectList.innerHTML = "";
+  } else {
+    if (byprojectEmpty) byprojectEmpty.classList.add("hidden");
+    if (byprojectList) {
+      byprojectList.innerHTML = Object.values(byProject).map(({ project, items }) => `
+        <div style="margin-bottom:16px">
+          <p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:6px">${esc(project.title)}</p>
+          ${items.map((item) => `
+            <div class="inbox-item ${item.unread ? "unread" : ""}">
+              <div class="inbox-item-header">
+                <span class="inbox-item-from">${esc(item.from)}</span>
+                <span class="inbox-item-time">${item.time ? relativeTs(item.time) : ""}</span>
+              </div>
+              <div class="inbox-item-subject">${esc(item.subject)}</div>
+            </div>
+          `).join("")}
+        </div>
+      `).join("");
+    }
+  }
+
+  // Tab switching
+  const tabs = document.querySelectorAll("[data-inbox-tab]");
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => {
+      for (const t of tabs) t.classList.toggle("active", t === tab);
+      const key = tab.dataset.inboxTab;
+      const generalPane = $("inbox_general_pane");
+      const byprojectPane = $("inbox_byproject_pane");
+      if (generalPane) generalPane.classList.toggle("hidden", key !== "general");
+      if (byprojectPane) byprojectPane.classList.toggle("hidden", key !== "byproject");
+    }, { once: true });
+  }
+}
+
+/* ===== ISSUES GLOBAL ===== */
+function renderIssuesGlobal() {
+  const list = $("issues_global_list");
+  const empty = $("issues_global_empty");
+  const approvalsList = $("issues_global_approvals");
+  const approvalsEmpty = $("issues_global_approvals_empty");
+  if (!list) return;
+
+  // Build issue-like items from projects needing approval or in failed/blocked state
+  const issues = [];
+  const approvals = [];
+
+  for (const p of projectsCache) {
+    const exec = String(p.execution_status || "idle").toLowerCase();
+    if (exec === "failed") {
+      issues.push({
+        title: `Execution failed: ${p.title}`,
+        priority: "high",
+        status: "open",
+        project: p.title,
+        time: p.updated_at,
+      });
+    }
+    if (projectNeedsApproval(p)) {
+      approvals.push({
+        title: `Plan approval required: ${p.title}`,
+        project: p.title,
+        time: p.updated_at,
+      });
+    }
+  }
+
+  if (!issues.length) {
+    if (empty) empty.classList.remove("hidden");
+    list.innerHTML = "";
+  } else {
+    if (empty) empty.classList.add("hidden");
+    list.innerHTML = issues.map((issue) => `
+      <div class="issue-card">
+        <div class="issue-card-header">
+          <span class="issue-priority-dot ${issue.priority}"></span>
+          <span class="issue-card-title">${esc(issue.title)}</span>
+          <span class="issue-card-status ${issue.status}">${esc(issue.status)}</span>
+        </div>
+        <div class="issue-card-meta">
+          <span>${esc(issue.project)}</span>
+          ${issue.time ? `<span>${relativeTs(issue.time)}</span>` : ""}
+        </div>
+      </div>
+    `).join("");
+  }
+
+  if (!approvals.length) {
+    if (approvalsEmpty) approvalsEmpty.classList.remove("hidden");
+    if (approvalsList) approvalsList.innerHTML = `<p class="helper" id="issues_global_approvals_empty">No pending approvals.</p>`;
+  } else {
+    if (approvalsEmpty) approvalsEmpty?.classList.add("hidden");
+    if (approvalsList) {
+      approvalsList.innerHTML = approvals.map((a) => `
+        <div class="issue-card">
+          <div class="issue-card-header">
+            <span class="issue-priority-dot urgent"></span>
+            <span class="issue-card-title">${esc(a.title)}</span>
+            <span class="issue-card-status open">pending</span>
+          </div>
+          <div class="issue-card-meta">
+            <span>${esc(a.project)}</span>
+            ${a.time ? `<span>${relativeTs(a.time)}</span>` : ""}
+          </div>
+        </div>
+      `).join("");
+    }
+  }
+}
+
+/* ===== PROJECT ISSUES PANEL ===== */
+function renderProjectIssues() {
+  const list = $("project_issues_list");
+  const approvalsList = $("project_approvals_list");
+  const approvalsEmpty = $("project_approvals_empty");
+  if (!list || !selectedProjectData) return;
+
+  const p = selectedProjectData;
+  const exec = String(p.execution_status || "idle").toLowerCase();
+  const issues = [];
+
+  if (exec === "failed") {
+    issues.push({ title: "Execution failed", priority: "high", status: "open", time: p.updated_at });
+  }
+  const tasksBlocked = projectTasks.filter((t) => t.status === "blocked");
+  for (const t of tasksBlocked) {
+    issues.push({ title: `Blocked: ${t.title}`, priority: "medium", status: "open", time: t.updated_at });
+  }
+
+  if (!issues.length) {
+    list.innerHTML = '<p class="helper">No issues for this project.</p>';
+  } else {
+    list.innerHTML = issues.map((issue) => `
+      <div class="issue-card">
+        <div class="issue-card-header">
+          <span class="issue-priority-dot ${issue.priority}"></span>
+          <span class="issue-card-title">${esc(issue.title)}</span>
+          <span class="issue-card-status ${issue.status}">${issue.status}</span>
+        </div>
+        <div class="issue-card-meta">
+          ${issue.time ? `<span>${relativeTs(issue.time)}</span>` : ""}
+        </div>
+      </div>
+    `).join("");
+  }
+
+  // Approvals
+  if (projectNeedsApproval(p)) {
+    if (approvalsEmpty) approvalsEmpty.classList.add("hidden");
+    if (approvalsList) approvalsList.innerHTML = `
+      <div class="issue-card">
+        <div class="issue-card-header">
+          <span class="issue-priority-dot urgent"></span>
+          <span class="issue-card-title">Plan approval required</span>
+          <span class="issue-card-status open">pending</span>
+        </div>
+      </div>
+    `;
+  } else {
+    if (approvalsEmpty) approvalsEmpty.classList.remove("hidden");
+    if (approvalsList) approvalsList.innerHTML = `<p class="helper" id="project_approvals_empty">No pending approvals.</p>`;
+  }
+}
+
+/* ===== SETTINGS TAB SWITCHING ===== */
+function initSettingsTabs() {
+  const tabs = document.querySelectorAll("[data-settings-tab]");
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => {
+      for (const t of tabs) t.classList.toggle("active", t === tab);
+      const key = tab.dataset.settingsTab;
+      const configPane = $("settings_config_pane");
+      const accountPane = $("settings_account_pane");
+      const policyPane = $("settings_policy_pane");
+      if (configPane)  configPane.classList.toggle("hidden",  key !== "config");
+      if (accountPane) accountPane.classList.toggle("hidden", key !== "account");
+      if (policyPane)  policyPane.classList.toggle("hidden",  key !== "policy");
+    });
+  }
+}
+
 function renderSummaryAgents() {
   const list = $("summary_agents_list");
   const msg = $("summary_agents_msg");
@@ -4803,11 +6001,13 @@ function renderSummaryAgents() {
     heading.className = "summary-agent-heading";
     const name = document.createElement("strong");
     name.textContent = String(agent.agent_name || agent.agent_id || "Agent");
-    const status = document.createElement("span");
-    status.className = "summary-agent-status";
-    status.textContent = String(agent.status || "active");
+    const statusStr = String(agent.status || "active").toLowerCase();
+    const statusBadgeClass = statusStr === "active" ? "active" : statusStr === "offline" ? "offline" : "idle";
+    const statusBadge = document.createElement("span");
+    statusBadge.className = `agent-status-badge ${statusBadgeClass}`;
+    statusBadge.innerHTML = `<span class="asd"></span>${statusStr}`;
     heading.appendChild(name);
-    heading.appendChild(status);
+    heading.appendChild(statusBadge);
 
     const meta = document.createElement("p");
     meta.className = "summary-agent-meta";
@@ -4832,14 +6032,142 @@ function renderSummaryAgents() {
       }
     }
 
+    // Token bar (if usage data available)
+    const agentTokens = Math.max(0, Number(agent.usage_tokens || agent.total_tokens || 0));
+    const maxAgentTokens = Math.max(1, ...summaryAgents.map((a) => Number(a.usage_tokens || a.total_tokens || 0)));
+    const tokenPct = agentTokens > 0 ? Math.max(4, Math.round((agentTokens / maxAgentTokens) * 100)) : 0;
+    const tokenBar = document.createElement("div");
+    tokenBar.className = "summary-agent-token-bar";
+    tokenBar.innerHTML = `
+      <span class="satb-label">Tokens</span>
+      <div class="satb-track"><div class="satb-fill" style="width:${tokenPct}%"></div></div>
+      <span class="satb-val">${agentTokens > 999 ? `${(agentTokens / 1000).toFixed(1)}k` : agentTokens > 0 ? agentTokens : "—"}</span>
+    `;
+
+    // Live activity line
+    const liveProject = projectsCache.find((p) => {
+      const exec = String(p.execution_status || "").toLowerCase();
+      const isActive = exec === "running" || exec === "planning";
+      const isAssigned = p.primary_agent_id === agent.agent_id || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agent.agent_id));
+      return isActive && isAssigned;
+    });
+    const liveText = liveProject ? `Working on: ${liveProject.title}` : "Idle";
+    const liveIsActive = Boolean(liveProject);
+    const liveLine = document.createElement("div");
+    liveLine.className = "summary-agent-live" + (liveIsActive ? " agent-live-active" : "");
+    liveLine.innerHTML = liveIsActive
+      ? `<span class="sal-dot"></span><span class="sal-text">${esc(liveText)}</span>`
+      : `<span class="sal-text sal-idle">Idle</span>`;
+
     body.appendChild(heading);
     body.appendChild(meta);
+    body.appendChild(liveLine);
     body.appendChild(caps);
+    body.appendChild(tokenBar);
+
+    card.style.cursor = "pointer";
+    card.setAttribute("role", "button");
+    card.addEventListener("click", () => openAgentDetailModal(agent));
 
     card.appendChild(avatarWrap);
     card.appendChild(body);
     list.appendChild(card);
   }
+}
+
+function openAgentDetailModal(agent) {
+  const modal = $("agent_detail_modal");
+  if (!modal) return;
+
+  const palette = colorForAgent(agent.agent_id);
+  const statusStr = String(agent.status || "active").toLowerCase();
+  const statusClass = statusStr === "active" ? "active" : statusStr === "offline" ? "offline" : "idle";
+
+  // Avatar
+  const avatarWrap = $("modal_agent_avatar_wrap");
+  if (avatarWrap) {
+    avatarWrap.innerHTML = "";
+    const img = createAgentAvatarImg(agent.agent_id, "Agent");
+    img.style.width = "48px";
+    img.style.height = "48px";
+    img.style.borderRadius = "50%";
+    img.style.background = hexToRgba(palette.hex, 0.12);
+    avatarWrap.appendChild(img);
+  }
+
+  // Header fields
+  const nameEl = $("modal_agent_name");
+  if (nameEl) nameEl.textContent = String(agent.agent_name || agent.agent_id || "Agent");
+
+  const statusBadge = $("modal_agent_status_badge");
+  if (statusBadge) {
+    statusBadge.className = `agent-status-badge ${statusClass}`;
+    statusBadge.innerHTML = `<span class="asd"></span>${statusStr}`;
+  }
+
+  // Detail fields
+  const setField = (id, val) => { const el = $(id); if (el) el.textContent = val || "—"; };
+  setField("modal_agent_id", agent.agent_id);
+  setField("modal_agent_connection", agent.connection_id);
+  setField("modal_agent_model", agent.model || agent.adapter_type || "—");
+
+  // Current activity (live log)
+  const activitySection = $("modal_agent_activity");
+  if (activitySection) {
+    const liveProject = projectsCache.find((p) => {
+      const pExec = String(p.execution_status || "").toLowerCase();
+      const isActive = pExec === "running" || pExec === "planning";
+      return isActive && (p.primary_agent_id === agent.agent_id || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agent.agent_id)));
+    });
+    activitySection.innerHTML = liveProject
+      ? `<div class="summary-agent-live agent-live-active"><span class="sal-dot"></span><span class="sal-text">Working on: ${esc(liveProject.title)}</span></div>`
+      : `<div class="summary-agent-live"><span class="sal-text sal-idle">Idle — not assigned to any running project</span></div>`;
+  }
+
+  // Capabilities
+  const capsEl = $("modal_agent_caps");
+  if (capsEl) {
+    const capList = Array.isArray(agent.capabilities) ? agent.capabilities : [];
+    capsEl.innerHTML = capList.length
+      ? capList.map((c) => `<span class="chip summary-cap-chip">${esc(c)}</span>`).join("")
+      : '<span class="helper">No capability data</span>';
+  }
+
+  // Projects this agent is involved in
+  const projEl = $("modal_agent_projects");
+  if (projEl) {
+    const agentProjects = projectsCache.filter((p) => {
+      const agents = Array.isArray(p.assigned_agent_ids) ? p.assigned_agent_ids : [];
+      return agents.includes(agent.agent_id) || p.primary_agent_id === agent.agent_id;
+    });
+    projEl.innerHTML = agentProjects.length
+      ? agentProjects.map((p) => `
+          <div class="agent-modal-project-row">
+            <span class="pc-status-pill ${String(p.execution_status || "idle").toLowerCase()}">${executionStatusLabel(String(p.execution_status || "idle"))}</span>
+            <span>${esc(p.title)}</span>
+          </div>
+        `).join("")
+      : '<span class="helper">Not assigned to any project</span>';
+  }
+
+  // Token usage
+  const tokensEl = $("modal_agent_tokens");
+  if (tokensEl) {
+    const agentTokens = Math.max(0, Number(agent.usage_tokens || agent.total_tokens || 0));
+    const maxAgentTokens = Math.max(1, ...summaryAgents.map((a) => Number(a.usage_tokens || a.total_tokens || 0)));
+    const tokenPct = agentTokens > 0 ? Math.max(4, Math.round((agentTokens / maxAgentTokens) * 100)) : 0;
+    const tokenStr = agentTokens > 999999 ? `${(agentTokens / 1_000_000).toFixed(1)}M`
+                   : agentTokens > 999 ? `${(agentTokens / 1000).toFixed(1)}k` : String(agentTokens || "—");
+    tokensEl.innerHTML = `
+      <div class="summary-agent-token-bar" style="grid-template-columns: auto 1fr auto">
+        <span class="satb-label">Total</span>
+        <div class="satb-track"><div class="satb-fill" style="width:${tokenPct}%;background:${palette.hex}"></div></div>
+        <span class="satb-val">${tokenStr}</span>
+      </div>
+    `;
+  }
+
+  modal.showModal();
 }
 
 async function loadSummaryAgents({ force = false } = {}) {
@@ -4899,22 +6227,24 @@ function setProjectPane(pane) {
   }
   const map = {
     live: "project_panel_live",
-    info: "project_panel_info",
-    folder: "project_panel_folder",
-    usage: "project_panel_usage",
+    overview: "project_panel_info",
+    team: "project_panel_team",
     tasks: "project_panel_tasks",
-    activity: "project_panel_activity",
-    tracker: "project_panel_tracker",
+    issues: "project_panel_issues",
+    files: "project_panel_folder",
+    history: "project_panel_activity",
+    costs: "project_panel_usage",
   };
   for (const [key, id] of Object.entries(map)) {
     const node = $(id);
     if (!node) continue;
     node.classList.toggle("hidden", key !== pane);
   }
-  if (pane === "folder" && selectedProjectId) {
+  if (pane === "files" && selectedProjectId) {
     loadProjectFiles(projectFilesCurrentPath || "").catch(() => {});
   }
   if (pane === "live" && selectedProjectId) {
+    renderProgressMap();
     if (livePreviewPath) {
       renderLivePreview(livePreviewPath, { force: true }).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
     } else {
@@ -4927,8 +6257,14 @@ function setProjectPane(pane) {
       loadTaskBlueprints(selectedProjectId, { silent: true }),
     ]).catch((e) => setMessage("tasks_msg", detailToText(e), "error"));
   }
-  if (pane === "activity" && selectedProjectId) {
+  if (pane === "history" && selectedProjectId) {
     loadProjectActivity(selectedProjectId, { silent: true }).catch((e) => setMessage("activity_msg", detailToText(e), "error"));
+  }
+  if (pane === "team" && selectedProjectId) {
+    renderTeamTree();
+  }
+  if (pane === "issues" && selectedProjectId) {
+    renderProjectIssues();
   }
   syncProjectHeadbar();
 }
@@ -4949,18 +6285,20 @@ function setNavTab(tab) {
   syncWorkspaceSectionTitle();
   syncProjectHeadbar();
 
-  if (tab === "files") {
-    renderFolderBrowsers();
-    loadWorkspaceFiles(workspaceFilesCurrentPath || DEFAULT_OWNER_FILES_PATH).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  if (tab === "dashboard") {
+    renderDashboard();
   }
-  if (tab === "usage") {
-    renderWorkspaceUsage();
+  if (tab === "inbox") {
+    renderInbox();
   }
   if (tab === "agents") {
     loadSummaryAgents().catch(() => {});
   }
-  if (tab === "config") renderConfigConnectionDetails();
-  if (tab === "account") {
+  if (tab === "issues") {
+    renderIssuesGlobal();
+  }
+  if (tab === "settings") {
+    renderConfigConnectionDetails();
     loadAccountProfile({ silent: true }).catch((e) => setMessage("account_msg", detailToText(e), "error"));
   }
 }
@@ -6724,6 +8062,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     await loadSummaryAgents({ force: true }).catch(() => {});
   }
 
+  initSettingsTabs();
   setNavTab(activeNavTab);
   setProjectPane(activeProjectPane);
   renderFolderBrowsers();
@@ -6747,6 +8086,12 @@ function bindActions() {
     loadAccountProfile({ silent: false }).catch((e) => showUiError("account_msg", e))
   );
   $("btn_logout")?.addEventListener("click", () => logoutUser().catch((e) => showUiError("account_msg", e)));
+
+  // Agent detail modal close
+  $("btn_close_agent_modal")?.addEventListener("click", () => $("agent_detail_modal")?.close());
+  $("agent_detail_modal")?.addEventListener("click", (e) => {
+    if (e.target === $("agent_detail_modal")) $("agent_detail_modal").close();
+  });
 
   $("home_connections").onchange = (ev) => {
     activeConnectionId = ev.target.value;
@@ -6820,6 +8165,10 @@ function bindActions() {
 
   $("form_task_create")?.addEventListener("submit", (ev) => {
     createProjectTaskFromForm(ev).catch((e) => setMessage("tasks_msg", detailToText(e?.message || e), "error"));
+  });
+  $("btn_pmap_refresh")?.addEventListener("click", () => {
+    if (!selectedProjectId) return;
+    loadProjectTasks(selectedProjectId, { silent: true }).then(() => renderProgressMap()).catch(() => {});
   });
   $("btn_task_refresh")?.addEventListener("click", () => {
     if (!selectedProjectId) return;

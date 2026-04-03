@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css?v=20260401g"/>
+  <link rel="stylesheet" href="/static/styles.css?v=20260402d"/>
 </head>
 <body>
   <div class="bg-noise"></div>
@@ -246,53 +246,36 @@
 
       <section class="workspace-layout">
         <aside class="primary-nav">
+          <div class="nav-top-actions">
+            <button id="btn_new_project" type="button" class="new-project-btn">
+              <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              <span>New Project</span>
+            </button>
+          </div>
+
+          <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="dashboard">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M8 19v-6M12 19V9M16 19v-3M20 19V7"/></svg>
+              <span>Dashboard</span>
+            </button>
+            <div id="nav_content_dashboard" class="nav-content hidden"></div>
+          </div>
+
+          <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="inbox">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="M4 12h4l3 4 3-4h6"/></svg>
+              <span>Inbox</span>
+            </button>
+            <div id="nav_content_inbox" class="nav-content hidden"></div>
+          </div>
+
           <div class="nav-section">
             <button type="button" class="nav-toggle active" data-nav-tab="projects">
               <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h8l2 2h8v10H3z"/></svg>
               <span>Projects</span>
             </button>
             <div id="nav_content_projects" class="nav-content">
-              <button id="btn_new_project" type="button">
-                <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-                <span>New Project</span>
-              </button>
               <div id="projects_list" class="project-list"></div>
-            </div>
-          </div>
-
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="files">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v8H3z"/><path d="M3 11h18"/></svg>
-              <span>Files</span>
-            </button>
-            <div id="nav_content_files" class="nav-content hidden">
-            </div>
-          </div>
-
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="overview">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M8 19v-6M12 19V9M16 19v-3M20 19V7"/></svg>
-              <span>Overview</span>
-            </button>
-            <div id="nav_content_overview" class="nav-content hidden">
-            </div>
-          </div>
-
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="usage">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13a8 8 0 1 1 16 0"/><path d="M12 13l4-4"/></svg>
-              <span>Usage</span>
-            </button>
-            <div id="nav_content_usage" class="nav-content hidden">
-            </div>
-          </div>
-
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="summary">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
-              <span>Summary</span>
-            </button>
-            <div id="nav_content_summary" class="nav-content hidden">
             </div>
           </div>
 
@@ -301,26 +284,23 @@
               <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="12" rx="2"/><path d="M9 12h6M12 3v4"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
               <span>Agents</span>
             </button>
-            <div id="nav_content_agents" class="nav-content hidden">
-            </div>
+            <div id="nav_content_agents" class="nav-content hidden"></div>
           </div>
 
           <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="config">
+            <button type="button" class="nav-toggle" data-nav-tab="issues">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+              <span>Issues</span>
+            </button>
+            <div id="nav_content_issues" class="nav-content hidden"></div>
+          </div>
+
+          <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="settings">
               <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.3.8a7 7 0 0 0-1.8-1l-.3-2.4h-4l-.3 2.4a7 7 0 0 0-1.8 1L6 6l-2 3.5L6 11a7 7 0 0 0 0 2l-2 1.5L6 18l2.3-.8a7 7 0 0 0 1.8 1l.3 2.4h4l.3-2.4a7 7 0 0 0 1.8-1L18 18l2-3.5L18 13a7 7 0 0 0 .1-1z"/></svg>
-              <span>Config</span>
+              <span>Settings</span>
             </button>
-            <div id="nav_content_config" class="nav-content hidden">
-            </div>
-          </div>
-
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="account">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg>
-              <span>Account</span>
-            </button>
-            <div id="nav_content_account" class="nav-content hidden">
-            </div>
+            <div id="nav_content_settings" class="nav-content hidden"></div>
           </div>
         </aside>
 
@@ -334,12 +314,13 @@
             <span>Live</span>
             <span id="live_status_dot" class="live-status-dot idle" aria-hidden="true"></span>
           </button>
-          <button type="button" class="context-link active" data-project-pane="info">Overview</button>
-          <button type="button" class="context-link" data-project-pane="folder">Files</button>
-          <button type="button" class="context-link" data-project-pane="usage">Usage</button>
+          <button type="button" class="context-link active" data-project-pane="overview">Overview</button>
+          <button type="button" class="context-link" data-project-pane="team">Team</button>
           <button type="button" class="context-link" data-project-pane="tasks">Tasks</button>
-          <button type="button" class="context-link" data-project-pane="activity">Activity</button>
-          <button type="button" class="context-link" data-project-pane="tracker">Tracker</button>
+          <button type="button" class="context-link" data-project-pane="issues">Issues</button>
+          <button type="button" class="context-link" data-project-pane="files">Files</button>
+          <button type="button" class="context-link" data-project-pane="history">History</button>
+          <button type="button" class="context-link" data-project-pane="costs">Costs</button>
         </aside>
 
         <section class="center-stage">
@@ -365,6 +346,22 @@
                   <h4>Live</h4>
                   <span id="live_status_text" class="pill neutral">Idle</span>
                 </div>
+
+                <!-- Progress Map -->
+                <div class="pmap-section">
+                  <div class="pmap-toolbar">
+                    <span class="pmap-label">Progress Map</span>
+                    <button id="btn_pmap_refresh" class="secondary" type="button" style="min-height:24px;padding:3px 10px;font-size:11px">Refresh</button>
+                  </div>
+                  <div class="pmap-viewport" id="pmap_viewport">
+                    <div class="pmap-canvas" id="pmap_canvas">
+                      <svg class="pmap-svg" id="pmap_svg" overflow="visible" aria-hidden="true"></svg>
+                      <div class="pmap-nodes" id="pmap_nodes"></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Live file preview (below map) -->
                 <p id="live_preview_meta" class="helper"></p>
                 <div id="live_preview_stage" class="live-preview-stage">
                   <p id="live_preview_empty" class="helper">No output file rendered yet.</p>
@@ -384,19 +381,38 @@
                   <p id="detail_plan_updated" class="helper"></p>
                   <div id="detail_readiness" class="readiness-list"></div>
                   <pre id="detail_plan_text" class="text-block"></pre>
-                  <div class="progress-card">
-                    <div class="progress-meta">
+                  <div class="exec-pipeline">
+                    <div class="exec-pipeline-nodes">
+                      <div class="exec-node" id="exec_node_0">
+                        <div class="exec-node-dot pending" id="exec_dot_0"></div>
+                        <span class="exec-node-label">Plan Generation</span>
+                      </div>
+                      <div class="exec-node-connector" id="exec_conn_0"></div>
+                      <div class="exec-node" id="exec_node_1">
+                        <div class="exec-node-dot pending" id="exec_dot_1"></div>
+                        <span class="exec-node-label">Plan Review</span>
+                      </div>
+                      <div class="exec-node-connector" id="exec_conn_1"></div>
+                      <div class="exec-node" id="exec_node_2">
+                        <div class="exec-node-dot pending" id="exec_dot_2"></div>
+                        <span class="exec-node-label">Execution</span>
+                      </div>
+                      <div class="exec-node-connector" id="exec_conn_2"></div>
+                      <div class="exec-node" id="exec_node_3">
+                        <div class="exec-node-dot pending" id="exec_dot_3"></div>
+                        <span class="exec-node-label">Complete</span>
+                      </div>
+                    </div>
+                    <div class="exec-pipeline-footer">
                       <strong id="detail_progress_label">0%</strong>
                       <span id="detail_execution_status" class="helper">Status: idle</span>
-                    </div>
-                    <div class="progress-track">
-                      <div id="detail_progress_fill" class="progress-fill"></div>
                     </div>
                     <div class="action-row">
                       <button id="btn_pause_project" class="secondary" type="button">Pause</button>
                       <button id="btn_stop_project" class="secondary" type="button">Stop</button>
                     </div>
                   </div>
+                  <div id="detail_progress_fill" style="display:none"></div>
                   <div id="detail_plan_actions" class="action-row">
                     <button id="btn_refresh_plan" class="secondary" type="button">Refresh Plan</button>
                     <button id="btn_regenerate_plan" class="secondary" type="button">Regenerate Plan</button>
@@ -406,6 +422,7 @@
                 <div class="agent-summary">
                   <h4>Assigned Agents</h4>
                   <div id="detail_agents" class="chip-row"></div>
+                  <div id="agent_live_cards" class="agent-live-grid hidden"></div>
                 </div>
                 <div class="agent-summary">
                   <h4>Live Updates</h4>
@@ -432,8 +449,16 @@
                 <div class="title-row">
                   <h4>Tasks</h4>
                   <div class="action-row">
+                    <button id="btn_task_map_toggle" class="secondary" type="button" onclick="toggleTaskMapView()">Map View</button>
                     <button id="btn_task_refresh" class="secondary" type="button">Refresh</button>
                   </div>
+                </div>
+                <div id="task_map_wrapper" class="task-map-wrapper hidden">
+                  <div class="task-map-header">
+                    <h5>Task Map</h5>
+                    <button class="secondary" type="button" onclick="toggleTaskMapView()" style="min-height:26px;padding:4px 10px;font-size:11px;">List View</button>
+                  </div>
+                  <div id="task_map_body" class="task-map-body"></div>
                 </div>
                 <form id="form_task_create" class="task-create-form">
                   <input id="task_new_title" type="text" placeholder="New task title" maxlength="160" required>
@@ -516,6 +541,32 @@
                 <div id="project_activity_feed" class="events"></div>
               </div>
 
+              <div id="project_panel_team" class="project-panel hidden">
+                <div class="title-row">
+                  <h4>Team</h4>
+                  <button id="btn_team_refresh" class="secondary" type="button">Refresh</button>
+                </div>
+                <div id="team_tree_wrapper" class="org-tree-wrapper">
+                  <div id="team_tree_canvas" class="org-tree-canvas">
+                    <svg id="team_tree_svg" class="org-tree-svg" aria-hidden="true"></svg>
+                    <div id="team_tree_nodes" class="org-tree-nodes"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div id="project_panel_issues" class="project-panel hidden">
+                <div class="title-row">
+                  <h4>Issues</h4>
+                  <button id="btn_proj_issues_refresh" class="secondary" type="button">Refresh</button>
+                </div>
+                <p id="project_issues_msg" class="helper"></p>
+                <div id="project_issues_list" class="issue-cards-list"></div>
+                <p class="issues-section-label">Pending Approvals</p>
+                <div id="project_approvals_list" class="issue-cards-list">
+                  <p class="helper" id="project_approvals_empty">No pending approvals.</p>
+                </div>
+              </div>
+
               <div id="project_panel_tracker" class="project-panel hidden">
                 <div class="action-row">
                   <button id="btn_subscribe" class="secondary" type="button">Subscribe Events</button>
@@ -526,38 +577,99 @@
             </div>
           </div>
 
-          <div id="center_files" class="center-pane hidden" data-center-tab="files">
-            <h3>Files</h3>
-            <section class="project-panel workspace-files-panel">
-              <h4>Workspace Files</h4>
-              <p id="workspace_files_hint" class="helper"></p>
-              <div id="workspace_files_breadcrumbs" class="file-breadcrumbs"></div>
-              <div id="workspace_files_list" class="folder-browser file-list"></div>
-              <div id="workspace_file_preview" class="text-block file-preview"><p class="helper">Select a file to preview.</p></div>
-            </section>
+          <div id="center_inbox" class="center-pane hidden" data-center-tab="inbox">
+            <div class="inbox-container">
+              <div class="inbox-tabs">
+                <button class="inbox-tab active" type="button" data-inbox-tab="general">General</button>
+                <button class="inbox-tab" type="button" data-inbox-tab="byproject">Per Project</button>
+              </div>
+              <div id="inbox_general_pane" class="inbox-tab-pane">
+                <p class="helper" id="inbox_general_empty">No messages yet.</p>
+                <div id="inbox_general_list" class="inbox-list"></div>
+              </div>
+              <div id="inbox_byproject_pane" class="inbox-tab-pane hidden">
+                <p class="helper" id="inbox_byproject_empty">No project messages.</p>
+                <div id="inbox_byproject_list" class="inbox-list"></div>
+              </div>
+            </div>
           </div>
 
-          <div id="center_overview" class="center-pane hidden" data-center-tab="overview">
-            <h3>Overview</h3>
-          </div>
-
-          <div id="center_usage" class="center-pane hidden" data-center-tab="usage">
-            <h3>Usage</h3>
-            <section class="project-panel">
-              <h4>Total Usage Across Projects</h4>
-              <div id="workspace_usage_box" class="usage-shell">No usage data yet.</div>
-            </section>
-          </div>
-
-          <div id="center_summary" class="center-pane hidden" data-center-tab="summary">
-            <h3>Summary</h3>
-            <div class="summary-grid">
-              <section class="summary-card">
-                <div class="title-row">
-                  <h4>Workspace Summary</h4>
+          <div id="center_dashboard" class="center-pane hidden" data-center-tab="dashboard">
+            <div class="dash-container">
+              <div class="dash-stat-grid">
+                <div class="dash-stat-tile" style="--ds-accent: var(--cyan)">
+                  <span class="ds-label">Projects</span>
+                  <span class="ds-value" id="dash_projects_count">—</span>
+                  <p class="ds-sub" id="dash_projects_sub">Loading...</p>
                 </div>
-                <p class="helper">Project status, progress, and usage are available in the project space. Agent identities are now listed in the dedicated Agents tab.</p>
-              </section>
+                <div class="dash-stat-tile" style="--ds-accent: var(--yellow)">
+                  <span class="ds-label">Active Agents</span>
+                  <span class="ds-value" id="dash_agents_count">—</span>
+                  <p class="ds-sub" id="dash_agents_sub">Loading...</p>
+                </div>
+                <div class="dash-stat-tile" style="--ds-accent: var(--blue)">
+                  <span class="ds-label">Total Tokens</span>
+                  <span class="ds-value" id="dash_tokens_count">—</span>
+                  <p class="ds-sub">Across all projects</p>
+                </div>
+                <div class="dash-stat-tile" style="--ds-accent: var(--orange)">
+                  <span class="ds-label">Est. Spending</span>
+                  <span class="ds-value" id="dash_spending_count">—</span>
+                  <p class="ds-sub">Estimated cost</p>
+                </div>
+              </div>
+              <div class="dash-charts-grid">
+                <div class="dash-chart-card">
+                  <p class="dash-chart-title">Run Activity <span class="dash-chart-sub">14 days</span></p>
+                  <div id="dash_run_activity" class="dash-bar-chart"></div>
+                  <div class="dash-bar-legend">
+                    <span class="dbl-item" style="--dbl-c:var(--cyan)">Completed</span>
+                    <span class="dbl-item" style="--dbl-c:var(--yellow)">Running</span>
+                    <span class="dbl-item" style="--dbl-c:var(--red)">Failed</span>
+                  </div>
+                </div>
+                <div class="dash-chart-card">
+                  <p class="dash-chart-title">Issues by Priority</p>
+                  <div id="dash_priority_chart" class="dash-h-bars"></div>
+                </div>
+                <div class="dash-chart-card">
+                  <p class="dash-chart-title">Task Status</p>
+                  <div id="dash_task_status_chart" class="dash-h-bars"></div>
+                </div>
+                <div class="dash-chart-card">
+                  <p class="dash-chart-title">Success Rate</p>
+                  <div id="dash_success_rate" class="dash-success-rate-wrap">
+                    <span class="dsr-value" id="dash_success_pct">—</span>
+                    <div class="dsr-track"><div class="dsr-fill" id="dash_success_fill" style="width:0%"></div></div>
+                    <p class="ds-sub" id="dash_success_sub"></p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <p class="dash-section-label">Project Health</p>
+                <div id="dash_project_health" class="dash-project-health"></div>
+              </div>
+              <div>
+                <p class="dash-section-label">Agents</p>
+                <div id="dash_agents_row" class="dash-agents-row"></div>
+              </div>
+            </div>
+          </div>
+
+          <div id="center_issues" class="center-pane hidden" data-center-tab="issues">
+            <div class="issues-container">
+              <div class="issues-header">
+                <h3>Issues</h3>
+                <span class="helper">All projects</span>
+              </div>
+              <div id="issues_global_list" class="issue-cards-list">
+                <p class="helper" id="issues_global_empty">No issues found.</p>
+              </div>
+              <p class="issues-section-label">Pending Approvals</p>
+              <div id="issues_global_approvals" class="issue-cards-list">
+                <p class="helper" id="issues_global_approvals_empty">No pending approvals.</p>
+              </div>
             </div>
           </div>
 
@@ -575,78 +687,91 @@
             </div>
           </div>
 
-          <div id="center_config" class="center-pane hidden" data-center-tab="config">
-            <h3>Configuration</h3>
-            <div class="config-grid">
-              <label>OpenClaw Connection</label>
-              <select id="home_connections"></select>
-              <div class="action-row">
-                <button id="btn_refresh_home" class="secondary" type="button">Refresh</button>
-                <button id="btn_open_connect" class="secondary" type="button">Add OpenClaw</button>
+          <div id="center_settings" class="center-pane hidden" data-center-tab="settings">
+            <div class="settings-container">
+              <div class="settings-tabs">
+                <button class="settings-tab active" type="button" data-settings-tab="config">Configuration</button>
+                <button class="settings-tab" type="button" data-settings-tab="account">Account</button>
+                <button class="settings-tab" type="button" data-settings-tab="policy">Policy</button>
               </div>
-              <div class="config-card">
-                <div class="config-row"><span>Name</span><strong id="config_conn_name">-</strong></div>
-                <div class="config-row"><span>Base URL</span><code id="config_conn_url">-</code></div>
-                <div class="config-row"><span>Status</span><span id="config_conn_status" class="status-pill disconnected">Disconnected</span></div>
-              </div>
-              <p id="config_msg" class="helper"></p>
-            </div>
-          </div>
 
-          <div id="center_account" class="center-pane hidden" data-center-tab="account">
-            <h3>Account</h3>
-            <div class="account-grid">
-              <section class="account-card">
-                <div class="account-card-head">
-                  <h4>Profile</h4>
-                  <button id="btn_refresh_account" type="button" class="secondary">Refresh</button>
+              <div id="settings_config_pane" class="settings-tab-pane">
+                <div class="config-grid">
+                  <label>OpenClaw Connection</label>
+                  <select id="home_connections"></select>
+                  <div class="action-row">
+                    <button id="btn_refresh_home" class="secondary" type="button">Refresh</button>
+                    <button id="btn_open_connect" class="secondary" type="button">Add OpenClaw</button>
+                  </div>
+                  <div class="config-card">
+                    <div class="config-row"><span>Name</span><strong id="config_conn_name">-</strong></div>
+                    <div class="config-row"><span>Base URL</span><code id="config_conn_url">-</code></div>
+                    <div class="config-row"><span>Status</span><span id="config_conn_status" class="status-pill disconnected">Disconnected</span></div>
+                  </div>
+                  <p id="config_msg" class="helper"></p>
                 </div>
-                <p class="account-sub">Identity and workspace ownership information for this account.</p>
-                <div class="account-stat-grid">
-                  <article class="account-stat">
-                    <span class="label">Projects</span>
-                    <strong id="acct_projects_count">0</strong>
-                  </article>
-                  <article class="account-stat">
-                    <span class="label">Connections</span>
-                    <strong id="acct_connections_count">0</strong>
-                  </article>
+              </div>
+
+              <div id="settings_account_pane" class="settings-tab-pane hidden">
+                <div class="account-grid">
+                  <section class="account-card">
+                    <div class="account-card-head">
+                      <h4>Profile</h4>
+                      <button id="btn_refresh_account" type="button" class="secondary">Refresh</button>
+                    </div>
+                    <p class="account-sub">Identity and workspace ownership information for this account.</p>
+                    <div class="account-stat-grid">
+                      <article class="account-stat">
+                        <span class="label">Projects</span>
+                        <strong id="acct_projects_count">0</strong>
+                      </article>
+                      <article class="account-stat">
+                        <span class="label">Connections</span>
+                        <strong id="acct_connections_count">0</strong>
+                      </article>
+                    </div>
+                    <dl class="account-detail-list">
+                      <div class="account-detail-row"><dt>Email</dt><dd id="acct_email">-</dd></div>
+                      <div class="account-detail-row"><dt>User ID</dt><dd><code id="acct_user_id">-</code></dd></div>
+                      <div class="account-detail-row"><dt>Joined</dt><dd id="acct_created_at">-</dd></div>
+                      <div class="account-detail-row"><dt>Workspace Root</dt><dd><code id="acct_workspace_root">-</code></dd></div>
+                    </dl>
+                  </section>
+                  <section class="account-card">
+                    <h4>Security</h4>
+                    <p class="account-sub">Use a strong password and update it regularly.</p>
+                    <form id="form_change_password" class="stack">
+                      <label>Current Password</label>
+                      <input id="acct_current_pass" type="password" placeholder="Current password" autocomplete="current-password" required>
+                      <label>New Password</label>
+                      <input id="acct_new_pass" type="password" placeholder="Min 10 chars, include UPPER/lower/number/symbol" minlength="10" autocomplete="new-password" required>
+                      <label>Confirm New Password</label>
+                      <input id="acct_confirm_pass" type="password" placeholder="Repeat new password" minlength="10" autocomplete="new-password" required>
+                      <button id="btn_change_password" type="submit">Update Password</button>
+                    </form>
+                    <div class="account-danger-zone">
+                      <h5>Delete Account</h5>
+                      <p class="helper">This permanently deletes your account, projects, connections, and workspace files.</p>
+                      <form id="form_delete_account" class="stack">
+                        <label>Current Password</label>
+                        <input id="acct_delete_pass" type="password" placeholder="Current password" required>
+                        <label>Type DELETE to confirm</label>
+                        <input id="acct_delete_confirm" type="text" placeholder="DELETE" required>
+                        <button id="btn_delete_account" type="submit" class="danger">Delete Account Permanently</button>
+                      </form>
+                    </div>
+                    <div class="action-row account-inline-actions">
+                      <button id="btn_logout" type="button" class="secondary danger">Logout</button>
+                    </div>
+                    <p id="account_msg" class="helper"></p>
+                  </section>
                 </div>
-                <dl class="account-detail-list">
-                  <div class="account-detail-row"><dt>Email</dt><dd id="acct_email">-</dd></div>
-                  <div class="account-detail-row"><dt>User ID</dt><dd><code id="acct_user_id">-</code></dd></div>
-                  <div class="account-detail-row"><dt>Joined</dt><dd id="acct_created_at">-</dd></div>
-                  <div class="account-detail-row"><dt>Workspace Root</dt><dd><code id="acct_workspace_root">-</code></dd></div>
-                </dl>
-              </section>
-              <section class="account-card">
-                <h4>Security</h4>
-                <p class="account-sub">Use a strong password and update it regularly.</p>
-                <form id="form_change_password" class="stack">
-                  <label>Current Password</label>
-                  <input id="acct_current_pass" type="password" placeholder="Current password" autocomplete="current-password" required>
-                  <label>New Password</label>
-                  <input id="acct_new_pass" type="password" placeholder="Min 10 chars, include UPPER/lower/number/symbol" minlength="10" autocomplete="new-password" required>
-                  <label>Confirm New Password</label>
-                  <input id="acct_confirm_pass" type="password" placeholder="Repeat new password" minlength="10" autocomplete="new-password" required>
-                  <button id="btn_change_password" type="submit">Update Password</button>
-                </form>
-                <div class="account-danger-zone">
-                  <h5>Delete Account</h5>
-                  <p class="helper">This permanently deletes your account, projects, connections, and workspace files.</p>
-                  <form id="form_delete_account" class="stack">
-                    <label>Current Password</label>
-                    <input id="acct_delete_pass" type="password" placeholder="Current password" required>
-                    <label>Type DELETE to confirm</label>
-                    <input id="acct_delete_confirm" type="text" placeholder="DELETE" required>
-                    <button id="btn_delete_account" type="submit" class="danger">Delete Account Permanently</button>
-                  </form>
-                </div>
-                <div class="action-row account-inline-actions">
-                  <button id="btn_logout" type="button" class="secondary danger">Logout</button>
-                </div>
-                <p id="account_msg" class="helper"></p>
-              </section>
+              </div>
+
+              <div id="settings_policy_pane" class="settings-tab-pane hidden">
+                <p class="helper">Workspace policy and rules configuration.</p>
+                <div id="settings_policy_content" class="settings-policy-content"></div>
+              </div>
             </div>
           </div>
         </section>
@@ -677,6 +802,45 @@
           </div>
         </aside>
       </section>
+
+      <!-- Agent Detail Modal -->
+      <dialog id="agent_detail_modal" class="agent-modal">
+        <div class="agent-modal-inner">
+          <div class="agent-modal-header">
+            <div id="modal_agent_avatar_wrap" class="modal-agent-avatar"></div>
+            <div class="modal-agent-title">
+              <h3 id="modal_agent_name">—</h3>
+              <span id="modal_agent_status_badge" class="agent-status-badge idle"><span class="asd"></span>—</span>
+            </div>
+            <button id="btn_close_agent_modal" class="modal-close-btn" type="button" aria-label="Close">
+              <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="agent-modal-body">
+            <dl class="agent-detail-dl">
+              <div class="agent-detail-row"><dt>Agent ID</dt><dd id="modal_agent_id">—</dd></div>
+              <div class="agent-detail-row"><dt>Connection</dt><dd id="modal_agent_connection">—</dd></div>
+              <div class="agent-detail-row"><dt>Model</dt><dd id="modal_agent_model">—</dd></div>
+            </dl>
+            <div class="agent-modal-section">
+              <p class="agent-modal-section-label">Current Activity</p>
+              <div id="modal_agent_activity"></div>
+            </div>
+            <div class="agent-modal-section">
+              <p class="agent-modal-section-label">Capabilities</p>
+              <div id="modal_agent_caps" class="chip-row"></div>
+            </div>
+            <div class="agent-modal-section">
+              <p class="agent-modal-section-label">Projects</p>
+              <div id="modal_agent_projects" class="agent-modal-projects"></div>
+            </div>
+            <div class="agent-modal-section">
+              <p class="agent-modal-section-label">Token Usage</p>
+              <div id="modal_agent_tokens" class="agent-modal-tokens"></div>
+            </div>
+          </div>
+        </div>
+      </dialog>
 
       <section id="project_wizard" class="wizard hidden">
         <div class="wizard-card">
