@@ -258,14 +258,51 @@ class A2AEnvironmentBootstrapIn(BaseModel):
 class A2AEnvironmentClaimStartIn(BaseModel):
     claim_ttl_sec: int = ENV_CLAIM_CODE_TTL_SEC
 
+class A2AEnvironmentOpenClawStageIn(BaseModel):
+    openclaw_base_url: Optional[str] = Field(None, min_length=8)
+    openclaw_ws_url: Optional[str] = Field(None, min_length=8)
+    openclaw_api_key: Optional[str] = Field(None, min_length=1)
+    openclaw_auth_token: Optional[str] = Field(None, min_length=1)
+    openclaw_name: Optional[str] = None
+    source: Optional[str] = None
+    claim_ttl_sec: int = ENV_CLAIM_CODE_TTL_SEC
+    stage_ttl_sec: int = ENV_OPENCLAW_STAGE_TTL_SEC
+
+class A2AEnvironmentOpenClawStageOut(BaseModel):
+    ok: bool
+    environment_id: str
+    agent_id: str
+    staged: bool
+    openclaw_base_url: str
+    openclaw_ws_url: Optional[str] = None
+    openclaw_name: Optional[str] = None
+    source: Optional[str] = None
+    stage_expires_at: int
+    claim_url: str
+    claim_code_expires_at: int
+    message: str
+
+class A2AEnvironmentClaimContextOut(BaseModel):
+    ok: bool
+    environment_id: str
+    claim_valid: bool
+    claim_expires_at: Optional[int] = None
+    staged_openclaw_ready: bool
+    staged_openclaw_name: Optional[str] = None
+    staged_openclaw_base_url: Optional[str] = None
+    staged_openclaw_ws_url: Optional[str] = None
+    requires_manual_openclaw: bool
+    message: str = ""
+
 class A2AEnvironmentClaimCompleteIn(BaseModel):
     environment_id: str = Field(..., min_length=1)
     code: str = Field(..., min_length=1)
     mode: str = Field("signup", description="signup | login | session")
     email: Optional[str] = Field(None, min_length=3)
     password: Optional[str] = Field(None, min_length=PASSWORD_MIN_LENGTH)
-    openclaw_base_url: str = Field(..., min_length=8)
-    openclaw_api_key: str = Field(..., min_length=1)
+    openclaw_base_url: Optional[str] = Field(None, min_length=8)
+    openclaw_ws_url: Optional[str] = Field(None, min_length=8)
+    openclaw_api_key: Optional[str] = Field(None, min_length=1)
     openclaw_name: Optional[str] = None
 
 class A2AEnvironmentClaimCompleteOut(BaseModel):
@@ -276,6 +313,7 @@ class A2AEnvironmentClaimCompleteOut(BaseModel):
     email: str
     connection_id: str
     connection_name: Optional[str] = None
+    connection_source: Optional[str] = None
     agent_provision: Optional[Dict[str, Any]] = None
 
 class A2AEnvironmentHandoffAckOut(BaseModel):
@@ -420,4 +458,3 @@ class ProjectActivityEventOut(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
     created_at: int
 __all__ = [name for name in globals() if not name.startswith('__')]
-

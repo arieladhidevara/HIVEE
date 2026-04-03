@@ -1,6 +1,58 @@
 from hivee_shared import *
 
 def register_routes(app: FastAPI) -> None:
+    def _normalize_openclaw_base_url(raw_value: Any) -> str:
+        base = str(raw_value or "").strip().rstrip("/")
+        if not base:
+            return ""
+        if not (base.startswith("http://") or base.startswith("https://")):
+            raise HTTPException(400, "openclaw_base_url must start with http:// or https://")
+        return base
+
+    def _normalize_openclaw_ws_url(raw_value: Any) -> Optional[str]:
+        ws = str(raw_value or "").strip().rstrip("/")
+        if not ws:
+            return None
+        lowered = ws.lower()
+        if lowered.startswith("ws://") or lowered.startswith("wss://") or lowered.startswith("http://") or lowered.startswith("https://"):
+            return ws
+        raise HTTPException(400, "openclaw_ws_url must start with ws://, wss://, http://, or https://")
+
+    def _normalize_openclaw_stage_source(raw_value: Any) -> Optional[str]:
+        source = str(raw_value or "").strip()
+        if not source:
+            return None
+        return source[:120]
+
+    def _expire_openclaw_stage_rows(conn: sqlite3.Connection, env_id: str, now: int) -> int:
+        return conn.execute(
+            """
+            UPDATE environment_openclaw_staging
+            SET status = ?, updated_at = ?
+            WHERE env_id = ? AND status = ? AND expires_at <= ?
+            """,
+            (
+                ENV_OPENCLAW_STAGE_STATUS_EXPIRED,
+                now,
+                env_id,
+                ENV_OPENCLAW_STAGE_STATUS_STAGED,
+                now,
+            ),
+        ).rowcount
+
+    def _select_active_openclaw_stage(conn: sqlite3.Connection, env_id: str, now: int) -> Optional[sqlite3.Row]:
+        return conn.execute(
+            """
+            SELECT id, env_id, staged_by_agent_id, openclaw_base_url, openclaw_ws_url, openclaw_name,
+                   api_key_encrypted, source, status, created_at, updated_at, expires_at
+            FROM environment_openclaw_staging
+            WHERE env_id = ? AND status = ? AND expires_at > ?
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (env_id, ENV_OPENCLAW_STAGE_STATUS_STAGED, now),
+        ).fetchone()
+
     @app.post("/api/a2a/environments/bootstrap")
     async def bootstrap_a2a_environment(request: Request, payload: A2AEnvironmentBootstrapIn):
         env_id = new_id("env")
@@ -29,7 +81,7 @@ def register_routes(app: FastAPI) -> None:
             conn,
             env_id=env_id,
             agent_id=agent_id,
-            scopes=["env.read", "env.bootstrap", "env.claim.start", "env.handoff.wait"],
+            scopes=["env.read", "env.bootstrap", "env.claim.start", "env.openclaw.stage", "env.handoff.wait"],
             ttl_sec=payload.session_ttl_sec,
         )
         claim_code, claim_expires_at = _issue_environment_claim_code(
@@ -55,7 +107,7 @@ def register_routes(app: FastAPI) -> None:
             "claim_url": claim_url,
             "message": "Environment bootstrap complete. Share claim_url with user to claim this environment.",
         }
-    
+
     @app.post("/api/a2a/environments/{env_id}/claim/start")
     async def start_a2a_environment_claim(request: Request, env_id: str, payload: A2AEnvironmentClaimStartIn):
         owner_user_id = None
@@ -65,7 +117,7 @@ def register_routes(app: FastAPI) -> None:
             owner_user_id = str(session_user)
         else:
             agent_access = _resolve_environment_agent_access(request, env_id, required_scope="env.claim.start")
-    
+
         conn = db()
         env_row = conn.execute(
             "SELECT id, owner_user_id, status FROM environments WHERE id = ?",
@@ -81,7 +133,7 @@ def register_routes(app: FastAPI) -> None:
         if owner_user_id and str(env_row["owner_user_id"] or "").strip() != owner_user_id:
             conn.close()
             raise HTTPException(403, "Only owner can generate claim link for this environment")
-    
+
         claim_code, claim_expires_at = _issue_environment_claim_code(
             conn,
             env_id=env_id,
@@ -104,7 +156,235 @@ def register_routes(app: FastAPI) -> None:
             "claim_code_expires_at": claim_expires_at,
             "claim_url": claim_url,
         }
-    
+
+    @app.post("/api/a2a/environments/{env_id}/openclaw/stage", response_model=A2AEnvironmentOpenClawStageOut)
+    async def stage_a2a_environment_openclaw(request: Request, env_id: str, payload: A2AEnvironmentOpenClawStageIn):
+        access = _resolve_environment_agent_access(request, env_id, required_scope="env.openclaw.stage")
+        now = int(time.time())
+        agent_id = str(access.get("agent_id") or "").strip() or "agent"
+        openclaw_base_url = _normalize_openclaw_base_url(payload.openclaw_base_url)
+        openclaw_ws_url = _normalize_openclaw_ws_url(payload.openclaw_ws_url)
+        openclaw_api_key = str(payload.openclaw_api_key or payload.openclaw_auth_token or "").strip()
+        openclaw_name = str(payload.openclaw_name or "").strip()[:180] or None
+        source = _normalize_openclaw_stage_source(payload.source) or "agent_staged"
+
+        if not openclaw_base_url:
+            raise HTTPException(400, "openclaw_base_url is required")
+        if not openclaw_api_key:
+            raise HTTPException(400, "openclaw_api_key or openclaw_auth_token is required")
+
+        health = await openclaw_health(openclaw_base_url, openclaw_api_key)
+        if not health.get("ok"):
+            raise HTTPException(
+                400,
+                {
+                    "message": "Could not verify OpenClaw health while staging",
+                    "details": health,
+                },
+            )
+
+        conn = db()
+        env_row = conn.execute(
+            "SELECT id, owner_user_id, status FROM environments WHERE id = ?",
+            (env_id,),
+        ).fetchone()
+        if not env_row:
+            conn.close()
+            raise HTTPException(404, "Environment not found")
+
+        status = str(env_row["status"] or "").strip() or ENV_STATUS_PENDING_BOOTSTRAP
+        if status == ENV_STATUS_ARCHIVED:
+            conn.close()
+            raise HTTPException(400, "Environment is archived")
+
+        _expire_openclaw_stage_rows(conn, env_id, now)
+        conn.execute(
+            """
+            UPDATE environment_openclaw_staging
+            SET status = ?, updated_at = ?
+            WHERE env_id = ? AND status = ?
+            """,
+            (
+                ENV_OPENCLAW_STAGE_STATUS_REPLACED,
+                now,
+                env_id,
+                ENV_OPENCLAW_STAGE_STATUS_STAGED,
+            ),
+        )
+
+        stage_ttl = max(60, min(int(payload.stage_ttl_sec or ENV_OPENCLAW_STAGE_TTL_SEC), 60 * 60 * 24))
+        stage_expires_at = now + stage_ttl
+        conn.execute(
+            """
+            INSERT INTO environment_openclaw_staging (
+                id, env_id, staged_by_agent_id, openclaw_base_url, openclaw_ws_url, openclaw_name,
+                api_key_encrypted, source, status, created_at, updated_at, expires_at, consumed_at, consumed_by_user_id
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                new_id("ocstg"),
+                env_id,
+                agent_id,
+                openclaw_base_url,
+                openclaw_ws_url,
+                openclaw_name,
+                _seal_secret_value(openclaw_api_key),
+                source,
+                ENV_OPENCLAW_STAGE_STATUS_STAGED,
+                now,
+                now,
+                stage_expires_at,
+                None,
+                None,
+            ),
+        )
+
+        claim_code, claim_code_expires_at = _issue_environment_claim_code(
+            conn,
+            env_id=env_id,
+            ttl_sec=payload.claim_ttl_sec,
+            created_by_agent_id=agent_id,
+        )
+        if status == ENV_STATUS_PENDING_BOOTSTRAP:
+            conn.execute(
+                "UPDATE environments SET status = ? WHERE id = ?",
+                (ENV_STATUS_PENDING_CLAIM, env_id),
+            )
+
+        conn.commit()
+        conn.close()
+        claim_url = _build_claim_url(request, env_id, claim_code)
+        return A2AEnvironmentOpenClawStageOut(
+            ok=True,
+            environment_id=env_id,
+            agent_id=agent_id,
+            staged=True,
+            openclaw_base_url=openclaw_base_url,
+            openclaw_ws_url=openclaw_ws_url,
+            openclaw_name=openclaw_name,
+            source=source,
+            stage_expires_at=stage_expires_at,
+            claim_url=claim_url,
+            claim_code_expires_at=claim_code_expires_at,
+            message="OpenClaw config staged. Share claim_url so owner can sign up/login and claim.",
+        )
+
+    @app.get("/api/a2a/environments/{env_id}/claim/context", response_model=A2AEnvironmentClaimContextOut)
+    async def get_a2a_environment_claim_context(env_id: str, code: str):
+        env_id = str(env_id or "").strip()
+        claim_code = str(code or "").strip()
+        if not env_id:
+            raise HTTPException(400, "env_id is required")
+        if not claim_code:
+            raise HTTPException(400, "code is required")
+
+        now = int(time.time())
+        conn = db()
+        env_row = conn.execute(
+            "SELECT id, status FROM environments WHERE id = ?",
+            (env_id,),
+        ).fetchone()
+        if not env_row:
+            conn.close()
+            raise HTTPException(404, "Environment not found")
+
+        env_status = str(env_row["status"] or "").strip() or ENV_STATUS_PENDING_BOOTSTRAP
+        if env_status == ENV_STATUS_ARCHIVED:
+            conn.close()
+            raise HTTPException(400, "Environment is archived")
+
+        claim_row = conn.execute(
+            """
+            SELECT id, expires_at, used_at
+            FROM environment_claim_codes
+            WHERE env_id = ? AND code_hash = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (env_id, _hash_access_token(claim_code)),
+        ).fetchone()
+
+        if not claim_row:
+            conn.close()
+            return A2AEnvironmentClaimContextOut(
+                ok=True,
+                environment_id=env_id,
+                claim_valid=False,
+                claim_expires_at=None,
+                staged_openclaw_ready=False,
+                staged_openclaw_name=None,
+                staged_openclaw_base_url=None,
+                staged_openclaw_ws_url=None,
+                requires_manual_openclaw=True,
+                message="Invalid claim code.",
+            )
+
+        claim_expires_at = _to_int(claim_row["expires_at"])
+        if _to_int(claim_row["used_at"]) > 0:
+            conn.close()
+            return A2AEnvironmentClaimContextOut(
+                ok=True,
+                environment_id=env_id,
+                claim_valid=False,
+                claim_expires_at=claim_expires_at,
+                staged_openclaw_ready=False,
+                staged_openclaw_name=None,
+                staged_openclaw_base_url=None,
+                staged_openclaw_ws_url=None,
+                requires_manual_openclaw=True,
+                message="Claim code already used.",
+            )
+        if claim_expires_at <= now:
+            conn.close()
+            return A2AEnvironmentClaimContextOut(
+                ok=True,
+                environment_id=env_id,
+                claim_valid=False,
+                claim_expires_at=claim_expires_at,
+                staged_openclaw_ready=False,
+                staged_openclaw_name=None,
+                staged_openclaw_base_url=None,
+                staged_openclaw_ws_url=None,
+                requires_manual_openclaw=True,
+                message="Claim code expired.",
+            )
+
+        _expire_openclaw_stage_rows(conn, env_id, now)
+        stage_row = _select_active_openclaw_stage(conn, env_id, now)
+        conn.commit()
+        conn.close()
+
+        if stage_row:
+            stage_name = str(stage_row["openclaw_name"] or "").strip() or None
+            stage_base = str(stage_row["openclaw_base_url"] or "").strip() or None
+            stage_ws = str(stage_row["openclaw_ws_url"] or "").strip() or None
+            label = stage_name or stage_base or "staged OpenClaw"
+            return A2AEnvironmentClaimContextOut(
+                ok=True,
+                environment_id=env_id,
+                claim_valid=True,
+                claim_expires_at=claim_expires_at,
+                staged_openclaw_ready=True,
+                staged_openclaw_name=stage_name,
+                staged_openclaw_base_url=stage_base,
+                staged_openclaw_ws_url=stage_ws,
+                requires_manual_openclaw=False,
+                message=f"OpenClaw is already staged by agent ({label}).",
+            )
+
+        return A2AEnvironmentClaimContextOut(
+            ok=True,
+            environment_id=env_id,
+            claim_valid=True,
+            claim_expires_at=claim_expires_at,
+            staged_openclaw_ready=False,
+            staged_openclaw_name=None,
+            staged_openclaw_base_url=None,
+            staged_openclaw_ws_url=None,
+            requires_manual_openclaw=True,
+            message="Agent has not staged OpenClaw yet. Enter OpenClaw base URL + API key manually.",
+        )
+
     @app.post("/api/a2a/environments/claim/complete", response_model=A2AEnvironmentClaimCompleteOut)
     async def complete_a2a_environment_claim(request: Request, payload: A2AEnvironmentClaimCompleteIn, response: Response):
         env_id = str(payload.environment_id or "").strip()
@@ -112,34 +392,28 @@ def register_routes(app: FastAPI) -> None:
         mode = str(payload.mode or "signup").strip().lower()
         email = _normalize_email(str(payload.email or ""))
         password = str(payload.password or "")
-        openclaw_base_url = str(payload.openclaw_base_url or "").strip()
+        openclaw_base_url = _normalize_openclaw_base_url(payload.openclaw_base_url)
+        openclaw_ws_url = _normalize_openclaw_ws_url(payload.openclaw_ws_url)
         openclaw_api_key = str(payload.openclaw_api_key or "").strip()
         openclaw_name = str(payload.openclaw_name or "").strip() or None
+
         if mode not in {"signup", "login", "session"}:
             raise HTTPException(400, "mode must be signup, login, or session")
         if not env_id or not claim_code:
             raise HTTPException(400, "environment_id and code are required")
-        if not (openclaw_base_url.startswith("http://") or openclaw_base_url.startswith("https://")):
-            raise HTTPException(400, "openclaw_base_url must start with http:// or https://")
-        if not openclaw_api_key:
-            raise HTTPException(400, "openclaw_api_key is required")
+
+        manual_credentials_provided = bool(openclaw_base_url and openclaw_api_key)
+        if (openclaw_base_url and not openclaw_api_key) or (openclaw_api_key and not openclaw_base_url):
+            raise HTTPException(400, "Provide both openclaw_base_url and openclaw_api_key together")
+
         if mode in {"signup", "login"} and not email:
             raise HTTPException(400, "email is required")
         if mode in {"signup", "login"} and not password:
             raise HTTPException(400, "password is required")
         if mode == "signup":
             _validate_password_strength(password)
-    
+
         now = int(time.time())
-        health = await openclaw_health(openclaw_base_url.rstrip("/"), openclaw_api_key)
-        if not health.get("ok"):
-            raise HTTPException(
-                400,
-                {
-                    "message": "Could not verify OpenClaw health during claim",
-                    "details": health,
-                },
-            )
         conn = db()
         env_row = conn.execute(
             "SELECT id, owner_user_id, status FROM environments WHERE id = ?",
@@ -151,7 +425,7 @@ def register_routes(app: FastAPI) -> None:
         if str(env_row["status"] or "").strip() == ENV_STATUS_ARCHIVED:
             conn.close()
             raise HTTPException(400, "Environment is archived")
-    
+
         claim_row = conn.execute(
             """
             SELECT id, expires_at, used_at, created_by_agent_id
@@ -172,7 +446,56 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(400, "Claim code expired")
         claim_agent_id = str(claim_row["created_by_agent_id"] or "").strip()
-    
+
+        _expire_openclaw_stage_rows(conn, env_id, now)
+        stage_row = _select_active_openclaw_stage(conn, env_id, now)
+
+        resolved_base_url = openclaw_base_url
+        resolved_ws_url = openclaw_ws_url
+        resolved_api_key = openclaw_api_key
+        resolved_name = openclaw_name
+        consumed_stage_id: Optional[str] = None
+        connection_source = "manual"
+
+        if not manual_credentials_provided:
+            if not stage_row:
+                conn.close()
+                raise HTTPException(
+                    400,
+                    "OpenClaw config is missing. Ask the agent to stage OpenClaw first or provide openclaw_base_url + openclaw_api_key manually.",
+                )
+            try:
+                resolved_api_key = _unseal_secret_value(str(stage_row["api_key_encrypted"] or ""))
+            except Exception:
+                conn.close()
+                raise HTTPException(400, "Staged OpenClaw token is invalid. Ask agent to restage OpenClaw.")
+            resolved_base_url = _normalize_openclaw_base_url(stage_row["openclaw_base_url"])
+            try:
+                resolved_ws_url = _normalize_openclaw_ws_url(stage_row["openclaw_ws_url"])
+            except HTTPException:
+                resolved_ws_url = None
+            resolved_name = openclaw_name or (str(stage_row["openclaw_name"] or "").strip() or None)
+            consumed_stage_id = str(stage_row["id"])
+            connection_source = str(stage_row["source"] or "").strip() or "agent_staged"
+
+        if not resolved_base_url:
+            conn.close()
+            raise HTTPException(400, "openclaw_base_url is required")
+        if not resolved_api_key:
+            conn.close()
+            raise HTTPException(400, "openclaw_api_key is required")
+
+        health = await openclaw_health(resolved_base_url, resolved_api_key)
+        if not health.get("ok"):
+            conn.close()
+            raise HTTPException(
+                400,
+                {
+                    "message": "Could not verify OpenClaw health during claim",
+                    "details": health,
+                },
+            )
+
         user_id = ""
         if mode == "signup":
             user_id = new_id("usr")
@@ -207,13 +530,13 @@ def register_routes(app: FastAPI) -> None:
                 raise HTTPException(404, "User not found")
             user_id = str(user_row["id"])
             email = _normalize_email(str(user_row["email"] or ""))
-    
+
         owner_user_id = str(env_row["owner_user_id"] or "").strip()
         if owner_user_id and owner_user_id != user_id:
             conn.close()
             raise HTTPException(409, "Environment already claimed by another user")
-    
-        bootstrap = await _bootstrap_connection_workspace(user_id, openclaw_base_url.rstrip("/"), openclaw_api_key)
+
+        bootstrap = await _bootstrap_connection_workspace(user_id, resolved_base_url, resolved_api_key)
         if not bootstrap.get("ok"):
             conn.close()
             raise HTTPException(
@@ -223,14 +546,14 @@ def register_routes(app: FastAPI) -> None:
                     "details": bootstrap,
                 },
             )
-    
+
         token = new_id("sess")
         conn_id = new_id("oc")
         secret_id = _store_connection_api_key_secret(
             conn,
             user_id=user_id,
             connection_id=conn_id,
-            api_key=openclaw_api_key,
+            api_key=resolved_api_key,
         )
         conn.execute(
             "INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)",
@@ -256,6 +579,53 @@ def register_routes(app: FastAPI) -> None:
             "UPDATE environment_claim_codes SET used_at = ?, used_by_user_id = ? WHERE id = ?",
             (now, user_id, claim_row["id"]),
         )
+
+        _expire_openclaw_stage_rows(conn, env_id, now)
+        if consumed_stage_id:
+            conn.execute(
+                """
+                UPDATE environment_openclaw_staging
+                SET status = ?, updated_at = ?, consumed_at = ?, consumed_by_user_id = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    ENV_OPENCLAW_STAGE_STATUS_CONSUMED,
+                    now,
+                    now,
+                    user_id,
+                    consumed_stage_id,
+                    ENV_OPENCLAW_STAGE_STATUS_STAGED,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE environment_openclaw_staging
+                SET status = ?, updated_at = ?
+                WHERE env_id = ? AND status = ? AND id <> ?
+                """,
+                (
+                    ENV_OPENCLAW_STAGE_STATUS_REPLACED,
+                    now,
+                    env_id,
+                    ENV_OPENCLAW_STAGE_STATUS_STAGED,
+                    consumed_stage_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE environment_openclaw_staging
+                SET status = ?, updated_at = ?
+                WHERE env_id = ? AND status = ?
+                """,
+                (
+                    ENV_OPENCLAW_STAGE_STATUS_REVOKED,
+                    now,
+                    env_id,
+                    ENV_OPENCLAW_STAGE_STATUS_STAGED,
+                ),
+            )
+
         _transition_environment_agent_sessions_to_handoff(
             conn,
             env_id=env_id,
@@ -282,15 +652,16 @@ def register_routes(app: FastAPI) -> None:
                 conn_id,
                 user_id,
                 env_id,
-                openclaw_base_url.rstrip("/"),
+                resolved_base_url,
                 "",
                 secret_id,
-                openclaw_name,
+                resolved_name,
                 now,
             ),
         )
         conn.commit()
         conn.close()
+
         _upsert_connection_policy(
             conn_id,
             user_id,
@@ -306,12 +677,12 @@ def register_routes(app: FastAPI) -> None:
             user_id=user_id,
             env_id=env_id,
             connection_id=conn_id,
-            base_url=openclaw_base_url.rstrip("/"),
+            base_url=resolved_base_url,
             raw_agents=bootstrap.get("agents") or [],
             fallback_agent_id=bootstrap.get("main_agent_id") or claim_agent_id,
             fallback_agent_name=bootstrap.get("main_agent_name") or claim_agent_id,
         )
-    
+
         _set_session_cookie(response, token)
         return A2AEnvironmentClaimCompleteOut(
             token=token,
@@ -320,10 +691,10 @@ def register_routes(app: FastAPI) -> None:
             user_id=user_id,
             email=email,
             connection_id=conn_id,
-            connection_name=openclaw_name,
+            connection_name=resolved_name,
+            connection_source=connection_source,
             agent_provision=provision,
         )
-    
     @app.get("/api/a2a/environments/{env_id}")
     async def get_a2a_environment_status(request: Request, env_id: str):
         session_user = get_optional_session_user(request)

@@ -17,11 +17,14 @@ This system is a collaboration workspace. Treat all credentials as confidential.
 - Sending secrets to invited agents or other collaborators
 - Echoing full secrets back to the owner unless explicitly requested in a private secure channel
 - Asking owner for Hivee email/password when claim URL flow is available
+- Asking owner for OpenClaw base URL/token if agent can stage OpenClaw config directly
 
 ## Required Behavior
 - For account onboarding, use claim URL flow first:
   - Agent bootstraps environment
+  - Agent stages OpenClaw config into temporary env
   - Owner signs up/logs in directly on Hivee claim page
+- If stage is unavailable, manual OpenClaw input is fallback.
 - If a workflow needs credentials, use them only in input fields that require them.
 - Mask secrets when referencing them (example: `oc_***`).
 - If a secret is exposed accidentally, immediately notify owner and request credential rotation.

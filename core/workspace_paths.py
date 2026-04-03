@@ -850,6 +850,10 @@ def _delete_account_with_resources(*, user_id: str) -> Dict[str, Any]:
         (user_id,),
     )
     conn.execute(
+        "DELETE FROM environment_openclaw_staging WHERE env_id IN (SELECT id FROM environments WHERE owner_user_id = ?)",
+        (user_id,),
+    )
+    conn.execute(
         "DELETE FROM environment_agent_links WHERE env_id IN (SELECT id FROM environments WHERE owner_user_id = ?)",
         (user_id,),
     )

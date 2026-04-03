@@ -10,9 +10,13 @@ venv/
 
 # Runtime data
 app.db
+app.db-shm
+app.db-wal
 server_workspaces/
+TEMP/
 
 # OS/editor noise
 .DS_Store
 Thumbs.db
 .vscode/
+

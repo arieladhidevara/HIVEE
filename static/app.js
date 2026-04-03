@@ -118,6 +118,17 @@ let claimSessionState = {
   email: "",
   providers: [],
 };
+let claimConnectionContext = {
+  loaded: false,
+  claimValid: true,
+  claimExpiresAt: null,
+  stagedOpenclawReady: false,
+  stagedOpenclawName: "",
+  stagedOpenclawBaseUrl: "",
+  stagedOpenclawWsUrl: "",
+  requiresManualOpenclaw: true,
+  message: "",
+};
 let projectInviteContext = {
   active: false,
   token: "",
@@ -305,8 +316,10 @@ function parseClaimAuthFromUrl() {
     environmentId: envId,
     code,
   };
+  if (!claimAuthContext.active) {
+    resetClaimConnectionContext();
+  }
 }
-
 function clearClaimParamsFromUrl() {
   const url = new URL(window.location.href);
   url.searchParams.delete(CLAIM_ENV_PARAM);
@@ -499,6 +512,111 @@ function setClaimSessionState(next) {
   };
 }
 
+function setClaimConnectionContext(next) {
+  claimConnectionContext = {
+    loaded: Boolean(next?.loaded),
+    claimValid: next?.claimValid == null ? true : Boolean(next?.claimValid),
+    claimExpiresAt: Number.isFinite(Number(next?.claimExpiresAt)) ? Number(next.claimExpiresAt) : null,
+    stagedOpenclawReady: Boolean(next?.stagedOpenclawReady),
+    stagedOpenclawName: String(next?.stagedOpenclawName || "").trim(),
+    stagedOpenclawBaseUrl: String(next?.stagedOpenclawBaseUrl || "").trim(),
+    stagedOpenclawWsUrl: String(next?.stagedOpenclawWsUrl || "").trim(),
+    requiresManualOpenclaw: next?.requiresManualOpenclaw == null ? true : Boolean(next?.requiresManualOpenclaw),
+    message: String(next?.message || "").trim(),
+  };
+}
+
+function resetClaimConnectionContext() {
+  setClaimConnectionContext({
+    loaded: false,
+    claimValid: true,
+    claimExpiresAt: null,
+    stagedOpenclawReady: false,
+    stagedOpenclawName: "",
+    stagedOpenclawBaseUrl: "",
+    stagedOpenclawWsUrl: "",
+    requiresManualOpenclaw: true,
+    message: "",
+  });
+}
+
+function claimRequiresManualOpenclaw() {
+  if (!claimAuthContext.active) return false;
+  if (!claimConnectionContext.loaded) return true;
+  if (!claimConnectionContext.claimValid) return true;
+  if (claimConnectionContext.stagedOpenclawReady) return false;
+  return Boolean(claimConnectionContext.requiresManualOpenclaw);
+}
+
+function claimHasStagedOpenclaw() {
+  return Boolean(
+    claimAuthContext.active
+    && claimConnectionContext.loaded
+    && claimConnectionContext.claimValid
+    && claimConnectionContext.stagedOpenclawReady
+    && !claimConnectionContext.requiresManualOpenclaw
+  );
+}
+
+function assertClaimContextUsable() {
+  if (!claimAuthContext.active) return;
+  if (!claimConnectionContext.loaded) return;
+  if (claimConnectionContext.claimValid) return;
+  throw new Error(claimConnectionContext.message || "Claim link is no longer valid.");
+}
+
+function claimConnectionPromptText() {
+  if (!claimAuthContext.active) return "";
+  if (!claimConnectionContext.loaded) return "Checking claim link context...";
+  if (!claimConnectionContext.claimValid) {
+    return claimConnectionContext.message || "Claim link is not valid.";
+  }
+  if (claimHasStagedOpenclaw()) {
+    const label = claimConnectionContext.stagedOpenclawName
+      || claimConnectionContext.stagedOpenclawBaseUrl
+      || "agent-staged OpenClaw";
+    return `OpenClaw ready from agent (${label}). No Base URL or token input needed.`;
+  }
+  if (claimConnectionContext.message) return claimConnectionContext.message;
+  return "OpenClaw is not staged yet. Enter Base URL and API key/token below.";
+}
+
+async function loadClaimConnectionContext() {
+  if (!claimAuthContext.active) {
+    resetClaimConnectionContext();
+    return;
+  }
+  const envId = encodeURIComponent(claimAuthContext.environmentId);
+  const code = encodeURIComponent(claimAuthContext.code);
+  try {
+    const res = await api(`/api/a2a/environments/${envId}/claim/context?code=${code}`);
+    setClaimConnectionContext({
+      loaded: true,
+      claimValid: Boolean(res?.claim_valid),
+      claimExpiresAt: Number.isFinite(Number(res?.claim_expires_at)) ? Number(res.claim_expires_at) : null,
+      stagedOpenclawReady: Boolean(res?.staged_openclaw_ready),
+      stagedOpenclawName: String(res?.staged_openclaw_name || "").trim(),
+      stagedOpenclawBaseUrl: String(res?.staged_openclaw_base_url || "").trim(),
+      stagedOpenclawWsUrl: String(res?.staged_openclaw_ws_url || "").trim(),
+      requiresManualOpenclaw: res?.requires_manual_openclaw == null ? true : Boolean(res?.requires_manual_openclaw),
+      message: String(res?.message || "").trim(),
+    });
+  } catch (e) {
+    const msg = detailToText(e?.message || e || "");
+    setClaimConnectionContext({
+      loaded: true,
+      claimValid: true,
+      claimExpiresAt: null,
+      stagedOpenclawReady: false,
+      stagedOpenclawName: "",
+      stagedOpenclawBaseUrl: "",
+      stagedOpenclawWsUrl: "",
+      requiresManualOpenclaw: true,
+      message: msg || "Could not read claim context. Enter OpenClaw manually.",
+    });
+  }
+}
+
 function applyClaimConnectionFromContext(ctx) {
   const base = String(ctx?.openclaw_base_url || "").trim();
   const key = String(ctx?.openclaw_api_key || "").trim();
@@ -574,7 +692,6 @@ async function loadClaimSessionState() {
     setClaimSessionState({ connected: false, email: "", providers: [] });
   }
 }
-
 function oauthDisplayName(provider) {
   const key = String(provider || "").trim().toLowerCase();
   if (key === "google") return "Google";
@@ -605,20 +722,29 @@ function applyOAuthProvidersUI() {
     return;
   }
   if (configuredCount < buttons.length) {
-    hint.textContent = claimAuthContext.active
+    if (!claimAuthContext.active) {
+      hint.textContent = "Some providers are not enabled yet.";
+      return;
+    }
+    hint.textContent = claimRequiresManualOpenclaw()
       ? "Some providers are not enabled yet. You can sign in with social auth first or fill OpenClaw details first."
-      : "Some providers are not enabled yet.";
+      : "Some providers are not enabled yet. You can still sign in and claim.";
     return;
   }
   if (!claimAuthContext.active) {
     hint.textContent = "";
     return;
   }
-  hint.textContent = claimSessionState.connected
-    ? "Session is connected. Enter OpenClaw Base URL + API key, then click Claim Environment."
-    : "You can sign in with social auth first, then continue by entering OpenClaw Base URL + API key.";
+  if (claimSessionState.connected) {
+    hint.textContent = claimRequiresManualOpenclaw()
+      ? "Session is connected. Enter OpenClaw Base URL + API key, then click Claim Environment."
+      : "Session is connected. OpenClaw is staged by agent, click Claim Environment.";
+    return;
+  }
+  hint.textContent = claimRequiresManualOpenclaw()
+    ? "You can sign in with social auth first, then continue by entering OpenClaw Base URL + API key."
+    : "You can sign in with social auth first, then click Claim Environment.";
 }
-
 async function loadOAuthProviders() {
   oauthProvidersState = new Map();
   try {
@@ -652,14 +778,22 @@ function applyClaimAuthUI() {
   const claimCard = $("claim_connected_card");
   const claimIdentity = $("claim_connected_identity");
   const claimProvider = $("claim_connected_provider");
+  const claimConnectionHint = $("claim_connection_hint");
   const claimOnlyBlocks = document.querySelectorAll(".claim-only");
+  const claimOpenclawBlocks = document.querySelectorAll(".claim-openclaw-fields");
   const credentialBlocks = document.querySelectorAll(".credential-only");
+
   if (!claimAuthContext.active) {
     const inviteSignedInMode = Boolean(projectInviteContext.active && sessionToken);
     setClaimSessionState({ connected: false, email: "", providers: [] });
+    resetClaimConnectionContext();
     if (notice) {
       notice.classList.add("hidden");
       notice.textContent = "";
+    }
+    if (claimConnectionHint) {
+      claimConnectionHint.classList.add("hidden");
+      claimConnectionHint.textContent = "";
     }
     if (claimCard) claimCard.classList.add("hidden");
     if (methodAgent) {
@@ -672,16 +806,27 @@ function applyClaimAuthUI() {
     if (signupForm) signupForm.classList.add("hidden");
     $("tab_login")?.classList.add("active");
     $("tab_signup")?.classList.remove("active");
-    if (btnLogin) btnLogin.textContent = "Continue";
-    if (btnSignup) btnSignup.textContent = "Create Account";
+    if (btnLogin) {
+      btnLogin.textContent = "Continue";
+      btnLogin.disabled = false;
+    }
+    if (btnSignup) {
+      btnSignup.textContent = "Create Account";
+      btnSignup.disabled = false;
+    }
     setClaimCredentialRequired(true);
     credentialBlocks.forEach((el) => el.classList.remove("hidden"));
+    claimOpenclawBlocks.forEach((el) => el.classList.remove("hidden"));
     if (socialAuthBlock) socialAuthBlock.classList.toggle("hidden", inviteSignedInMode);
     applyOAuthProvidersUI();
     claimOnlyBlocks.forEach((el) => el.classList.add("hidden"));
     renderProjectInviteUI();
     return;
   }
+
+  const claimInvalid = Boolean(claimConnectionContext.loaded && !claimConnectionContext.claimValid);
+  const manualOpenclawRequired = claimRequiresManualOpenclaw();
+  const claimPrompt = claimConnectionPromptText();
 
   activeAuthMethod = "hooman";
   if (methodAgent) {
@@ -693,11 +838,26 @@ function applyClaimAuthUI() {
     const shortEnv = claimAuthContext.environmentId.length > 18
       ? claimAuthContext.environmentId.slice(0, 18) + "..."
       : claimAuthContext.environmentId;
-    notice.textContent = claimSessionState.connected
-      ? `Claim link detected for environment ${shortEnv}. Session connected, complete claim below.`
-      : `Claim link detected for environment ${shortEnv}. Login or sign up to claim it.`;
+    if (claimInvalid) {
+      notice.textContent = `Claim link detected for environment ${shortEnv}, but it is no longer valid.`;
+    } else {
+      notice.textContent = claimSessionState.connected
+        ? `Claim link detected for environment ${shortEnv}. Session connected, complete claim below.`
+        : `Claim link detected for environment ${shortEnv}. Login or sign up to claim it.`;
+    }
     notice.classList.remove("hidden");
   }
+  if (claimConnectionHint) {
+    if (claimPrompt) {
+      claimConnectionHint.textContent = claimPrompt;
+      claimConnectionHint.classList.remove("hidden");
+    } else {
+      claimConnectionHint.textContent = "";
+      claimConnectionHint.classList.add("hidden");
+    }
+  }
+  claimOpenclawBlocks.forEach((el) => el.classList.toggle("hidden", !manualOpenclawRequired));
+
   if (claimSessionState.connected) {
     if (claimCard) claimCard.classList.remove("hidden");
     if (claimIdentity) claimIdentity.textContent = claimSessionState.email || "Connected account";
@@ -723,6 +883,9 @@ function applyClaimAuthUI() {
     if (btnLogin) btnLogin.textContent = "Login and Claim";
     if (btnSignup) btnSignup.textContent = "Create Account and Claim";
   }
+
+  if (btnLogin) btnLogin.disabled = claimInvalid;
+  if (btnSignup) btnSignup.disabled = claimInvalid;
   if (socialAuthBlock) socialAuthBlock.classList.remove("hidden");
   applyOAuthProvidersUI();
   claimOnlyBlocks.forEach((el) => el.classList.remove("hidden"));
@@ -1277,6 +1440,17 @@ function claimConnectionPayload(prefix) {
   };
 }
 
+function withOptionalClaimConnection(body, connection) {
+  const next = { ...(body || {}) };
+  const base = String(connection?.openclaw_base_url || "").trim();
+  const key = String(connection?.openclaw_api_key || "").trim();
+  const name = String(connection?.openclaw_name || "").trim();
+  if (base) next.openclaw_base_url = base;
+  if (key) next.openclaw_api_key = key;
+  if (name) next.openclaw_name = name;
+  return next;
+}
+
 function validateClaimConnectionPayload(payload) {
   const base = String(payload?.openclaw_base_url || "").trim();
   const key = String(payload?.openclaw_api_key || "").trim();
@@ -1285,6 +1459,15 @@ function validateClaimConnectionPayload(payload) {
   if (!key) throw new Error("OpenClaw API key/token is required for claim.");
 }
 
+function validateClaimConnectionForActiveContext(payload) {
+  assertClaimContextUsable();
+  if (!claimAuthContext.active) return;
+  if (claimRequiresManualOpenclaw()) {
+    validateClaimConnectionPayload(payload);
+    return;
+  }
+  validateOptionalClaimConnectionPayload(payload);
+}
 function validatePasswordStrength(password, label = "Password") {
   const value = String(password || "");
   if (value.length < PASSWORD_POLICY_MIN_LENGTH) {
@@ -7525,17 +7708,20 @@ async function connectOpenClaw(ev) {
 async function login(ev) {
   ev.preventDefault();
   setMessage("auth_msg", "");
+  assertClaimContextUsable();
+
   if (claimAuthContext.active && claimSessionState.connected) {
     const connection = claimConnectionPayload("li");
-    validateClaimConnectionPayload(connection);
-    const res = await api("/api/a2a/environments/claim/complete", "POST", {
-      environment_id: claimAuthContext.environmentId,
-      code: claimAuthContext.code,
-      mode: "session",
-      openclaw_base_url: connection.openclaw_base_url,
-      openclaw_api_key: connection.openclaw_api_key,
-      openclaw_name: connection.openclaw_name,
-    });
+    validateClaimConnectionForActiveContext(connection);
+    const claimBody = withOptionalClaimConnection(
+      {
+        environment_id: claimAuthContext.environmentId,
+        code: claimAuthContext.code,
+        mode: "session",
+      },
+      connection,
+    );
+    const res = await api("/api/a2a/environments/claim/complete", "POST", claimBody);
     sessionToken = res.token;
     persistSessionToken(sessionToken);
     clearClaimSocialContext();
@@ -7543,30 +7729,30 @@ async function login(ev) {
     setMessage("auth_msg", "Environment claimed.", "ok");
     clearClaimParamsFromUrl();
     claimAuthContext = { active: false, environmentId: "", code: "" };
+    resetClaimConnectionContext();
     applyClaimAuthUI();
     await fetchInitial();
     return;
   }
+
   const email = $("li_email").value.trim();
   const password = $("li_pass").value;
   const endpoint = claimAuthContext.active ? "/api/a2a/environments/claim/complete" : "/api/login";
   const connection = claimAuthContext.active ? claimConnectionPayload("li") : null;
-  if (claimAuthContext.active) validateClaimConnectionPayload(connection);
-  const body = claimAuthContext.active
+  if (claimAuthContext.active) validateClaimConnectionForActiveContext(connection);
+  const baseBody = claimAuthContext.active
     ? {
       environment_id: claimAuthContext.environmentId,
       code: claimAuthContext.code,
       mode: "login",
       email,
       password,
-      openclaw_base_url: connection.openclaw_base_url,
-      openclaw_api_key: connection.openclaw_api_key,
-      openclaw_name: connection.openclaw_name,
     }
     : {
       email,
       password,
     };
+  const body = claimAuthContext.active ? withOptionalClaimConnection(baseBody, connection) : baseBody;
   const res = await api(endpoint, "POST", body);
   sessionToken = res.token;
   persistSessionToken(sessionToken);
@@ -7576,6 +7762,7 @@ async function login(ev) {
     setClaimSessionState({ connected: false, email: "", providers: [] });
     clearClaimParamsFromUrl();
     claimAuthContext = { active: false, environmentId: "", code: "" };
+    resetClaimConnectionContext();
     applyClaimAuthUI();
   } else {
     setMessage("auth_msg", "Login success", "ok");
@@ -7593,10 +7780,10 @@ async function login(ev) {
 
   await fetchInitial();
 }
-
 async function signup(ev) {
   ev.preventDefault();
   setMessage("auth_msg", "");
+  assertClaimContextUsable();
   if (claimAuthContext.active && claimSessionState.connected) {
     throw new Error("Session already connected. Use Claim Environment button.");
   }
@@ -7609,22 +7796,20 @@ async function signup(ev) {
   validatePasswordStrength(password);
   const endpoint = claimAuthContext.active ? "/api/a2a/environments/claim/complete" : "/api/signup";
   const connection = claimAuthContext.active ? claimConnectionPayload("su") : null;
-  if (claimAuthContext.active) validateClaimConnectionPayload(connection);
-  const body = claimAuthContext.active
+  if (claimAuthContext.active) validateClaimConnectionForActiveContext(connection);
+  const baseBody = claimAuthContext.active
     ? {
       environment_id: claimAuthContext.environmentId,
       code: claimAuthContext.code,
       mode: "signup",
       email,
       password,
-      openclaw_base_url: connection.openclaw_base_url,
-      openclaw_api_key: connection.openclaw_api_key,
-      openclaw_name: connection.openclaw_name,
     }
     : {
       email,
       password,
     };
+  const body = claimAuthContext.active ? withOptionalClaimConnection(baseBody, connection) : baseBody;
   const res = await api(endpoint, "POST", body);
   sessionToken = res.token;
   persistSessionToken(sessionToken);
@@ -7634,6 +7819,7 @@ async function signup(ev) {
     setClaimSessionState({ connected: false, email: "", providers: [] });
     clearClaimParamsFromUrl();
     claimAuthContext = { active: false, environmentId: "", code: "" };
+    resetClaimConnectionContext();
     applyClaimAuthUI();
   } else {
     setMessage("auth_msg", "Account created", "ok");
@@ -7651,7 +7837,6 @@ async function signup(ev) {
 
   await fetchInitial();
 }
-
 async function startOAuth(provider) {
   setMessage("auth_msg", "");
   const providerKey = String(provider || "").trim().toLowerCase();
@@ -7661,6 +7846,7 @@ async function startOAuth(provider) {
     throw new Error(`${oauthDisplayName(providerKey)} login is not enabled on this server.`);
   }
   if (claimAuthContext.active) {
+    assertClaimContextUsable();
     const connection = claimConnectionForContext();
     validateOptionalClaimConnectionPayload(connection);
     writeClaimSocialContext({
@@ -7681,7 +7867,6 @@ async function startOAuth(provider) {
   if (!authUrl) throw new Error("OAuth URL was not generated.");
   window.location.assign(authUrl);
 }
-
 function shouldClearStoredClaimContext(messageText) {
   const msg = String(messageText || "").toLowerCase();
   if (!msg) return false;
@@ -7697,6 +7882,12 @@ function shouldClearStoredClaimContext(messageText) {
 
 async function tryAutoCompleteClaimFromSocialSession() {
   if (!claimAuthContext.active) return false;
+  try {
+    assertClaimContextUsable();
+  } catch (e) {
+    setMessage("auth_msg", detailToText(e?.message || e), "error");
+    return false;
+  }
   const saved = readClaimSocialContext();
   if (!saved) return false;
   applyClaimConnectionFromContext(saved);
@@ -7721,24 +7912,26 @@ async function tryAutoCompleteClaimFromSocialSession() {
     setMessage("auth_msg", detailToText(e?.message || e), "error");
     return false;
   }
-  if (!savedConnection.openclaw_base_url || !savedConnection.openclaw_api_key) {
+  if (claimRequiresManualOpenclaw() && (!savedConnection.openclaw_base_url || !savedConnection.openclaw_api_key)) {
     return false;
   }
   try {
-    const res = await api("/api/a2a/environments/claim/complete", "POST", {
-      environment_id: envId,
-      code,
-      mode: "session",
-      openclaw_base_url: savedConnection.openclaw_base_url,
-      openclaw_api_key: savedConnection.openclaw_api_key,
-      openclaw_name: savedConnection.openclaw_name,
-    });
+    const claimBody = withOptionalClaimConnection(
+      {
+        environment_id: envId,
+        code,
+        mode: "session",
+      },
+      savedConnection,
+    );
+    const res = await api("/api/a2a/environments/claim/complete", "POST", claimBody);
     sessionToken = res.token;
     persistSessionToken(sessionToken);
     clearClaimSocialContext();
     setClaimSessionState({ connected: false, email: "", providers: [] });
     clearClaimParamsFromUrl();
     claimAuthContext = { active: false, environmentId: "", code: "" };
+    resetClaimConnectionContext();
     applyClaimAuthUI();
     setMessage("auth_msg", "Login social success. Environment claimed.", "ok");
     return true;
@@ -7754,7 +7947,6 @@ async function tryAutoCompleteClaimFromSocialSession() {
     return false;
   }
 }
-
 function setAuthMethod(method) {
   activeAuthMethod = method === "agent" ? "agent" : "hooman";
   const isAgent = activeAuthMethod === "agent";
@@ -8491,13 +8683,20 @@ if (oauthError) {
   if (claimAuthContext.active) {
     const savedClaim = readClaimSocialContext();
     if (savedClaim) applyClaimConnectionFromContext(savedClaim);
+    await loadClaimConnectionContext().catch(() => {});
     await loadClaimSessionState().catch(() => {});
     const claimed = await tryAutoCompleteClaimFromSocialSession().catch(() => false);
     if (!claimed && claimAuthContext.active) {
+      await loadClaimConnectionContext().catch(() => {});
       await loadClaimSessionState().catch(() => {});
       applyClaimAuthUI();
       if (claimSessionState.connected) {
-        setMessage("auth_msg", "OAuth login successful. Enter OpenClaw Base URL + API key, then click Claim Environment.", "ok");
+        const msg = claimRequiresManualOpenclaw()
+          ? "OAuth login successful. Enter OpenClaw Base URL + API key, then click Claim Environment."
+          : "OAuth login successful. OpenClaw is already staged. Click Claim Environment.";
+        setMessage("auth_msg", msg, "ok");
+      } else if (claimConnectionContext.loaded && !claimConnectionContext.claimValid) {
+        setMessage("auth_msg", claimConnectionContext.message || "Claim link is not valid.", "error");
       }
       setView("auth");
       return;
@@ -8518,4 +8717,3 @@ if (oauthError) {
       setView("auth");
     });
 })();
-

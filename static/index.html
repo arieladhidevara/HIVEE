@@ -55,6 +55,7 @@
               </button>
             </div>
             <p id="claim_notice" class="helper hidden"></p>
+            <p id="claim_connection_hint" class="helper hidden"></p>
             <div id="claim_connected_card" class="claim-connected-card hidden">
               <p class="claim-connected-title">Connected With</p>
               <p id="claim_connected_identity" class="claim-connected-identity">-</p>
@@ -97,7 +98,7 @@
                   <label>Password</label>
                   <input id="li_pass" type="password" placeholder="Your password" autocomplete="current-password" required>
                 </div>
-                <div class="claim-only hidden">
+                <div class="claim-only claim-openclaw-fields hidden">
                   <label>OpenClaw Base URL</label>
                   <input id="li_oc_base" type="text" placeholder="https://claw.example.com">
                   <label>OpenClaw API Key / Token</label>
@@ -131,7 +132,7 @@
                     required
                   >
                 </div>
-                <div class="claim-only hidden">
+                <div class="claim-only claim-openclaw-fields hidden">
                   <label>OpenClaw Base URL</label>
                   <input id="su_oc_base" type="text" placeholder="https://claw.example.com">
                   <label>OpenClaw API Key / Token</label>
@@ -1017,7 +1018,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=20260401d"></script>
+  <script src="/static/app.js?v=20260403a"></script>
 </body>
 </html>
-

@@ -384,6 +384,30 @@ def init_db() -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_environment_agent_links_expires_at ON environment_agent_links(expires_at)")
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS environment_openclaw_staging (
+            id TEXT PRIMARY KEY,
+            env_id TEXT NOT NULL,
+            staged_by_agent_id TEXT,
+            openclaw_base_url TEXT NOT NULL,
+            openclaw_ws_url TEXT,
+            openclaw_name TEXT,
+            api_key_encrypted TEXT NOT NULL,
+            source TEXT,
+            status TEXT NOT NULL DEFAULT 'staged',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            consumed_at INTEGER,
+            consumed_by_user_id TEXT,
+            FOREIGN KEY(env_id) REFERENCES environments(id),
+            FOREIGN KEY(consumed_by_user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_env_openclaw_staging_env_status ON environment_openclaw_staging(env_id, status, updated_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_env_openclaw_staging_expires_at ON environment_openclaw_staging(expires_at)")
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS managed_agents (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -649,5 +673,3 @@ CHAT_PATHS = [
 
 
 __all__ = [name for name in globals() if not name.startswith('__')]
-
-
