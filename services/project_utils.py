@@ -1848,6 +1848,81 @@ def _append_project_daily_log(
         )
     except Exception:
         pass
+    try:
+        _append_project_activity_event(
+            owner_user_id=owner_user_id,
+            project_root=project_root,
+            kind=kind,
+            text=compact_text,
+            payload=payload,
+        )
+    except Exception:
+        pass
+
+def _append_project_activity_event(
+    *,
+    owner_user_id: str,
+    project_root: str,
+    kind: str,
+    text: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    user_id = str(owner_user_id or "").strip()
+    root = str(project_root or "").strip()
+    if not user_id or not root:
+        return
+
+    event_type = str(kind or "").strip()[:120] or "project.event"
+    body = str(text or "").strip()
+    payload_obj = payload if isinstance(payload, dict) else {}
+    summary = body[:1000] if body else event_type
+
+    actor_type = "system"
+    actor_id = None
+    actor_label = None
+    agent_id = str(payload_obj.get("agent_id") or "").strip()
+    user_actor_id = str(payload_obj.get("user_id") or payload_obj.get("actor_user_id") or "").strip()
+    if agent_id:
+        actor_type = "project_agent"
+        actor_id = agent_id
+        actor_label = str(payload_obj.get("agent_name") or agent_id).strip()[:180] or None
+    elif user_actor_id:
+        actor_type = "user"
+        actor_id = user_actor_id
+        actor_label = str(payload_obj.get("user_email") or payload_obj.get("actor_label") or "").strip()[:180] or None
+    else:
+        actor_label = str(payload_obj.get("actor") or payload_obj.get("source") or "").strip()[:180] or None
+
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT id FROM projects WHERE user_id = ? AND project_root = ? LIMIT 1",
+            (user_id, root),
+        ).fetchone()
+        if not row:
+            return
+        project_id = str(row["id"])
+        conn.execute(
+            """
+            INSERT INTO project_activity_log (
+                id, project_id, actor_type, actor_id, actor_label, event_type, summary, payload_json, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                new_id("act"),
+                project_id,
+                actor_type,
+                actor_id,
+                actor_label,
+                event_type,
+                summary,
+                json.dumps(payload_obj, ensure_ascii=False),
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 def _summarize_ws_frames(frames: Any, limit: int = 12) -> List[str]:
     if not isinstance(frames, list):
@@ -2862,3 +2937,4 @@ def _derive_workspace_tree(text: Optional[str]) -> Optional[str]:
 
 
 __all__ = [name for name in globals() if not name.startswith('__')]
+

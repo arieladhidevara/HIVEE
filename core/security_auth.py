@@ -384,4 +384,221 @@ def _derive_bootstrap_agent_id(request: Request, explicit_agent_id: Optional[str
     return "bootstrap-agent"
 
 
+_SECRET_MASTER_KEY_CACHE: Optional[bytes] = None
+
+
+def _safe_to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _normalize_secret_key(raw_key: str) -> str:
+    key = re.sub(r"[^a-zA-Z0-9._:-]+", "-", str(raw_key or "").strip().lower()).strip("-")
+    return key[:180]
+
+
+def _master_secret_key() -> bytes:
+    global _SECRET_MASTER_KEY_CACHE
+    if _SECRET_MASTER_KEY_CACHE:
+        return _SECRET_MASTER_KEY_CACHE
+
+    configured = str(os.getenv(SECRET_MASTER_KEY_ENV) or "").strip()
+    key_path = Path(SECRET_MASTER_KEY_FILE)
+    if not configured:
+        try:
+            if key_path.exists():
+                configured = str(key_path.read_text(encoding="utf-8") or "").strip()
+        except Exception:
+            configured = ""
+    if not configured:
+        configured = secrets.token_urlsafe(48)
+        try:
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key_path.write_text(configured, encoding="utf-8")
+        except Exception:
+            pass
+
+    _SECRET_MASTER_KEY_CACHE = hashlib.sha256(configured.encode("utf-8")).digest()
+    return _SECRET_MASTER_KEY_CACHE
+
+
+def _xor_stream(data: bytes, key: bytes, nonce: bytes) -> bytes:
+    if not data:
+        return b""
+    out = bytearray(len(data))
+    offset = 0
+    counter = 0
+    while offset < len(data):
+        block = hashlib.sha256(key + nonce + counter.to_bytes(8, "big")).digest()
+        take = min(len(block), len(data) - offset)
+        for i in range(take):
+            out[offset + i] = data[offset + i] ^ block[i]
+        offset += take
+        counter += 1
+    return bytes(out)
+
+
+def _seal_secret_value(raw_value: str) -> str:
+    plain = str(raw_value or "").encode("utf-8")
+    nonce = secrets.token_bytes(16)
+    key = _master_secret_key()
+    cipher = _xor_stream(plain, key, nonce)
+    mac = hashlib.sha256(key + nonce + cipher).hexdigest()
+    return f"{SECRET_CIPHER_VERSION}:{nonce.hex()}:{mac}:{cipher.hex()}"
+
+
+def _unseal_secret_value(encrypted_value: str) -> str:
+    raw = str(encrypted_value or "").strip()
+    if not raw:
+        return ""
+    parts = raw.split(":", 3)
+    if len(parts) != 4:
+        return raw
+    version, nonce_hex, mac_hex, cipher_hex = parts
+    if version != SECRET_CIPHER_VERSION:
+        return raw
+
+    nonce = bytes.fromhex(nonce_hex)
+    cipher = bytes.fromhex(cipher_hex)
+    key = _master_secret_key()
+    expected_mac = hashlib.sha256(key + nonce + cipher).hexdigest()
+    if not secrets.compare_digest(expected_mac, mac_hex):
+        raise ValueError("Secret integrity check failed")
+    plain = _xor_stream(cipher, key, nonce)
+    return plain.decode("utf-8")
+
+
+def _store_user_secret(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    secret_key: str,
+    secret_value: str,
+    kind: str = "",
+    description: Optional[str] = None,
+) -> str:
+    uid = str(user_id or "").strip()
+    normalized_key = _normalize_secret_key(secret_key)
+    if not uid or not normalized_key:
+        raise HTTPException(400, "Invalid user secret key")
+
+    now = int(time.time())
+    encrypted_value = _seal_secret_value(secret_value)
+    existing = conn.execute(
+        "SELECT id, latest_version FROM user_secrets WHERE user_id = ? AND secret_key = ? LIMIT 1",
+        (uid, normalized_key),
+    ).fetchone()
+
+    if existing:
+        secret_id = str(existing["id"])
+        next_version = max(0, _safe_to_int(existing["latest_version"], 0)) + 1
+        conn.execute(
+            """
+            UPDATE user_secrets
+            SET kind = ?, description = ?, latest_version = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (str(kind or "")[:80], (str(description or "").strip()[:300] or None), next_version, now, secret_id),
+        )
+    else:
+        secret_id = new_id("sec")
+        next_version = 1
+        conn.execute(
+            """
+            INSERT INTO user_secrets (id, user_id, secret_key, kind, description, latest_version, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            """,
+            (
+                secret_id,
+                uid,
+                normalized_key,
+                str(kind or "")[:80],
+                str(description or "").strip()[:300] or None,
+                next_version,
+                now,
+                now,
+            ),
+        )
+
+    conn.execute(
+        """
+        INSERT INTO user_secret_versions (id, secret_id, version, encrypted_value, created_at)
+        VALUES (?,?,?,?,?)
+        """,
+        (new_id("secv"), secret_id, next_version, encrypted_value, now),
+    )
+    return secret_id
+
+
+def _read_user_secret_value(conn: sqlite3.Connection, *, user_id: str, secret_id: str) -> Optional[str]:
+    uid = str(user_id or "").strip()
+    sid = str(secret_id or "").strip()
+    if not uid or not sid:
+        return None
+
+    row = conn.execute(
+        """
+        SELECT usv.encrypted_value
+        FROM user_secrets us
+        JOIN user_secret_versions usv
+            ON usv.secret_id = us.id AND usv.version = us.latest_version
+        WHERE us.id = ? AND us.user_id = ?
+        LIMIT 1
+        """,
+        (sid, uid),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        return _unseal_secret_value(str(row["encrypted_value"] or ""))
+    except Exception:
+        return None
+
+
+def _store_connection_api_key_secret(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    connection_id: str,
+    api_key: str,
+) -> str:
+    cid = str(connection_id or "").strip()
+    if not cid:
+        raise HTTPException(400, "Invalid connection id for secret storage")
+    return _store_user_secret(
+        conn,
+        user_id=str(user_id or "").strip(),
+        secret_key=f"openclaw.connection.{cid}.api_key",
+        secret_value=str(api_key or ""),
+        kind="openclaw_api_key",
+        description=f"OpenClaw API key for connection {cid}",
+    )
+
+
+def _resolve_connection_api_key_from_row(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    row: Any,
+) -> str:
+    if not row:
+        return ""
+
+    secret_id = ""
+    try:
+        secret_id = str(row["api_key_secret_id"] or "").strip()
+    except Exception:
+        secret_id = ""
+
+    if secret_id:
+        secret_value = _read_user_secret_value(conn, user_id=str(user_id or "").strip(), secret_id=secret_id)
+        if secret_value:
+            return secret_value
+
+    try:
+        return str(row["api_key"] or "").strip()
+    except Exception:
+        return ""
 __all__ = [name for name in globals() if not name.startswith('__')]

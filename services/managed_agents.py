@@ -1406,7 +1406,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
     row = conn.execute(
         """
         SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id,
-               c.base_url, c.api_key, cp.main_agent_id
+               c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
         FROM projects p
         JOIN openclaw_connections c ON c.id = p.connection_id
         LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
@@ -1417,6 +1417,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
     if not row:
         conn.close()
         return {"ok": False, "error": "Project not found"}
+    connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=str(row["user_id"]), row=row)
     role_rows = _project_agent_rows(conn, project_id)
     conn.close()
     if not role_rows:
@@ -1502,7 +1503,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
     await emit(project_id, "project.info.generating", {"project_id": project_id})
     res = await openclaw_ws_chat(
         base_url=str(row["base_url"]),
-        api_key=str(row["api_key"]),
+        api_key=connection_api_key,
         message=task,
         agent_id=primary_agent_id,
         session_key=f"{project_id}:project-info",
@@ -1616,7 +1617,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
     row = conn.execute(
         """
         SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id, p.plan_status,
-               c.base_url, c.api_key, cp.main_agent_id
+               c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
         FROM projects p
         JOIN openclaw_connections c ON c.id = p.connection_id
         LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
@@ -1631,6 +1632,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         conn.close()
         return
 
+    connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=str(row["user_id"]), row=row)
     role_rows = _project_agent_rows(conn, project_id)
     if not role_rows:
         now = int(time.time())
@@ -1697,7 +1699,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         instruction = f"{instruction}\n\n{plan_file_context}"
     res = await openclaw_ws_chat(
         base_url=str(row["base_url"]),
-        api_key=str(row["api_key"]),
+        api_key=connection_api_key,
         message=instruction,
         agent_id=primary_agent_id,
         session_key=f"{project_id}:plan",
@@ -1753,7 +1755,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
     row = conn.execute(
         """
         SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id,
-               p.plan_text, p.plan_status, c.base_url, c.api_key, cp.main_agent_id
+               p.plan_text, p.plan_status, c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
         FROM projects p
         JOIN openclaw_connections c ON c.id = p.connection_id
         LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
@@ -1764,6 +1766,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
     if not row:
         conn.close()
         return
+    connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=str(row["user_id"]), row=row)
     role_rows = _project_agent_rows(conn, project_id)
     conn.close()
 
@@ -1827,7 +1830,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
         instruction = f"{instruction}\n\n{delegate_file_context}"
     res = await openclaw_ws_chat(
         base_url=str(row["base_url"]),
-        api_key=str(row["api_key"]),
+        api_key=connection_api_key,
         message=instruction,
         agent_id=primary_agent_id,
         session_key=f"{project_id}:delegate",
@@ -2067,7 +2070,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             agent_instruction = f"{agent_instruction}\n\n{agent_file_context}"
         agent_res = await openclaw_ws_chat(
             base_url=str(row["base_url"]),
-            api_key=str(row["api_key"]),
+            api_key=connection_api_key,
             message=agent_instruction,
             agent_id=aid,
             session_key=f"{project_id}:agent:{aid}",
@@ -2144,7 +2147,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             )
             followup_res = await openclaw_ws_chat(
                 base_url=str(row["base_url"]),
-                api_key=str(row["api_key"]),
+                api_key=connection_api_key,
                 message=followup_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
@@ -2212,7 +2215,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             )
             rescue_res = await openclaw_ws_chat(
                 base_url=str(row["base_url"]),
-                api_key=str(row["api_key"]),
+                api_key=connection_api_key,
                 message=rescue_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",

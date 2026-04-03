@@ -443,9 +443,10 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         row = conn.execute(
-            "SELECT base_url, api_key FROM openclaw_connections WHERE id = ? AND user_id = ?",
+            "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (payload.connection_id, user_id),
         ).fetchone()
+        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         policy = conn.execute(
             "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (payload.connection_id, user_id),
@@ -468,7 +469,7 @@ def register_routes(app: FastAPI) -> None:
         session_key = (payload.session_key or "new-project").strip() or "new-project"
         res = await openclaw_ws_chat(
             base_url=row["base_url"],
-            api_key=row["api_key"],
+            api_key=connection_api_key,
             message=instruction,
             agent_id=effective_agent_id,
             session_key=f"project-setup:{session_key}",
@@ -486,9 +487,10 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         row = conn.execute(
-            "SELECT base_url, api_key FROM openclaw_connections WHERE id = ? AND user_id = ?",
+            "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (payload.connection_id, user_id),
         ).fetchone()
+        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         policy = conn.execute(
             "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (payload.connection_id, user_id),
@@ -525,7 +527,7 @@ def register_routes(app: FastAPI) -> None:
         session_key = (payload.session_key or "new-project").strip() or "new-project"
         res = await openclaw_ws_chat(
             base_url=row["base_url"],
-            api_key=row["api_key"],
+            api_key=connection_api_key,
             message=instruction,
             agent_id=effective_agent_id,
             session_key=f"project-setup-draft:{session_key}",
@@ -1210,7 +1212,7 @@ def register_routes(app: FastAPI) -> None:
             """
             SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.workspace_root,
                    p.plan_status, p.execution_status, p.progress_pct, p.connection_id,
-                   c.base_url, c.api_key, cp.main_agent_id
+                   c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
             FROM projects p
             JOIN openclaw_connections c ON c.id = p.connection_id
             LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
@@ -1221,6 +1223,7 @@ def register_routes(app: FastAPI) -> None:
         if not row:
             conn.close()
             raise HTTPException(404, "Project not found")
+        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row)
         role_rows = _project_agent_rows(conn, project_id)
         conn.close()
     
@@ -1272,7 +1275,7 @@ def register_routes(app: FastAPI) -> None:
             )
             ctrl_res = await openclaw_ws_chat(
                 base_url=str(row["base_url"]),
-                api_key=str(row["api_key"]),
+                api_key=connection_api_key,
                 message=scoped_message,
                 agent_id=primary_agent_id,
                 session_key=f"{project_id}:control",
@@ -1896,7 +1899,7 @@ def register_routes(app: FastAPI) -> None:
         proj = conn.execute(
             """
             SELECT p.id, p.title, p.goal, p.project_root, p.connection_id,
-                   c.base_url AS connection_base_url, c.api_key AS connection_api_key,
+                   c.base_url AS connection_base_url, c.api_key AS connection_api_key, c.api_key_secret_id AS connection_api_key_secret_id,
                    cp.main_agent_id AS owner_main_agent_id
             FROM projects p
             LEFT JOIN openclaw_connections c ON c.id = p.connection_id AND c.user_id = p.user_id
@@ -1906,6 +1909,7 @@ def register_routes(app: FastAPI) -> None:
             """,
             (project_id, user_id),
         ).fetchone()
+        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=proj) if proj else ""
         if not proj:
             conn.close()
             raise HTTPException(404, "Project not found")
@@ -1976,7 +1980,7 @@ def register_routes(app: FastAPI) -> None:
         )
         composed = await _compose_external_invite_email_with_primary_agent(
             base_url=str(proj["connection_base_url"] or ""),
-            api_key=str(proj["connection_api_key"] or ""),
+            api_key=connection_api_key,
             main_agent_id=str(proj["owner_main_agent_id"] or "").strip(),
             default_subject=str(email_template.get("subject") or ""),
             default_body=str(email_template.get("body") or ""),

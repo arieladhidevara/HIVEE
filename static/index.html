@@ -337,6 +337,8 @@
           <button type="button" class="context-link active" data-project-pane="info">Overview</button>
           <button type="button" class="context-link" data-project-pane="folder">Files</button>
           <button type="button" class="context-link" data-project-pane="usage">Usage</button>
+          <button type="button" class="context-link" data-project-pane="tasks">Tasks</button>
+          <button type="button" class="context-link" data-project-pane="activity">Activity</button>
           <button type="button" class="context-link" data-project-pane="tracker">Tracker</button>
         </aside>
 
@@ -424,6 +426,94 @@
               <div id="project_panel_usage" class="project-panel hidden">
                 <h4>Usage</h4>
                 <div id="project_usage_box" class="usage-shell">No usage stats yet.</div>
+              </div>
+
+              <div id="project_panel_tasks" class="project-panel hidden">
+                <div class="title-row">
+                  <h4>Tasks</h4>
+                  <div class="action-row">
+                    <button id="btn_task_refresh" class="secondary" type="button">Refresh</button>
+                  </div>
+                </div>
+                <form id="form_task_create" class="task-create-form">
+                  <input id="task_new_title" type="text" placeholder="New task title" maxlength="160" required>
+                  <select id="task_new_priority">
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="urgent">Urgent</option>
+                    <option value="low">Low</option>
+                  </select>
+                  <select id="task_new_assignee">
+                    <option value="">Unassigned</option>
+                  </select>
+                  <button id="btn_task_create" type="submit">Add Task</button>
+                </form>
+                <div class="task-blueprint-form">
+                  <select id="task_blueprint_select">
+                    <option value="">Select workflow blueprint...</option>
+                  </select>
+                  <select id="task_blueprint_assignee">
+                    <option value="">Assignee (optional)</option>
+                  </select>
+                  <button id="btn_task_apply_blueprint" class="secondary" type="button">Apply Workflow</button>
+                </div>
+                <div class="task-toolbar">
+                  <label for="task_filter_status">Status</label>
+                  <select id="task_filter_status">
+                    <option value="">All status</option>
+                    <option value="todo">To Do</option>
+                    <option value="in_progress">In Progress</option>
+                    <option value="blocked">Blocked</option>
+                    <option value="review">Review</option>
+                    <option value="done">Done</option>
+                  </select>
+                  <label for="task_filter_priority">Priority</label>
+                  <select id="task_filter_priority">
+                    <option value="">All priority</option>
+                    <option value="urgent">Urgent</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+                  <label for="task_filter_assignee">Assignee</label>
+                  <select id="task_filter_assignee">
+                    <option value="">All assignees</option>
+                  </select>
+                </div>
+                <label class="task-inline-toggle"><input id="task_include_closed" type="checkbox"> Show completed tasks</label>
+                <p id="tasks_msg" class="helper"></p>
+                <div id="project_tasks_list" class="task-list"></div>
+              </div>
+
+              <div id="project_panel_activity" class="project-panel hidden">
+                <div class="title-row">
+                  <h4>Activity</h4>
+                  <div class="action-row">
+                    <button id="btn_activity_refresh" class="secondary" type="button">Refresh</button>
+                  </div>
+                </div>
+                <div class="activity-toolbar">
+                  <label for="activity_event_filter">Filter</label>
+                  <select id="activity_event_filter">
+                    <option value="">All events</option>
+                    <option value="task.created">Task created</option>
+                    <option value="task.updated">Task updated</option>
+                    <option value="task.checkout">Task checkout</option>
+                    <option value="task.release">Task release</option>
+                    <option value="task.comment">Task comment</option>
+                    <option value="task.comment.updated">Comment updated</option>
+                    <option value="task.comment.deleted">Comment deleted</option>
+                    <option value="task.dependency.added">Dependency added</option>
+                    <option value="task.dependency.removed">Dependency removed</option>
+                    <option value="task.blueprint.applied">Workflow applied</option>
+                    <option value="project.execution.pause">Execution pause</option>
+                    <option value="project.execution.resume">Execution resume</option>
+                    <option value="project.execution.stop">Execution stop</option>
+                    <option value="project.delegation.ready">Delegation ready</option>
+                  </select>
+                </div>
+                <p id="activity_msg" class="helper"></p>
+                <div id="project_activity_feed" class="events"></div>
               </div>
 
               <div id="project_panel_tracker" class="project-panel hidden">
@@ -766,3 +856,4 @@
   <script src="/static/app.js?v=20260401d"></script>
 </body>
 </html>
+

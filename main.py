@@ -4,6 +4,7 @@ from routes.a2a import register_routes as register_a2a_routes
 from routes.openclaw import register_routes as register_openclaw_routes
 from routes.workspace import register_routes as register_workspace_routes
 from routes.projects import register_routes as register_projects_routes
+from routes.tasks import register_routes as register_tasks_routes
 
 app = FastAPI(title="hivee (Prototype)")
 init_db()
@@ -15,3 +16,4 @@ register_a2a_routes(app)
 register_openclaw_routes(app)
 register_workspace_routes(app)
 register_projects_routes(app)
+register_tasks_routes(app)

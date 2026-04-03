@@ -308,5 +308,116 @@ class A2AEnvironmentHandoffWaitOut(BaseModel):
     claimed_at: Optional[int] = None
     waited_ms: int
 
+class ProjectTaskCreateIn(BaseModel):
+    title: str = Field(..., min_length=1, max_length=TASK_TITLE_MAX_CHARS)
+    description: str = Field("", max_length=TASK_DESCRIPTION_MAX_CHARS)
+    status: str = Field(TASK_STATUS_TODO)
+    priority: str = Field(TASK_PRIORITY_MEDIUM)
+    assignee_agent_id: Optional[str] = None
+    due_at: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class ProjectTaskUpdateIn(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=TASK_TITLE_MAX_CHARS)
+    description: Optional[str] = Field(None, max_length=TASK_DESCRIPTION_MAX_CHARS)
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    assignee_agent_id: Optional[str] = None
+    clear_assignee: bool = False
+    due_at: Optional[int] = None
+    clear_due_at: bool = False
+    metadata: Optional[Dict[str, Any]] = None
+
+class ProjectTaskCheckoutIn(BaseModel):
+    ttl_sec: int = TASK_CHECKOUT_DEFAULT_TTL_SEC
+    note: str = Field("", max_length=300)
+    force: bool = False
+
+class ProjectTaskReleaseIn(BaseModel):
+    force: bool = False
+    reason: str = Field("", max_length=300)
+
+class ProjectTaskCheckoutOut(BaseModel):
+    owner_type: str
+    owner_id: str
+    owner_label: Optional[str] = None
+    note: str = ""
+    checked_out_at: int
+    expires_at: int
+    is_active: bool = True
+
+class ProjectTaskOut(BaseModel):
+    id: str
+    project_id: str
+    created_by_user_id: Optional[str] = None
+    created_by_agent_id: Optional[str] = None
+    title: str
+    description: str = ""
+    status: str = TASK_STATUS_TODO
+    priority: str = TASK_PRIORITY_MEDIUM
+    assignee_agent_id: Optional[str] = None
+    due_at: Optional[int] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: int
+    updated_at: int
+    closed_at: Optional[int] = None
+    checkout: Optional[ProjectTaskCheckoutOut] = None
+
+class ProjectTaskCommentCreateIn(BaseModel):
+    body: str = Field(..., min_length=1, max_length=TASK_COMMENT_MAX_CHARS)
+
+class ProjectTaskCommentUpdateIn(BaseModel):
+    body: str = Field(..., min_length=1, max_length=TASK_COMMENT_MAX_CHARS)
+
+class ProjectTaskCommentOut(BaseModel):
+    id: str
+    task_id: str
+    project_id: str
+    author_type: str
+    author_id: Optional[str] = None
+    author_label: Optional[str] = None
+    body: str
+    created_at: int
+    updated_at: int
+
+class ProjectTaskDependencyCreateIn(BaseModel):
+    depends_on_task_id: str = Field(..., min_length=1)
+
+class ProjectTaskDependencyOut(BaseModel):
+    task_id: str
+    depends_on_task_id: str
+    depends_on_title: str = ""
+    depends_on_status: str = TASK_STATUS_TODO
+    created_at: int
+
+class ProjectTaskBlueprintOut(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    tasks_count: int = 0
+
+class ProjectTaskBlueprintApplyIn(BaseModel):
+    blueprint_id: str = Field(..., min_length=1)
+    assignee_agent_id: Optional[str] = None
+    title_prefix: str = Field("", max_length=80)
+    include_dependencies: bool = True
+
+class ProjectTaskBlueprintApplyOut(BaseModel):
+    ok: bool
+    project_id: str
+    blueprint_id: str
+    created_task_ids: List[str] = Field(default_factory=list)
+    created_count: int = 0
+
+class ProjectActivityEventOut(BaseModel):
+    id: str
+    project_id: str
+    actor_type: str
+    actor_id: Optional[str] = None
+    actor_label: Optional[str] = None
+    event_type: str
+    summary: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    created_at: int
 __all__ = [name for name in globals() if not name.startswith('__')]
 

@@ -53,6 +53,23 @@ let livePreviewBlobUrl = "";
 let projectFilePreviewBlobUrl = "";
 let workspaceFilePreviewBlobUrl = "";
 let livePreviewReqSeq = 0;
+let projectTasks = [];
+let projectActivityEvents = [];
+let projectActivityRefreshTimer = null;
+let taskCommentsByTaskId = new Map();
+let expandedTaskCommentTaskIds = new Set();
+let taskCommentEditDraftById = new Map();
+let taskBlueprints = [];
+let projectActivityFilter = "";
+let projectActivityBeforeTs = 0;
+let projectActivityHasMore = false;
+let projectActivityLoadingMore = false;
+let projectTaskFilterStatus = "";
+let projectTaskFilterPriority = "";
+let projectTaskFilterAssigneeAgentId = "";
+const TASK_STATUS_OPTIONS = ["todo", "in_progress", "blocked", "review", "done"];
+const TASK_PRIORITY_OPTIONS = ["urgent", "high", "medium", "low"];
+const PROJECT_ACTIVITY_PAGE_SIZE = 80;
 
 let chatAgents = [];
 let chatAliasMap = new Map();
@@ -243,6 +260,31 @@ function clearAuthSession() {
   selectedProjectReadiness = null;
   selectedPrimaryAgentId = null;
   selectedAssignedAgents = [];
+  taskBlueprints = [];
+  projectTasks = [];
+  projectActivityEvents = [];
+  taskCommentsByTaskId = new Map();
+  expandedTaskCommentTaskIds = new Set();
+  taskCommentEditDraftById = new Map();
+  projectActivityFilter = "";
+  projectActivityBeforeTs = 0;
+  projectActivityHasMore = false;
+  projectActivityLoadingMore = false;
+  projectTaskFilterStatus = "";
+  projectTaskFilterPriority = "";
+  projectTaskFilterAssigneeAgentId = "";
+  if (projectActivityRefreshTimer) {
+    clearTimeout(projectActivityRefreshTimer);
+    projectActivityRefreshTimer = null;
+  }
+  const activityFilter = $("activity_event_filter");
+  if (activityFilter) activityFilter.value = "";
+  const statusFilter = $("task_filter_status");
+  if (statusFilter) statusFilter.value = "";
+  const priorityFilter = $("task_filter_priority");
+  if (priorityFilter) priorityFilter.value = "";
+  const assigneeFilter = $("task_filter_assignee");
+  if (assigneeFilter) assigneeFilter.value = "";
   chatContextMode = "workspace";
 }
 
@@ -1307,6 +1349,917 @@ function shortText(text, max = 90) {
   return raw.slice(0, max - 1).trimEnd() + "...";
 }
 
+function normalizeTaskStatus(value) {
+  const status = String(value || "").trim().toLowerCase();
+  if (status === "doing") return "in_progress";
+  return TASK_STATUS_OPTIONS.includes(status) ? status : "todo";
+}
+
+function normalizeTaskPriority(value) {
+  const priority = String(value || "").trim().toLowerCase();
+  return TASK_PRIORITY_OPTIONS.includes(priority) ? priority : "medium";
+}
+
+function taskStatusLabel(status) {
+  const value = normalizeTaskStatus(status);
+  if (value === "todo") return "To Do";
+  if (value === "in_progress") return "In Progress";
+  if (value === "blocked") return "Blocked";
+  if (value === "review") return "Review";
+  if (value === "done") return "Done";
+  return "Task";
+}
+
+function taskPriorityLabel(priority) {
+  const value = normalizeTaskPriority(priority);
+  if (value === "urgent") return "Urgent";
+  if (value === "high") return "High";
+  if (value === "medium") return "Medium";
+  if (value === "low") return "Low";
+  return "Medium";
+}
+
+function isTaskCheckoutMine(checkout) {
+  const row = checkout && typeof checkout === "object" ? checkout : null;
+  if (!row || !row.is_active) return false;
+  const ownerType = String(row.owner_type || "").trim().toLowerCase();
+  const ownerId = String(row.owner_id || "").trim();
+  if (!ownerId) return false;
+  const myUserId = String(currentAccountProfile?.user_id || "").trim();
+  if (ownerType === "user") return Boolean(myUserId && ownerId === myUserId);
+  if (ownerType === "project_agent") {
+    return selectedAssignedAgents.some((agent) => String(agent?.id || "").trim() === ownerId);
+  }
+  return false;
+}
+
+function taskCheckoutSummary(checkout) {
+  const row = checkout && typeof checkout === "object" ? checkout : null;
+  if (!row || !row.is_active) return "Available";
+  const ownerLabel = String(row.owner_label || row.owner_id || row.owner_type || "actor").trim();
+  const expires = Number(row.expires_at || 0);
+  const expiryText = Number.isFinite(expires) && expires > 0 ? ` until ${formatTs(expires)}` : "";
+  return `Checked out by ${ownerLabel}${expiryText}`;
+}
+
+function buildTaskStatusOptions(selectedStatus) {
+  const active = normalizeTaskStatus(selectedStatus);
+  return TASK_STATUS_OPTIONS.map((status) => {
+    const option = document.createElement("option");
+    option.value = status;
+    option.textContent = taskStatusLabel(status);
+    option.selected = status === active;
+    return option;
+  });
+}
+
+function buildTaskPriorityOptions(selectedPriority) {
+  const active = normalizeTaskPriority(selectedPriority);
+  return TASK_PRIORITY_OPTIONS.map((priority) => {
+    const option = document.createElement("option");
+    option.value = priority;
+    option.textContent = taskPriorityLabel(priority);
+    option.selected = priority === active;
+    return option;
+  });
+}
+
+function buildTaskAssigneeOptions(selectedAgentId, { emptyLabel = "Unassigned" } = {}) {
+  const selected = String(selectedAgentId || "").trim();
+  const options = [];
+  const emptyOption = document.createElement("option");
+  emptyOption.value = "";
+  emptyOption.textContent = String(emptyLabel || "Unassigned");
+  emptyOption.selected = !selected;
+  options.push(emptyOption);
+  for (const agent of selectedAssignedAgents) {
+    const id = String(agent?.id || "").trim();
+    if (!id) continue;
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = String(agent?.name || id).trim() || id;
+    option.selected = id === selected;
+    options.push(option);
+  }
+  return options;
+}
+
+function hydrateTaskCreateAssigneeSelect() {
+  const select = $("task_new_assignee");
+  if (!select) return;
+  const current = String(select.value || "").trim();
+  select.innerHTML = "";
+  for (const option of buildTaskAssigneeOptions(current, { emptyLabel: "Unassigned" })) {
+    select.appendChild(option);
+  }
+}
+
+function hydrateTaskBlueprintAssigneeSelect() {
+  const select = $("task_blueprint_assignee");
+  if (!select) return;
+  const current = String(select.value || "").trim();
+  select.innerHTML = "";
+  for (const option of buildTaskAssigneeOptions(current, { emptyLabel: "Assignee (optional)" })) {
+    select.appendChild(option);
+  }
+}
+
+function hydrateTaskBlueprintSelect() {
+  const select = $("task_blueprint_select");
+  if (!select) return;
+  const current = String(select.value || "").trim();
+  select.innerHTML = "";
+  const first = document.createElement("option");
+  first.value = "";
+  first.textContent = "Select workflow blueprint...";
+  select.appendChild(first);
+  for (const item of Array.isArray(taskBlueprints) ? taskBlueprints : []) {
+    const id = String(item?.id || "").trim();
+    if (!id) continue;
+    const name = String(item?.name || id).trim() || id;
+    const count = Number(item?.tasks_count || 0);
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = `${name}${count > 0 ? ` (${count} tasks)` : ""}`;
+    option.selected = id === current;
+    select.appendChild(option);
+  }
+  if (!Array.from(select.options).some((opt) => String(opt.value || "").trim() === current)) {
+    select.value = "";
+  }
+}
+
+function hydrateTaskFilterAssigneeSelect() {
+  const select = $("task_filter_assignee");
+  if (!select) return;
+  const current = String(select.value || projectTaskFilterAssigneeAgentId || "").trim();
+  select.innerHTML = "";
+  for (const option of buildTaskAssigneeOptions(current, { emptyLabel: "All assignees" })) {
+    select.appendChild(option);
+  }
+  if (current && !Array.from(select.options).some((opt) => String(opt.value || "").trim() === current)) {
+    const fallback = document.createElement("option");
+    fallback.value = current;
+    fallback.textContent = current;
+    fallback.selected = true;
+    select.appendChild(fallback);
+  }
+  select.value = current;
+  projectTaskFilterAssigneeAgentId = String(select.value || "").trim();
+}
+
+function taskFilterValues() {
+  const status = String($("task_filter_status")?.value || projectTaskFilterStatus || "").trim().toLowerCase();
+  const priority = String($("task_filter_priority")?.value || projectTaskFilterPriority || "").trim().toLowerCase();
+  const assigneeAgentId = String($("task_filter_assignee")?.value || projectTaskFilterAssigneeAgentId || "").trim();
+  projectTaskFilterStatus = status;
+  projectTaskFilterPriority = priority;
+  projectTaskFilterAssigneeAgentId = assigneeAgentId;
+  return {
+    status,
+    priority,
+    assignee_agent_id: assigneeAgentId,
+  };
+}
+
+async function loadTaskBlueprints(projectId = selectedProjectId, { silent = true } = {}) {
+  const pid = String(projectId || "").trim();
+  if (!pid) {
+    taskBlueprints = [];
+    hydrateTaskBlueprintSelect();
+    return [];
+  }
+  const rows = await api(`/api/projects/${encodeURIComponent(pid)}/task-blueprints`);
+  taskBlueprints = Array.isArray(rows) ? rows : [];
+  hydrateTaskBlueprintSelect();
+  if (!silent) setMessage("tasks_msg", `Loaded ${taskBlueprints.length} workflow blueprint(s).`, "ok");
+  return taskBlueprints;
+}
+
+async function applyTaskBlueprintFromControls() {
+  if (!selectedProjectId) throw new Error("Pick project first");
+  const blueprintId = String($("task_blueprint_select")?.value || "").trim();
+  if (!blueprintId) throw new Error("Pick workflow blueprint first");
+  const assigneeId = String($("task_blueprint_assignee")?.value || "").trim();
+  const payload = {
+    blueprint_id: blueprintId,
+    include_dependencies: true,
+  };
+  if (assigneeId) payload.assignee_agent_id = assigneeId;
+  const result = await api(`/api/projects/${encodeURIComponent(selectedProjectId)}/tasks/apply-blueprint`, "POST", payload);
+  await Promise.all([
+    loadProjectTasks(selectedProjectId, { silent: true }),
+    loadProjectActivity(selectedProjectId, { silent: true }),
+  ]);
+  const createdCount = Number(result?.created_count || 0);
+  setMessage("tasks_msg", `Workflow applied (${createdCount} task(s) created).`, "ok");
+}
+
+function taskCommentsState(taskId) {
+  const key = String(taskId || "").trim();
+  if (!key) return { loaded: false, loading: false, items: [], error: "" };
+  const existing = taskCommentsByTaskId.get(key);
+  if (existing && typeof existing === "object") {
+    return {
+      loaded: Boolean(existing.loaded),
+      loading: Boolean(existing.loading),
+      items: Array.isArray(existing.items) ? existing.items : [],
+      error: String(existing.error || "").trim(),
+    };
+  }
+  return { loaded: false, loading: false, items: [], error: "" };
+}
+
+function setTaskCommentsState(taskId, patch) {
+  const key = String(taskId || "").trim();
+  if (!key) return;
+  const current = taskCommentsState(key);
+  const next = {
+    loaded: (patch && Object.prototype.hasOwnProperty.call(patch, "loaded")) ? Boolean(patch.loaded) : current.loaded,
+    loading: (patch && Object.prototype.hasOwnProperty.call(patch, "loading")) ? Boolean(patch.loading) : current.loading,
+    items: (patch && Object.prototype.hasOwnProperty.call(patch, "items")) ? (Array.isArray(patch.items) ? patch.items : []) : current.items,
+    error: (patch && Object.prototype.hasOwnProperty.call(patch, "error")) ? String(patch.error || "").trim() : current.error,
+  };
+  taskCommentsByTaskId.set(key, next);
+}
+
+function activityFilterValue() {
+  const select = $("activity_event_filter");
+  const value = String(select?.value || projectActivityFilter || "").trim();
+  projectActivityFilter = value;
+  return value;
+}
+
+function renderProjectTaskList() {
+  hydrateTaskCreateAssigneeSelect();
+  hydrateTaskBlueprintAssigneeSelect();
+  hydrateTaskBlueprintSelect();
+  hydrateTaskFilterAssigneeSelect();
+  const list = $("project_tasks_list");
+  if (!list) return;
+
+  const includeClosed = Boolean($("task_include_closed")?.checked);
+  const filters = taskFilterValues();
+  const rows = (Array.isArray(projectTasks) ? projectTasks : []).filter((task) => {
+    if (filters.status && normalizeTaskStatus(task?.status) !== filters.status) return false;
+    if (filters.priority && normalizeTaskPriority(task?.priority) !== filters.priority) return false;
+    if (filters.assignee_agent_id) {
+      const assignee = String(task?.assignee_agent_id || "").trim();
+      if (assignee !== filters.assignee_agent_id) return false;
+    }
+    if (includeClosed) return true;
+    return normalizeTaskStatus(task?.status) !== "done";
+  });
+
+  list.innerHTML = "";
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "helper";
+    empty.textContent = "No tasks yet.";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const task of rows) {
+    const taskId = String(task?.id || "").trim();
+    const checkout = task?.checkout && typeof task.checkout === "object" ? task.checkout : null;
+    const statusValue = normalizeTaskStatus(task?.status);
+    const priorityValue = normalizeTaskPriority(task?.priority);
+    const lockedByOther = Boolean(checkout?.is_active) && !isTaskCheckoutMine(checkout);
+    const commentState = taskCommentsState(taskId);
+    const commentsExpanded = expandedTaskCommentTaskIds.has(taskId);
+
+    const card = document.createElement("article");
+    card.className = "task-row";
+
+    const head = document.createElement("div");
+    head.className = "task-row-head";
+
+    const title = document.createElement("strong");
+    title.textContent = String(task?.title || taskId || "Untitled task");
+
+    const meta = document.createElement("div");
+    meta.className = "task-row-meta";
+    meta.textContent = `#${taskId.slice(0, 8)} - ${taskPriorityLabel(priorityValue)}`;
+
+    head.appendChild(title);
+    head.appendChild(meta);
+
+    const desc = document.createElement("p");
+    desc.className = "helper";
+    const descText = String(task?.description || "").trim();
+    desc.textContent = descText || "No description.";
+    const openDeps = Number(task?.metadata?._system_dependency_open || 0);
+    if (Number.isFinite(openDeps) && openDeps > 0) {
+      const depLabel = openDeps === 1 ? "dependency" : "dependencies";
+      meta.textContent = `${meta.textContent} - blocked by ${openDeps} ${depLabel}`;
+      meta.classList.add("task-row-blockers");
+    } else {
+      meta.classList.remove("task-row-blockers");
+    }
+
+    const controls = document.createElement("div");
+    controls.className = "task-row-controls";
+
+    const statusSelect = document.createElement("select");
+    statusSelect.className = "task-select";
+    for (const opt of buildTaskStatusOptions(statusValue)) statusSelect.appendChild(opt);
+    statusSelect.disabled = lockedByOther;
+    statusSelect.addEventListener("change", async () => {
+      try {
+        await patchProjectTask(taskId, { status: statusSelect.value });
+      } catch (e) {
+        statusSelect.value = statusValue;
+        setMessage("tasks_msg", detailToText(e?.message || e), "error");
+      }
+    });
+
+    const prioritySelect = document.createElement("select");
+    prioritySelect.className = "task-select";
+    for (const opt of buildTaskPriorityOptions(priorityValue)) prioritySelect.appendChild(opt);
+    prioritySelect.disabled = lockedByOther;
+    prioritySelect.addEventListener("change", async () => {
+      try {
+        await patchProjectTask(taskId, { priority: prioritySelect.value });
+      } catch (e) {
+        prioritySelect.value = priorityValue;
+        setMessage("tasks_msg", detailToText(e?.message || e), "error");
+      }
+    });
+
+    const assigneeSelect = document.createElement("select");
+    assigneeSelect.className = "task-select";
+    for (const opt of buildTaskAssigneeOptions(task?.assignee_agent_id)) assigneeSelect.appendChild(opt);
+    assigneeSelect.disabled = lockedByOther;
+    assigneeSelect.addEventListener("change", async () => {
+      try {
+        const value = String(assigneeSelect.value || "").trim();
+        if (!value) {
+          await patchProjectTask(taskId, { clear_assignee: true });
+        } else {
+          await patchProjectTask(taskId, { assignee_agent_id: value });
+        }
+      } catch (e) {
+        setMessage("tasks_msg", detailToText(e?.message || e), "error");
+      }
+    });
+
+    const lockBtn = document.createElement("button");
+    lockBtn.type = "button";
+    lockBtn.className = "secondary";
+    if (checkout?.is_active) {
+      if (isTaskCheckoutMine(checkout)) {
+        lockBtn.textContent = "Release";
+        lockBtn.addEventListener("click", async () => {
+          try {
+            await releaseProjectTask(taskId, false);
+          } catch (e) {
+            setMessage("tasks_msg", detailToText(e?.message || e), "error");
+          }
+        });
+      } else {
+        lockBtn.textContent = "Force Checkout";
+        lockBtn.addEventListener("click", async () => {
+          try {
+            await checkoutProjectTask(taskId, true);
+          } catch (e) {
+            setMessage("tasks_msg", detailToText(e?.message || e), "error");
+          }
+        });
+      }
+    } else {
+      lockBtn.textContent = "Checkout";
+      lockBtn.addEventListener("click", async () => {
+        try {
+          await checkoutProjectTask(taskId, false);
+        } catch (e) {
+          setMessage("tasks_msg", detailToText(e?.message || e), "error");
+        }
+      });
+    }
+
+    const commentsBtn = document.createElement("button");
+    commentsBtn.type = "button";
+    commentsBtn.className = "secondary";
+    const commentsCount = commentState.loaded ? Number(commentState.items.length || 0) : null;
+    commentsBtn.textContent = commentsExpanded
+      ? "Hide Comments"
+      : `Comments${commentsCount == null ? "" : ` (${commentsCount})`}`;
+    commentsBtn.addEventListener("click", () => {
+      if (commentsExpanded) {
+        expandedTaskCommentTaskIds.delete(taskId);
+        renderProjectTaskList();
+        return;
+      }
+      expandedTaskCommentTaskIds.add(taskId);
+      renderProjectTaskList();
+      loadTaskComments(taskId, { silent: true }).catch((e) => {
+        setMessage("tasks_msg", detailToText(e?.message || e), "error");
+      });
+    });
+
+    controls.appendChild(statusSelect);
+    controls.appendChild(prioritySelect);
+    controls.appendChild(assigneeSelect);
+    controls.appendChild(lockBtn);
+    controls.appendChild(commentsBtn);
+
+    const checkoutMeta = document.createElement("p");
+    checkoutMeta.className = "helper";
+    checkoutMeta.textContent = taskCheckoutSummary(checkout);
+
+    card.appendChild(head);
+    card.appendChild(desc);
+    card.appendChild(controls);
+    card.appendChild(checkoutMeta);
+
+    if (commentsExpanded) {
+      const commentsPanel = document.createElement("section");
+      commentsPanel.className = "task-comment-panel";
+
+      const commentsList = document.createElement("div");
+      commentsList.className = "task-comment-list";
+
+      if (commentState.loading) {
+        const info = document.createElement("p");
+        info.className = "helper";
+        info.textContent = "Loading comments...";
+        commentsList.appendChild(info);
+      } else if (commentState.error) {
+        const err = document.createElement("p");
+        err.className = "helper";
+        err.textContent = `Failed to load comments: ${commentState.error}`;
+        commentsList.appendChild(err);
+      } else if (!commentState.items.length) {
+        const empty = document.createElement("p");
+        empty.className = "helper";
+        empty.textContent = "No comments yet.";
+        commentsList.appendChild(empty);
+      } else {
+        for (const item of commentState.items) {
+          const commentId = String(item?.id || "").trim();
+          const row = document.createElement("article");
+          row.className = "task-comment-item";
+
+          const who = document.createElement("div");
+          who.className = "task-comment-author";
+          const author = String(item?.author_label || item?.author_id || item?.author_type || "actor").trim();
+          const createdAt = Number(item?.created_at || 0);
+          const updatedAt = Number(item?.updated_at || 0);
+          const isEdited = updatedAt > createdAt;
+          who.textContent = `${author} - ${createdAt > 0 ? formatTs(createdAt) : "-"}`;
+          if (isEdited) {
+            const edited = document.createElement("span");
+            edited.className = "task-comment-edited";
+            edited.textContent = "edited";
+            who.appendChild(document.createTextNode(" "));
+            who.appendChild(edited);
+          }
+
+          const isEditing = Boolean(commentId && taskCommentEditDraftById.has(commentId));
+          if (isEditing) {
+            const editWrap = document.createElement("div");
+            editWrap.className = "task-comment-edit";
+
+            const editInput = document.createElement("textarea");
+            editInput.className = "task-comment-edit-input";
+            editInput.maxLength = 1200;
+            editInput.value = String(taskCommentEditDraftById.get(commentId) ?? item?.body ?? "");
+            editInput.addEventListener("input", () => {
+              taskCommentEditDraftById.set(commentId, editInput.value);
+            });
+
+            const editActions = document.createElement("div");
+            editActions.className = "task-comment-actions";
+
+            const saveBtn = document.createElement("button");
+            saveBtn.type = "button";
+            saveBtn.className = "secondary";
+            saveBtn.textContent = "Save";
+            saveBtn.addEventListener("click", async () => {
+              const nextText = String(taskCommentEditDraftById.get(commentId) ?? editInput.value ?? "").trim();
+              if (!nextText) {
+                setMessage("tasks_msg", "Comment body cannot be empty", "error");
+                return;
+              }
+              editInput.disabled = true;
+              saveBtn.disabled = true;
+              cancelBtn.disabled = true;
+              try {
+                await updateTaskComment(taskId, commentId, nextText);
+              } catch (e) {
+                setMessage("tasks_msg", detailToText(e?.message || e), "error");
+              } finally {
+                editInput.disabled = false;
+                saveBtn.disabled = false;
+                cancelBtn.disabled = false;
+              }
+            });
+
+            const cancelBtn = document.createElement("button");
+            cancelBtn.type = "button";
+            cancelBtn.className = "secondary";
+            cancelBtn.textContent = "Cancel";
+            cancelBtn.addEventListener("click", () => {
+              taskCommentEditDraftById.delete(commentId);
+              renderProjectTaskList();
+            });
+
+            editActions.appendChild(saveBtn);
+            editActions.appendChild(cancelBtn);
+            editWrap.appendChild(editInput);
+            editWrap.appendChild(editActions);
+
+            row.appendChild(who);
+            row.appendChild(editWrap);
+          } else {
+            const body = document.createElement("div");
+            body.className = "task-comment-body";
+            body.textContent = String(item?.body || "").trim();
+
+            const actions = document.createElement("div");
+            actions.className = "task-comment-actions";
+            const editBtn = document.createElement("button");
+            editBtn.type = "button";
+            editBtn.className = "secondary";
+            editBtn.textContent = "Edit";
+            editBtn.disabled = !commentId;
+            editBtn.addEventListener("click", () => {
+              taskCommentEditDraftById.set(commentId, String(item?.body || ""));
+              renderProjectTaskList();
+            });
+
+            const deleteBtn = document.createElement("button");
+            deleteBtn.type = "button";
+            deleteBtn.className = "secondary";
+            deleteBtn.textContent = "Delete";
+            deleteBtn.disabled = !commentId;
+            deleteBtn.addEventListener("click", async () => {
+              if (!window.confirm("Delete this comment?")) return;
+              try {
+                await deleteTaskComment(taskId, commentId);
+              } catch (e) {
+                setMessage("tasks_msg", detailToText(e?.message || e), "error");
+              }
+            });
+            actions.appendChild(editBtn);
+            actions.appendChild(deleteBtn);
+
+            row.appendChild(who);
+            row.appendChild(body);
+            row.appendChild(actions);
+          }
+          commentsList.appendChild(row);
+        }
+      }
+
+      const commentForm = document.createElement("form");
+      commentForm.className = "task-comment-form";
+      const commentInput = document.createElement("input");
+      commentInput.type = "text";
+      commentInput.maxLength = 1200;
+      commentInput.placeholder = "Add comment...";
+      commentInput.required = true;
+
+      const commentSubmit = document.createElement("button");
+      commentSubmit.type = "submit";
+      commentSubmit.textContent = "Send";
+
+      commentForm.appendChild(commentInput);
+      commentForm.appendChild(commentSubmit);
+
+      commentForm.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const body = String(commentInput.value || "").trim();
+        if (!body) return;
+        commentInput.disabled = true;
+        commentSubmit.disabled = true;
+        try {
+          await createTaskComment(taskId, body);
+          commentInput.value = "";
+          commentInput.focus();
+        } catch (e) {
+          setMessage("tasks_msg", detailToText(e?.message || e), "error");
+        } finally {
+          commentInput.disabled = false;
+          commentSubmit.disabled = false;
+        }
+      });
+
+      commentsPanel.appendChild(commentsList);
+      commentsPanel.appendChild(commentForm);
+      card.appendChild(commentsPanel);
+    }
+
+    list.appendChild(card);
+  }
+}
+
+function renderProjectActivityFeed() {
+  const box = $("project_activity_feed");
+  if (!box) return;
+  box.innerHTML = "";
+
+  const events = Array.isArray(projectActivityEvents) ? projectActivityEvents : [];
+  if (!events.length) {
+    const empty = document.createElement("div");
+    empty.className = "event";
+    empty.innerHTML = '<div class="meta">No activity yet</div><div class="text">Project activity will appear here.</div>';
+    box.appendChild(empty);
+    return;
+  }
+
+  for (const item of events) {
+    const row = document.createElement("div");
+    row.className = "event";
+
+    const when = Number(item?.created_at || 0);
+    const who = String(item?.actor_label || item?.actor_id || item?.actor_type || "system").trim();
+    const kind = String(item?.event_type || "event").trim();
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = `${when > 0 ? formatTs(when) : "-"} - ${kind}`;
+
+    const text = document.createElement("div");
+    text.className = "text";
+    text.textContent = `${who}: ${String(item?.summary || "").trim() || "(no summary)"}`;
+
+    row.appendChild(meta);
+    row.appendChild(text);
+    box.appendChild(row);
+  }
+
+  const tail = document.createElement("div");
+  tail.className = "event activity-feed-tail";
+  const tailMeta = document.createElement("div");
+  tailMeta.className = "meta";
+  tailMeta.textContent = projectActivityLoadingMore
+    ? "Loading more..."
+    : (projectActivityHasMore ? "Scroll down to load more" : "End of activity");
+  tail.appendChild(tailMeta);
+  box.appendChild(tail);
+}
+
+async function loadTaskComments(taskId, { silent = false, force = false } = {}) {
+  const id = String(taskId || "").trim();
+  if (!id) return [];
+
+  const current = taskCommentsState(id);
+  if (!force && current.loaded && !current.error) {
+    return current.items;
+  }
+
+  setTaskCommentsState(id, { loading: true, error: "" });
+  if (expandedTaskCommentTaskIds.has(id)) renderProjectTaskList();
+
+  try {
+    const rows = await api(`/api/tasks/${encodeURIComponent(id)}/comments?limit=200`);
+    const items = Array.isArray(rows) ? rows : [];
+    setTaskCommentsState(id, { loaded: true, loading: false, error: "", items });
+    if (expandedTaskCommentTaskIds.has(id)) renderProjectTaskList();
+    return items;
+  } catch (e) {
+    const msg = detailToText(e?.message || e);
+    setTaskCommentsState(id, { loaded: false, loading: false, error: msg, items: [] });
+    if (expandedTaskCommentTaskIds.has(id)) renderProjectTaskList();
+    if (!silent) throw e;
+    return [];
+  }
+}
+
+async function createTaskComment(taskId, body) {
+  const id = String(taskId || "").trim();
+  if (!id) throw new Error("task_id is required");
+  const text = String(body || "").trim();
+  if (!text) throw new Error("Comment body cannot be empty");
+
+  await api(`/api/tasks/${encodeURIComponent(id)}/comments`, "POST", { body: text });
+  expandedTaskCommentTaskIds.add(id);
+  await Promise.all([
+    loadTaskComments(id, { silent: true, force: true }),
+    loadProjectTasks(selectedProjectId, { silent: true }),
+    loadProjectActivity(selectedProjectId, { silent: true }),
+  ]);
+  setMessage("tasks_msg", "Comment added.", "ok");
+}
+
+async function updateTaskComment(taskId, commentId, body) {
+  const id = String(taskId || "").trim();
+  if (!id) throw new Error("task_id is required");
+  const cid = String(commentId || "").trim();
+  if (!cid) throw new Error("comment_id is required");
+  const text = String(body || "").trim();
+  if (!text) throw new Error("Comment body cannot be empty");
+
+  await api(`/api/tasks/${encodeURIComponent(id)}/comments/${encodeURIComponent(cid)}`, "PATCH", { body: text });
+  taskCommentEditDraftById.delete(cid);
+  expandedTaskCommentTaskIds.add(id);
+  await Promise.all([
+    loadTaskComments(id, { silent: true, force: true }),
+    loadProjectTasks(selectedProjectId, { silent: true }),
+    loadProjectActivity(selectedProjectId, { silent: true }),
+  ]);
+  setMessage("tasks_msg", "Comment updated.", "ok");
+}
+
+async function deleteTaskComment(taskId, commentId) {
+  const id = String(taskId || "").trim();
+  if (!id) throw new Error("task_id is required");
+  const cid = String(commentId || "").trim();
+  if (!cid) throw new Error("comment_id is required");
+
+  await api(`/api/tasks/${encodeURIComponent(id)}/comments/${encodeURIComponent(cid)}`, "DELETE");
+  taskCommentEditDraftById.delete(cid);
+  expandedTaskCommentTaskIds.add(id);
+  await Promise.all([
+    loadTaskComments(id, { silent: true, force: true }),
+    loadProjectTasks(selectedProjectId, { silent: true }),
+    loadProjectActivity(selectedProjectId, { silent: true }),
+  ]);
+  setMessage("tasks_msg", "Comment deleted.", "ok");
+}
+
+async function loadProjectTasks(projectId = selectedProjectId, { silent = false } = {}) {
+  const pid = String(projectId || "").trim();
+  if (!pid) {
+    taskBlueprints = [];
+    hydrateTaskBlueprintSelect();
+    projectTasks = [];
+    taskCommentsByTaskId = new Map();
+    expandedTaskCommentTaskIds = new Set();
+    taskCommentEditDraftById = new Map();
+    renderProjectTaskList();
+    return;
+  }
+  if (!silent) setMessage("tasks_msg", "Loading tasks...");
+  const filters = taskFilterValues();
+  const qs = new URLSearchParams();
+  qs.set("include_closed", Boolean($("task_include_closed")?.checked) ? "true" : "false");
+  qs.set("limit", "240");
+  if (filters.status) qs.set("status", filters.status);
+  if (filters.priority) qs.set("priority", filters.priority);
+  if (filters.assignee_agent_id) qs.set("assignee_agent_id", filters.assignee_agent_id);
+  const rows = await api(`/api/projects/${encodeURIComponent(pid)}/tasks?${qs.toString()}`);
+  projectTasks = Array.isArray(rows) ? rows : [];
+
+  const knownIds = new Set(projectTasks.map((item) => String(item?.id || "").trim()).filter(Boolean));
+  for (const key of Array.from(taskCommentsByTaskId.keys())) {
+    if (!knownIds.has(key)) taskCommentsByTaskId.delete(key);
+  }
+  for (const key of Array.from(expandedTaskCommentTaskIds.values())) {
+    if (!knownIds.has(key)) expandedTaskCommentTaskIds.delete(key);
+  }
+
+  renderProjectTaskList();
+  if (!silent) setMessage("tasks_msg", `Loaded ${projectTasks.length} task(s).`, "ok");
+}
+
+async function loadProjectActivity(projectId = selectedProjectId, { silent = false, append = false } = {}) {
+  const pid = String(projectId || "").trim();
+  if (!pid) {
+    projectActivityEvents = [];
+    projectActivityBeforeTs = 0;
+    projectActivityHasMore = false;
+    projectActivityLoadingMore = false;
+    renderProjectActivityFeed();
+    return;
+  }
+
+  const filterValue = activityFilterValue();
+  if (!append && !silent) setMessage("activity_msg", "Loading activity...");
+  if (append) {
+    if (projectActivityLoadingMore || !projectActivityHasMore) return;
+    projectActivityLoadingMore = true;
+    renderProjectActivityFeed();
+  } else {
+    projectActivityLoadingMore = false;
+  }
+
+  try {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(PROJECT_ACTIVITY_PAGE_SIZE));
+    if (filterValue) qs.set("event_type", filterValue);
+    if (append && projectActivityBeforeTs > 0) qs.set("before", String(projectActivityBeforeTs));
+
+    const rows = await api(`/api/projects/${encodeURIComponent(pid)}/activity?${qs.toString()}`);
+    const page = Array.isArray(rows) ? rows : [];
+    if (append) {
+      const existing = Array.isArray(projectActivityEvents) ? projectActivityEvents : [];
+      const seen = new Set(existing.map((item) => String(item?.id || "").trim()).filter(Boolean));
+      const merged = existing.slice();
+      for (const item of page) {
+        const id = String(item?.id || "").trim();
+        if (id && seen.has(id)) continue;
+        if (id) seen.add(id);
+        merged.push(item);
+      }
+      projectActivityEvents = merged;
+    } else {
+      projectActivityEvents = page;
+    }
+
+    const timestamps = projectActivityEvents
+      .map((item) => Number(item?.created_at || 0))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    projectActivityBeforeTs = timestamps.length ? Math.min(...timestamps) : 0;
+    projectActivityHasMore = page.length >= PROJECT_ACTIVITY_PAGE_SIZE && projectActivityBeforeTs > 0;
+    projectActivityLoadingMore = false;
+    renderProjectActivityFeed();
+    const feedBox = $("project_activity_feed");
+    if (feedBox && projectActivityHasMore && feedBox.scrollHeight <= (feedBox.clientHeight + 4)) {
+      maybeLoadMoreProjectActivity();
+    }
+
+    if (!silent && !append) {
+      if (filterValue) {
+        setMessage("activity_msg", `Loaded ${projectActivityEvents.length} event(s) for ${filterValue}.`, "ok");
+      } else {
+        setMessage("activity_msg", `Loaded ${projectActivityEvents.length} event(s).`, "ok");
+      }
+    }
+  } catch (e) {
+    projectActivityLoadingMore = false;
+    renderProjectActivityFeed();
+    throw e;
+  }
+}
+
+function maybeLoadMoreProjectActivity() {
+  if (!selectedProjectId || !projectActivityHasMore || projectActivityLoadingMore) return;
+  if (activeProjectPane !== "activity") return;
+  const box = $("project_activity_feed");
+  if (!box) return;
+  const remaining = box.scrollHeight - box.scrollTop - box.clientHeight;
+  if (remaining > 72) return;
+  loadProjectActivity(selectedProjectId, { silent: true, append: true }).catch(() => {});
+}
+
+function scheduleProjectActivityRefresh() {
+  if (projectActivityRefreshTimer) return;
+  projectActivityRefreshTimer = setTimeout(() => {
+    projectActivityRefreshTimer = null;
+    if (!selectedProjectId) return;
+    loadProjectActivity(selectedProjectId, { silent: true }).catch(() => {});
+  }, 500);
+}
+
+async function createProjectTaskFromForm(event) {
+  event?.preventDefault?.();
+  if (!selectedProjectId) throw new Error("Pick project first");
+  const titleEl = $("task_new_title");
+  const priorityEl = $("task_new_priority");
+  const assigneeEl = $("task_new_assignee");
+  const title = String(titleEl?.value || "").trim();
+  if (!title) throw new Error("Task title is required");
+
+  const body = {
+    title,
+    status: "todo",
+    priority: normalizeTaskPriority(priorityEl?.value || "medium"),
+  };
+  const assignee = String(assigneeEl?.value || "").trim();
+  if (assignee) body.assignee_agent_id = assignee;
+
+  await api(`/api/projects/${encodeURIComponent(selectedProjectId)}/tasks`, "POST", body);
+  if (titleEl) titleEl.value = "";
+  await Promise.all([
+    loadProjectTasks(selectedProjectId, { silent: true }),
+    loadProjectActivity(selectedProjectId, { silent: true }),
+  ]);
+  setMessage("tasks_msg", "Task created.", "ok");
+}
+
+async function patchProjectTask(taskId, payload) {
+  const id = String(taskId || "").trim();
+  if (!id) throw new Error("task_id is required");
+  await api(`/api/tasks/${encodeURIComponent(id)}`, "PATCH", payload || {});
+  await Promise.all([
+    loadProjectTasks(selectedProjectId, { silent: true }),
+    loadProjectActivity(selectedProjectId, { silent: true }),
+  ]);
+}
+
+async function checkoutProjectTask(taskId, force = false) {
+  const id = String(taskId || "").trim();
+  if (!id) throw new Error("task_id is required");
+  await api(`/api/tasks/${encodeURIComponent(id)}/checkout`, "POST", { ttl_sec: 3600, force: Boolean(force) });
+  await Promise.all([
+    loadProjectTasks(selectedProjectId, { silent: true }),
+    loadProjectActivity(selectedProjectId, { silent: true }),
+  ]);
+}
+
+async function releaseProjectTask(taskId, force = false) {
+  const id = String(taskId || "").trim();
+  if (!id) throw new Error("task_id is required");
+  await api(`/api/tasks/${encodeURIComponent(id)}/release`, "POST", { force: Boolean(force) });
+  await Promise.all([
+    loadProjectTasks(selectedProjectId, { silent: true }),
+    loadProjectActivity(selectedProjectId, { silent: true }),
+  ]);
+}
+
 function applyConnectionStatus() {
   const connected = Boolean(activeConnectionId && connectionHealthy);
 
@@ -1624,6 +2577,31 @@ function showEmptyProject() {
   selectedProjectReadiness = null;
   selectedPrimaryAgentId = null;
   selectedAssignedAgents = [];
+  taskBlueprints = [];
+  projectTasks = [];
+  projectActivityEvents = [];
+  taskCommentsByTaskId = new Map();
+  expandedTaskCommentTaskIds = new Set();
+  taskCommentEditDraftById = new Map();
+  projectActivityFilter = "";
+  projectActivityBeforeTs = 0;
+  projectActivityHasMore = false;
+  projectActivityLoadingMore = false;
+  projectTaskFilterStatus = "";
+  projectTaskFilterPriority = "";
+  projectTaskFilterAssigneeAgentId = "";
+  if (projectActivityRefreshTimer) {
+    clearTimeout(projectActivityRefreshTimer);
+    projectActivityRefreshTimer = null;
+  }
+  const activityFilter = $("activity_event_filter");
+  if (activityFilter) activityFilter.value = "";
+  const statusFilter = $("task_filter_status");
+  if (statusFilter) statusFilter.value = "";
+  const priorityFilter = $("task_filter_priority");
+  if (priorityFilter) priorityFilter.value = "";
+  const assigneeFilter = $("task_filter_assignee");
+  if (assigneeFilter) assigneeFilter.value = "";
   chatContextMode = "workspace";
   projectTreeText = "";
   projectFilesCurrentPath = "";
@@ -1729,7 +2707,7 @@ function syncProjectHeadbar() {
 
   if (selectedProjectData) {
     // Title shows current pane; section title (above) shows project name
-    const paneLabels = { live: "Live", info: "Overview", folder: "Files", usage: "Usage", tracker: "Tracker" };
+    const paneLabels = { live: "Live", info: "Overview", folder: "Files", usage: "Usage", tasks: "Tasks", activity: "Activity", tracker: "Tracker" };
     const paneLabel = paneLabels[activeProjectPane] || String(activeProjectPane);
     if (titleText) titleText.textContent = paneLabel;
     else title.textContent = paneLabel;
@@ -1924,6 +2902,18 @@ function handleProjectEvent(kind, payload) {
   }
   if (selectedProjectId && /^(project\.|run\.|agent\.)/.test(String(kind))) {
     scheduleProjectDataRefresh();
+    scheduleProjectActivityRefresh();
+  }
+  if (selectedProjectId && String(kind).startsWith("project.task.")) {
+    loadProjectTasks(selectedProjectId, { silent: true }).catch(() => {});
+    const taskId = String(payload?.task_id || "").trim();
+    if (
+      taskId
+      && expandedTaskCommentTaskIds.has(taskId)
+      && ["project.task.comment", "project.task.comment.updated", "project.task.comment.deleted"].includes(String(kind))
+    ) {
+      loadTaskComments(taskId, { silent: true, force: true }).catch(() => {});
+    }
   }
 }
 
@@ -3912,6 +4902,8 @@ function setProjectPane(pane) {
     info: "project_panel_info",
     folder: "project_panel_folder",
     usage: "project_panel_usage",
+    tasks: "project_panel_tasks",
+    activity: "project_panel_activity",
     tracker: "project_panel_tracker",
   };
   for (const [key, id] of Object.entries(map)) {
@@ -3928,6 +4920,15 @@ function setProjectPane(pane) {
     } else {
       loadLatestLiveArtifact({ render: true }).catch(() => clearLivePreview("No outputs in Outputs folder yet."));
     }
+  }
+  if (pane === "tasks" && selectedProjectId) {
+    Promise.all([
+      loadProjectTasks(selectedProjectId, { silent: true }),
+      loadTaskBlueprints(selectedProjectId, { silent: true }),
+    ]).catch((e) => setMessage("tasks_msg", detailToText(e), "error"));
+  }
+  if (pane === "activity" && selectedProjectId) {
+    loadProjectActivity(selectedProjectId, { silent: true }).catch((e) => setMessage("activity_msg", detailToText(e), "error"));
   }
   syncProjectHeadbar();
 }
@@ -3966,6 +4967,8 @@ function setNavTab(tab) {
 
 async function selectProject(projectId) {
   selectedProjectId = projectId;
+  selectedAssignedAgents = [];
+  selectedPrimaryAgentId = null;
   projectStreamConnected = false;
   livePreviewReqSeq += 1;
   livePreviewPath = "";
@@ -3983,6 +4986,35 @@ async function selectProject(projectId) {
   if (tracker) tracker.innerHTML = "";
   const live = $("overview_live_updates");
   if (live) live.innerHTML = "";
+  if (projectActivityRefreshTimer) {
+    clearTimeout(projectActivityRefreshTimer);
+    projectActivityRefreshTimer = null;
+  }
+  taskBlueprints = [];
+  projectTasks = [];
+  projectActivityEvents = [];
+  taskCommentsByTaskId = new Map();
+  expandedTaskCommentTaskIds = new Set();
+  taskCommentEditDraftById = new Map();
+  projectActivityFilter = "";
+  projectActivityBeforeTs = 0;
+  projectActivityHasMore = false;
+  projectActivityLoadingMore = false;
+  projectTaskFilterStatus = "";
+  projectTaskFilterPriority = "";
+  projectTaskFilterAssigneeAgentId = "";
+  const activityFilter = $("activity_event_filter");
+  if (activityFilter) activityFilter.value = "";
+  const statusFilter = $("task_filter_status");
+  if (statusFilter) statusFilter.value = "";
+  const priorityFilter = $("task_filter_priority");
+  if (priorityFilter) priorityFilter.value = "";
+  const assigneeFilter = $("task_filter_assignee");
+  if (assigneeFilter) assigneeFilter.value = "";
+  renderProjectTaskList();
+  renderProjectActivityFeed();
+  setMessage("tasks_msg", "");
+  setMessage("activity_msg", "");
   const [project, assigned] = await Promise.all([
     api(`/api/projects/${projectId}`),
     api(`/api/projects/${projectId}/agents`).catch(() => ({ agents: [], primary_agent: null })),
@@ -3997,6 +5029,7 @@ async function selectProject(projectId) {
     approved_at: project.plan_approved_at || null,
   };
   selectedAssignedAgents = assigned.agents || [];
+  renderProjectTaskList();
   selectedPrimaryAgentId = assigned?.primary_agent?.id || null;
   selectedProjectReadiness = null;
   chatContextMode = "project";
@@ -4046,6 +5079,11 @@ async function selectProject(projectId) {
   await loadProjectPlan(projectId).catch(() => {});
   await loadProjectReadiness(projectId).catch(() => {});
   await loadProjectFiles("").catch(() => {});
+  await Promise.all([
+    loadTaskBlueprints(projectId, { silent: true }).catch(() => {}),
+    loadProjectTasks(projectId, { silent: true }).catch(() => {}),
+    loadProjectActivity(projectId, { silent: true }).catch(() => {}),
+  ]);
   await loadLatestLiveArtifact({ render: activeProjectPane === "live" }).catch(() => {});
   await loadChatAgents().catch(() => {});
   restartRuntimePoll();
@@ -5780,6 +6818,49 @@ function bindActions() {
   };
   $("btn_stop_project").onclick = () => controlProjectExecution("stop").catch((e) => setMessage("chat_hint", detailToText(e), "error"));
 
+  $("form_task_create")?.addEventListener("submit", (ev) => {
+    createProjectTaskFromForm(ev).catch((e) => setMessage("tasks_msg", detailToText(e?.message || e), "error"));
+  });
+  $("btn_task_refresh")?.addEventListener("click", () => {
+    if (!selectedProjectId) return;
+    Promise.all([
+      loadProjectTasks(selectedProjectId, { silent: false }),
+      loadTaskBlueprints(selectedProjectId, { silent: true }),
+    ]).catch((e) => setMessage("tasks_msg", detailToText(e?.message || e), "error"));
+  });
+  $("btn_task_apply_blueprint")?.addEventListener("click", () => {
+    applyTaskBlueprintFromControls().catch((e) => setMessage("tasks_msg", detailToText(e?.message || e), "error"));
+  });
+  const onTaskFilterChanged = () => {
+    taskFilterValues();
+    renderProjectTaskList();
+    if (!selectedProjectId) return;
+    loadProjectTasks(selectedProjectId, { silent: true }).catch((e) => setMessage("tasks_msg", detailToText(e?.message || e), "error"));
+  };
+  $("task_include_closed")?.addEventListener("change", onTaskFilterChanged);
+  $("task_filter_status")?.addEventListener("change", onTaskFilterChanged);
+  $("task_filter_priority")?.addEventListener("change", onTaskFilterChanged);
+  $("task_filter_assignee")?.addEventListener("change", onTaskFilterChanged);
+  $("btn_activity_refresh")?.addEventListener("click", () => {
+    if (!selectedProjectId) return;
+    loadProjectActivity(selectedProjectId, { silent: false }).catch((e) => setMessage("activity_msg", detailToText(e?.message || e), "error"));
+  });
+  $("activity_event_filter")?.addEventListener("change", () => {
+    projectActivityFilter = activityFilterValue();
+    if (!selectedProjectId) {
+      projectActivityEvents = [];
+      projectActivityBeforeTs = 0;
+      projectActivityHasMore = false;
+      projectActivityLoadingMore = false;
+      renderProjectActivityFeed();
+      return;
+    }
+    loadProjectActivity(selectedProjectId, { silent: false }).catch((e) => setMessage("activity_msg", detailToText(e?.message || e), "error"));
+  });
+  $("project_activity_feed")?.addEventListener("scroll", () => {
+    maybeLoadMoreProjectActivity();
+  });
+
   $("form_project").addEventListener("submit", (ev) => {
     ev.preventDefault();
     createProjectNow().catch((e) => showUiError("wizard_msg", e));
@@ -6088,3 +7169,4 @@ if (oauthError) {
       setView("auth");
     });
 })();
+

@@ -36,6 +36,7 @@ def init_db() -> None:
             env_id TEXT,
             base_url TEXT NOT NULL,
             api_key TEXT NOT NULL,
+            api_key_secret_id TEXT,
             name TEXT,
             created_at INTEGER NOT NULL,
             FOREIGN KEY(user_id) REFERENCES users(id)
@@ -192,6 +193,129 @@ def init_db() -> None:
         """
     )
     cur.execute("CREATE INDEX IF NOT EXISTS idx_project_external_agent_memberships_project ON project_external_agent_memberships(project_id, status, updated_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_tasks (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            created_by_user_id TEXT,
+            created_by_agent_id TEXT,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'todo',
+            priority TEXT NOT NULL DEFAULT 'medium',
+            assignee_agent_id TEXT,
+            due_at INTEGER,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            closed_at INTEGER,
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(created_by_user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_tasks_project ON project_tasks(project_id, updated_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_tasks_status ON project_tasks(project_id, status, priority, updated_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_task_checkouts (
+            task_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            owner_type TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            owner_label TEXT,
+            checkout_note TEXT,
+            checked_out_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES project_tasks(id),
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_task_checkouts_project ON project_task_checkouts(project_id, expires_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_task_comments (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            author_type TEXT NOT NULL,
+            author_id TEXT,
+            author_label TEXT,
+            body TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES project_tasks(id),
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_task_comments_task ON project_task_comments(task_id, created_at ASC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_task_dependencies (
+            project_id TEXT NOT NULL,
+            task_id TEXT NOT NULL,
+            depends_on_task_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(project_id, task_id, depends_on_task_id),
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(task_id) REFERENCES project_tasks(id),
+            FOREIGN KEY(depends_on_task_id) REFERENCES project_tasks(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_task_dependencies_task ON project_task_dependencies(project_id, task_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_task_dependencies_depends_on ON project_task_dependencies(project_id, depends_on_task_id)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_activity_log (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            actor_type TEXT NOT NULL,
+            actor_id TEXT,
+            actor_label TEXT,
+            event_type TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            payload_json TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_activity_log_project ON project_activity_log(project_id, created_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_secrets (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            secret_key TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT '',
+            description TEXT,
+            latest_version INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(user_id, secret_key),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_user_secrets_user ON user_secrets(user_id, updated_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_secret_versions (
+            id TEXT PRIMARY KEY,
+            secret_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            encrypted_value TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(secret_id, version),
+            FOREIGN KEY(secret_id) REFERENCES user_secrets(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_user_secret_versions_secret ON user_secret_versions(secret_id, version DESC)")
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS environments (
@@ -435,6 +559,8 @@ def init_db() -> None:
     conn_cols = [r[1] for r in cur.execute("PRAGMA table_info(openclaw_connections)").fetchall()]
     if "env_id" not in conn_cols:
         cur.execute("ALTER TABLE openclaw_connections ADD COLUMN env_id TEXT")
+    if "api_key_secret_id" not in conn_cols:
+        cur.execute("ALTER TABLE openclaw_connections ADD COLUMN api_key_secret_id TEXT")
     if "workspace_root" not in project_cols:
         cur.execute(f"ALTER TABLE projects ADD COLUMN workspace_root TEXT NOT NULL DEFAULT '{HIVEE_ROOT}'")
     if "project_root" not in project_cols:
@@ -523,4 +649,5 @@ CHAT_PATHS = [
 
 
 __all__ = [name for name in globals() if not name.startswith('__')]
+
 

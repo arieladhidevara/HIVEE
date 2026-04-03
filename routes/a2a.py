@@ -226,6 +226,12 @@ def register_routes(app: FastAPI) -> None:
     
         token = new_id("sess")
         conn_id = new_id("oc")
+        secret_id = _store_connection_api_key_secret(
+            conn,
+            user_id=user_id,
+            connection_id=conn_id,
+            api_key=openclaw_api_key,
+        )
         conn.execute(
             "INSERT INTO sessions (token, user_id, created_at) VALUES (?,?,?)",
             (token, user_id, now),
@@ -271,13 +277,14 @@ def register_routes(app: FastAPI) -> None:
                 ),
             )
         conn.execute(
-            "INSERT INTO openclaw_connections (id, user_id, env_id, base_url, api_key, name, created_at) VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO openclaw_connections (id, user_id, env_id, base_url, api_key, api_key_secret_id, name, created_at) VALUES (?,?,?,?,?,?,?,?)",
             (
                 conn_id,
                 user_id,
                 env_id,
                 openclaw_base_url.rstrip("/"),
-                openclaw_api_key,
+                "",
+                secret_id,
                 openclaw_name,
                 now,
             ),

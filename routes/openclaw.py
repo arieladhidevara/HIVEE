@@ -25,9 +25,16 @@ def register_routes(app: FastAPI) -> None:
     
         conn = db()
         conn_id = new_id("oc")
+        created_at = int(time.time())
+        secret_id = _store_connection_api_key_secret(
+            conn,
+            user_id=user_id,
+            connection_id=conn_id,
+            api_key=payload.api_key,
+        )
         conn.execute(
-            "INSERT INTO openclaw_connections (id, user_id, env_id, base_url, api_key, name, created_at) VALUES (?,?,?,?,?,?,?)",
-            (conn_id, user_id, env_id, payload.base_url.rstrip("/"), payload.api_key, payload.name, int(time.time())),
+            "INSERT INTO openclaw_connections (id, user_id, env_id, base_url, api_key, api_key_secret_id, name, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (conn_id, user_id, env_id, payload.base_url.rstrip("/"), "", secret_id, payload.name, created_at),
         )
         conn.commit()
         conn.close()
@@ -66,14 +73,15 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         row = conn.execute(
-            "SELECT base_url, api_key, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
+            "SELECT base_url, api_key, api_key_secret_id, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
+        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         conn.close()
         if not row:
             raise HTTPException(404, "Connection not found")
     
-        bootstrap = await _bootstrap_connection_workspace(user_id, row["base_url"], row["api_key"])
+        bootstrap = await _bootstrap_connection_workspace(user_id, row["base_url"], connection_api_key)
         _upsert_connection_policy(
             connection_id,
             user_id,
@@ -114,14 +122,15 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         row = conn.execute(
-            "SELECT base_url, api_key FROM openclaw_connections WHERE id = ? AND user_id = ?",
+            "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
+        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         conn.close()
         if not row:
             raise HTTPException(404, "Connection not found")
     
-        res = await openclaw_list_agents(row["base_url"], row["api_key"])
+        res = await openclaw_list_agents(row["base_url"], connection_api_key)
         if not res.get("ok"):
             raise HTTPException(400, res)
         return res
@@ -174,9 +183,10 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         row = conn.execute(
-            "SELECT base_url, api_key FROM openclaw_connections WHERE id = ? AND user_id = ?",
+            "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
+        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         policy = conn.execute(
             "SELECT main_agent_id, workspace_root FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (connection_id, user_id),
@@ -199,7 +209,7 @@ def register_routes(app: FastAPI) -> None:
         scoped_message = _compose_guardrailed_message(payload.message.strip(), workspace_root=workspace_root)
         res = await openclaw_chat(
             row["base_url"],
-            row["api_key"],
+            connection_api_key,
             scoped_message,
             effective_agent_id,
             max_output_tokens=SAFE_PROVIDER_MAX_OUTPUT_TOKENS,
@@ -226,9 +236,10 @@ def register_routes(app: FastAPI) -> None:
 
         conn = db()
         row = conn.execute(
-            "SELECT base_url, api_key, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
+            "SELECT base_url, api_key, api_key_secret_id, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
+        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         policy = conn.execute(
             "SELECT main_agent_id, workspace_root FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (connection_id, user_id),
@@ -467,7 +478,7 @@ def register_routes(app: FastAPI) -> None:
         )
         res = await openclaw_ws_chat(
             base_url=row["base_url"],
-            api_key=row["api_key"],
+            api_key=connection_api_key,
             message=scoped_message,
             agent_id=effective_agent_id,
             session_key=session_key,
@@ -532,7 +543,7 @@ def register_routes(app: FastAPI) -> None:
                 )
                 followup_res = await openclaw_ws_chat(
                     base_url=row["base_url"],
-                    api_key=row["api_key"],
+                    api_key=connection_api_key,
                     message=followup_prompt,
                     agent_id=effective_agent_id,
                     session_key=session_key,
@@ -597,7 +608,7 @@ def register_routes(app: FastAPI) -> None:
                 )
                 rescue_res = await openclaw_ws_chat(
                     base_url=row["base_url"],
-                    api_key=row["api_key"],
+                    api_key=connection_api_key,
                     message=rescue_prompt,
                     agent_id=effective_agent_id,
                     session_key=session_key,

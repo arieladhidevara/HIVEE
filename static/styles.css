@@ -1,4 +1,4 @@
-﻿/*
+/*
   Hivee - styles.css
   Stage 1: flat dark, 4-color gradient accent, aurora auth-only
 */
@@ -838,6 +838,187 @@ label {
   padding: 14px;
 }
 
+.task-create-form {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(120px, 150px) minmax(140px, 180px) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.task-blueprint-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(160px, 220px) auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+.task-toolbar {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: auto minmax(120px, 160px) auto minmax(120px, 160px) auto minmax(160px, 220px);
+  gap: 8px;
+  align-items: center;
+}
+.task-toolbar label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.task-inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.task-inline-toggle input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+}
+.task-list {
+  margin-top: 10px;
+  min-height: 220px;
+  max-height: 460px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+.task-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.015);
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+}
+.task-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.task-row-head strong {
+  font-size: 13px;
+}
+.task-row-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+.task-row-blockers {
+  color: #f59e0b;
+}
+.task-row-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+.task-select {
+  min-height: 34px;
+  padding: 6px 8px;
+}
+.task-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.task-comment-panel {
+  margin-top: 4px;
+  border: 1px dashed var(--line-2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.015);
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+.task-comment-list {
+  display: grid;
+  gap: 6px;
+  max-height: 200px;
+  overflow: auto;
+}
+.task-comment-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.01);
+  padding: 6px 8px;
+  display: grid;
+  gap: 4px;
+}
+.task-comment-author {
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-comment-edited {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.task-comment-body {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+.task-comment-edit {
+  display: grid;
+  gap: 6px;
+}
+.task-comment-edit-input {
+  width: 100%;
+  min-height: 74px;
+  resize: vertical;
+}
+.task-comment-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.task-comment-actions button {
+  min-height: 26px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.task-comment-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+.task-comment-form input {
+  min-height: 34px;
+}
+.activity-toolbar {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.activity-toolbar label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.activity-toolbar select {
+  min-height: 34px;
+  min-width: 220px;
+  padding: 6px 8px;
+}
+.activity-feed-tail {
+  opacity: 0.86;
+  border-style: dashed;
+}
+.activity-feed-tail .meta {
+  text-align: center;
+}
+
 /* ===== PROGRESS ===== */
 .progress-card {
   margin-top: 12px;
@@ -1408,6 +1589,13 @@ label {
   .usage-bar-row  { grid-template-columns: 72px minmax(0, 1fr); }
   .usage-bar-row strong { grid-column: 1 / -1; justify-self: end; }
   .usage-project-row { grid-template-columns: 1fr; }
+  .task-create-form { grid-template-columns: 1fr; }
+  .task-blueprint-form { grid-template-columns: 1fr; }
+  .task-toolbar { grid-template-columns: 1fr; }
+  .task-row-controls { grid-template-columns: 1fr; }
+  .task-comment-form { grid-template-columns: 1fr; }
+  .activity-toolbar { display: grid; gap: 6px; }
+  .activity-toolbar select { min-width: 0; width: 100%; }
 
   .live-preview-stage { min-height: 260px; max-height: 520px; }
   .live-preview-mount iframe { min-height: 360px; }
@@ -2043,5 +2231,4 @@ textarea[readonly]:focus {
     padding: 18px 0;
   }
 }
-
 
