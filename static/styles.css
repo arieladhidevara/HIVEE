@@ -134,6 +134,12 @@ input, textarea, select {
   font-family: inherit;
   outline: none;
   transition: border-color 130ms ease, box-shadow 130ms ease;
+  color-scheme: dark;
+}
+
+select option {
+  background: #1a1a1a;
+  color: var(--text);
 }
 
 input:focus, textarea:focus, select:focus {
