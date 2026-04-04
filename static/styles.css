@@ -2713,9 +2713,10 @@ textarea[readonly]:focus {
 .pmap-edge-dep { stroke: rgba(99,202,255,0.45); stroke-width: 1.5; }
 
 /* ===== TASK DETAIL MODAL ===== */
-.tdm-dialog { background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 0; max-width: 580px; width: 100%; color: var(--text); box-shadow: 0 12px 40px rgba(0,0,0,.55); max-height: 85vh; display: flex; flex-direction: column; }
+.tdm-dialog { background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 0; max-width: 580px; width: 100%; color: var(--text); box-shadow: 0 12px 40px rgba(0,0,0,.55); max-height: 85vh; }
+.tdm-dialog[open] { display: flex; flex-direction: column; }
 .tdm-dialog::backdrop { background: rgba(0,0,0,.6); }
-.tdm-inner { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.tdm-inner { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden; }
 .tdm-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 10px; border-bottom: 1px solid var(--border); flex: 0 0 auto; gap: 10px; }
 .tdm-header-left { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
 .tdm-header h3 { margin: 0; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
