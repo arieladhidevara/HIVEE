@@ -8619,7 +8619,8 @@ async function tryAutoCompleteClaimFromSocialSession() {
   }
 }
 function setAuthMethod(method) {
-  activeAuthMethod = method === "agent" ? "agent" : "hooman";
+  const canUseAgentMethod = Boolean($("method_agent") && $("agent_auth"));
+  activeAuthMethod = (method === "agent" && canUseAgentMethod) ? "agent" : "hooman";
   const isAgent = activeAuthMethod === "agent";
 
   $("method_hooman")?.classList.toggle("active", !isAgent);
@@ -8661,7 +8662,7 @@ function refreshAgentGuideUrls() {
 function buildAgentSetupPrompt() {
   const setupUrl = String($("agent_login_url")?.textContent || "").trim();
   if (!setupUrl) return "";
-  return `Hey, open this link: ${setupUrl} and follow the document. Then trigger Hivee, wait until real claim_url is returned, and send that exact link to the user.`;
+  return `Hey, open this link: ${setupUrl}. Then execute the flow from your side: trigger Hivee bootstrap + openclaw/stage (base URL only), wait until real claim_url is returned, and send that exact claim_url to user. If your HTTP/API tool is disabled, reply only: BLOCKED_HTTP_TOOL_DISABLED.`;
 }
 
 function copyTextFallback(value) {
@@ -8717,9 +8718,9 @@ async function copyAgentUrl() {
 }
 
 function bindAuthMethods() {
-  $("method_hooman").onclick = () => setAuthMethod("hooman");
-  $("method_agent").onclick = () => setAuthMethod("agent");
-  $("btn_copy_agent_url").onclick = () => copyAgentUrl().catch(() => {});
+  $("method_hooman")?.addEventListener("click", () => setAuthMethod("hooman"));
+  $("method_agent")?.addEventListener("click", () => setAuthMethod("agent"));
+  $("btn_copy_agent_url")?.addEventListener("click", () => copyAgentUrl().catch(() => {}));
   $("btn_accept_project_invite")?.addEventListener("click", () => {
     openProjectInviteAgentModal().catch((e) => setMessage("project_invite_msg", detailToText(e?.message || e), "error"));
   });
@@ -8924,6 +8925,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     applyWorkspacePolicy(null);
     renderConnections([]);
     setView("setup");
+    setMessage("setup_msg", "Complete agent setup to continue.", "");
     return;
   }
 
@@ -8986,6 +8988,11 @@ function bindActions() {
     });
   }
   $("form_connect").addEventListener("submit", (ev) => connectOpenClaw(ev).catch((e) => showUiError("setup_msg", e)));
+  $("btn_setup_previous")?.addEventListener("click", () => {
+    setMessage("setup_msg", "");
+    setView("auth");
+    setAuthMethod("hooman");
+  });
   $("form_change_password")?.addEventListener("submit", (ev) => changeAccountPassword(ev).catch((e) => showUiError("account_msg", e)));
   $("form_delete_account")?.addEventListener("submit", (ev) => deleteAccount(ev).catch((e) => showUiError("account_msg", e)));
   $("btn_refresh_account")?.addEventListener("click", () =>

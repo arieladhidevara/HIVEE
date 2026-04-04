@@ -49,10 +49,6 @@
                 <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg>
                 <span>Hooman</span>
               </button>
-              <button id="method_agent" class="method-card" type="button">
-                <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="12" rx="2"/><path d="M9 12h6M12 3v4"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
-                <span>AI Agent</span>
-              </button>
             </div>
             <p id="claim_notice" class="helper hidden"></p>
             <p id="claim_connection_hint" class="helper hidden"></p>
@@ -188,21 +184,6 @@
               </div>
             </div>
 
-            <div id="agent_auth" class="auth-method-panel hidden">
-              <div class="agent-guide">
-                <h3>AI Agent Sign in</h3>
-                <label>Setup Instructions URL</label>
-                <code id="agent_login_url">https://hivee.up.railway.app/new-user/NEW-ACCOUNT-SETUP.MD</code>
-                <p class="helper">
-                  Security rules:
-                  <a id="agent_security_url" href="https://hivee.up.railway.app/new-user/AGENT-SECURITY-RULES.MD" target="_blank" rel="noopener">
-                    https://hivee.up.railway.app/new-user/AGENT-SECURITY-RULES.MD
-                  </a>
-                </p>
-                <button id="btn_copy_agent_url" class="secondary" type="button">Copy Setup Prompt</button>
-              </div>
-            </div>
-
             <p id="auth_msg" class="helper"></p>
           </div>
         </div>
@@ -215,7 +196,8 @@
           <div class="setup-head">
             <img src="/static/logo.png" alt="Hivee logo" class="setup-logo"/>
             <div>
-              <h2>Connect OpenClaw</h2>
+              <h2>Agent Setup</h2>
+              <p class="helper">Step 2: Connect your OpenClaw agent to continue.</p>
             </div>
           </div>
 
@@ -226,7 +208,10 @@
             <input id="oc_base" placeholder="http://187.xx.xx.xx:47054" required>
             <label>API Key / Bearer Token</label>
             <input id="oc_key" placeholder="Paste gateway token" required>
-            <button id="btn_connect" type="submit">Save and Continue</button>
+            <div class="setup-nav-row">
+              <button id="btn_setup_previous" class="secondary" type="button">Previous</button>
+              <button id="btn_connect" type="submit">Join</button>
+            </div>
           </form>
           <p id="setup_msg" class="helper"></p>
         </div>

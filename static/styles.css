@@ -510,6 +510,16 @@ label {
 .setup-card { padding: 28px; }
 .setup-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .setup-logo { width: 42px; height: 42px; object-fit: contain; }
+.setup-nav-row {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.setup-nav-row .secondary {
+  margin-right: auto;
+}
 
 /* ===== HOME VIEW ===== */
 #view_home {
