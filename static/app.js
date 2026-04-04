@@ -1812,7 +1812,6 @@ function renderProjectTaskList() {
     const card = document.createElement("article");
     card.className = "task-srow";
     card.dataset.taskId = taskId;
-    card.title = "Click to open task details";
 
     const dot = document.createElement("button");
     dot.type = "button";
@@ -1854,7 +1853,6 @@ function renderProjectTaskList() {
     card.appendChild(titleEl);
     card.appendChild(badges);
     card.appendChild(openBtn);
-    card.addEventListener("click", () => openTaskDetailModal(taskId));
     list.appendChild(card);
     /* eslint-disable no-unreachable */ if (false) {
     const lockedByOther = false, commentsExpanded = false;
