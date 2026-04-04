@@ -352,13 +352,28 @@ def register_routes(app: FastAPI) -> None:
         workspace_root = str(policy["workspace_root"]) if (policy and policy["workspace_root"]) else HIVEE_ROOT
         main_agent_id = str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else ""
         main_agent_id = main_agent_id.strip() or None
+        workspace_agent_rows = conn.execute(
+            """
+            SELECT agent_id
+            FROM managed_agents
+            WHERE user_id = ? AND connection_id = ? AND status = 'active'
+            ORDER BY updated_at DESC, provisioned_at DESC, agent_name ASC
+            """,
+            (user_id, connection_id),
+        ).fetchall()
+        workspace_agent_ids: List[str] = []
+        for _agent_row in workspace_agent_rows:
+            _aid = str(_agent_row["agent_id"] or "").strip()
+            if _aid and _aid not in workspace_agent_ids:
+                workspace_agent_ids.append(_aid)
         if (not project_scope) and payload.agent_id:
-            if not main_agent_id:
+            requested_workspace_agent_id = str(payload.agent_id or "").strip()
+            allowed_workspace_ids = set(workspace_agent_ids)
+            if main_agent_id:
+                allowed_workspace_ids.add(main_agent_id)
+            if requested_workspace_agent_id not in allowed_workspace_ids:
                 conn.close()
-                raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
-            if payload.agent_id != main_agent_id:
-                conn.close()
-                raise HTTPException(403, "Workspace chat can only target your main user agent")
+                raise HTTPException(403, "Workspace chat can only target agents available on this connection")
         project_root = str(project_scope["project_root"]) if (project_scope and project_scope["project_root"]) else None
         project_instruction = None
         write_allow_paths = None
@@ -464,11 +479,16 @@ def register_routes(app: FastAPI) -> None:
             else:
                 write_allow_paths = []
         else:
-            effective_agent_id = main_agent_id
+            effective_agent_id = str(payload.agent_id or "").strip() or None
+            if not effective_agent_id:
+                if main_agent_id:
+                    effective_agent_id = main_agent_id
+                elif workspace_agent_ids:
+                    effective_agent_id = workspace_agent_ids[0]
             session_key = "main"
             if not effective_agent_id:
                 conn.close()
-                raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
+                raise HTTPException(400, "No workspace agent is available. Re-run OpenClaw bootstrap.")
 
         conn.close()
         scoped_message = _compose_guardrailed_message(

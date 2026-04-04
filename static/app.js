@@ -3780,14 +3780,14 @@ function syncChatContextControls() {
   if (note) {
     note.textContent = effectiveMode === "project"
       ? "Project context active: invited project agents available."
-      : "Workspace context active: only your main user agent is available.";
+      : "Workspace context active: loaded OpenClaw agents are available.";
   }
 
   const input = $("chat_input");
   if (input) {
     input.placeholder = effectiveMode === "project"
       ? "Type message... example: @dailybot make recap"
-      : "Type workspace message... example: review my workspace status";
+      : "Type workspace message... example: @agent review my workspace status";
   }
 }
 
@@ -3801,7 +3801,7 @@ function setChatContextMode(mode, { silent = false } = {}) {
       "chat_hint",
       activeChatContextMode() === "project"
         ? "Project context active."
-        : "Workspace context active (main user agent only).",
+        : "Workspace context active.",
       "ok"
     );
   }
@@ -4816,20 +4816,57 @@ async function loadChatAgents() {
     mainAgent = workspaceMainChatAgent();
   }
 
-  if (!mainAgent) {
+  let workspaceAgents = [];
+  let listErr = "";
+  try {
+    const listed = await api(`/api/openclaw/${encodeURIComponent(activeConnectionId)}/agents`);
+    const rawAgents = Array.isArray(listed?.agents) ? listed.agents : [];
+    workspaceAgents = rawAgents
+      .map((item) => {
+        const source = (item && typeof item === "object") ? item : {};
+        const raw = (source.raw && typeof source.raw === "object") ? source.raw : source;
+        const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
+        const name = String(source.name || source.title || raw.name || id).trim() || id;
+        if (!id) return null;
+        return { id, name, role: "workspace", is_primary: false };
+      })
+      .filter(Boolean);
+  } catch (e) {
+    listErr = detailToText(e?.message || e);
+  }
+
+  if (mainAgent && !workspaceAgents.some((a) => String(a.id || "") === String(mainAgent.id || ""))) {
+    workspaceAgents.unshift(mainAgent);
+  }
+
+  if (mainAgent) {
+    workspaceAgents.sort((a, b) => {
+      const aMain = String(a?.id || "") === String(mainAgent.id || "");
+      const bMain = String(b?.id || "") === String(mainAgent.id || "");
+      if (aMain && !bMain) return -1;
+      if (!aMain && bMain) return 1;
+      return String(a?.name || a?.id || "").localeCompare(String(b?.name || b?.id || ""));
+    });
+  }
+
+  if (!workspaceAgents.length) {
     chatAgents = [];
     renderChatAgents([]);
     connectionHealthy = Boolean(activeConnectionId);
     applyConnectionStatus();
-    setMessage("chat_hint", "Workspace context requires a configured main user agent. Re-bootstrap OpenClaw connection.", "error");
+    if (listErr) {
+      setMessage("chat_hint", `Could not load workspace agents: ${listErr}`, "error");
+    } else {
+      setMessage("chat_hint", "No workspace agents available. Re-bootstrap OpenClaw connection.", "error");
+    }
     return;
   }
 
-  chatAgents = [mainAgent];
+  chatAgents = workspaceAgents;
   renderChatAgents(chatAgents);
   connectionHealthy = true;
   applyConnectionStatus();
-  setMessage("chat_hint", "Workspace context: chatting with your main user agent only.", "ok");
+  setMessage("chat_hint", `Workspace context: ${workspaceAgents.length} loaded agent(s) ready for chat.`, "ok");
 }
 
 function parseMention(rawMessage) {
@@ -4862,8 +4899,12 @@ function resolveChatTarget(rawMessage) {
   }
   if (!chosen && contextMode === "workspace") {
     const mainAgent = workspaceMainChatAgent();
-    if (mainAgent) {
+    if (mainAgent && chatById.has(mainAgent.id)) {
       chosen = chatById.get(mainAgent.id) || mainAgent;
+    } else if (chatAgents.length) {
+      chosen = chatAgents[0];
+    } else if (mainAgent) {
+      chosen = mainAgent;
     }
   }
   return {
@@ -4899,7 +4940,7 @@ async function sendChatPrototype() {
     throw new Error(msg);
   }
   if (contextMode === "workspace" && !resolved.agent) {
-    throw new Error("Workspace context requires a configured main user agent.");
+    throw new Error("Workspace context requires at least one loaded agent.");
   }
 
   const targetName = resolved.agent
