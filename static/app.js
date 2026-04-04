@@ -2197,6 +2197,245 @@ async function addTaskDependencyApi(toId, fromId) {
   renderProjectTaskList();
 }
 
+// ── Task Detail Modal ───────────────────────────────────────────────────────
+
+let tdmCurrentTaskId = null;
+
+function closeTaskDetailModal() {
+  const dlg = $("task_detail_modal");
+  if (dlg) dlg.close();
+  tdmCurrentTaskId = null;
+}
+
+function openTaskDetailModal(taskId) {
+  const tid = String(taskId || "").trim();
+  if (!tid) return;
+  tdmCurrentTaskId = tid;
+  const task = (Array.isArray(projectTasks) ? projectTasks : []).find((t) => String(t.id) === tid);
+  if (!task) return;
+
+  const dlg = $("task_detail_modal");
+  if (!dlg) return;
+
+  const statusValue   = normalizeTaskStatus(task.status);
+  const priorityValue = normalizeTaskPriority(task.priority);
+  const assigneeId    = String(task.assignee_agent_id || "").trim();
+  const allTasks      = Array.isArray(projectTasks) ? projectTasks : [];
+  const taskById      = new Map(allTasks.map((t) => [String(t.id), t]));
+  const agents        = Array.isArray(selectedAssignedAgents) ? selectedAssignedAgents : [];
+  const agentById     = new Map(agents.map((a) => [String(a.id), a]));
+
+  // Header
+  const dot = $("tdm_status_dot");
+  if (dot) { dot.className = `tdm-status-dot status-${statusValue}`; }
+  const titleEl = $("tdm_title");
+  if (titleEl) titleEl.textContent = String(task.title || "Untitled task");
+
+  // Meta row
+  const fromEl = $("tdm_from");
+  if (fromEl) fromEl.textContent = String(selectedProjectData?.title || "Project");
+  const toEl = $("tdm_to");
+  if (toEl) {
+    const ag = agentById.get(assigneeId);
+    toEl.textContent = ag ? String(ag.name || assigneeId) : (assigneeId || "Unassigned");
+  }
+  const priEl = $("tdm_priority");
+  if (priEl) priEl.textContent = taskPriorityLabel(priorityValue);
+  const stEl = $("tdm_status_label");
+  if (stEl) stEl.textContent = taskStatusLabel(statusValue);
+
+  // Inputs (tasks this depends on)
+  const inputsEl = $("tdm_inputs");
+  if (inputsEl) {
+    inputsEl.innerHTML = "";
+    const deps = Array.isArray(task.dependencies) ? task.dependencies : Array.isArray(task.depends_on) ? task.depends_on : [];
+    if (!deps.length) {
+      inputsEl.innerHTML = '<span class="tdm-io-empty">No dependencies</span>';
+    } else {
+      for (const depId of deps) {
+        const dep = taskById.get(String(depId));
+        const chip = document.createElement("div");
+        chip.className = `tdm-io-chip status-${normalizeTaskStatus(dep?.status)}`;
+        chip.textContent = dep ? String(dep.title || depId).slice(0, 28) : String(depId).slice(0, 14);
+        chip.title = "Click to open";
+        chip.addEventListener("click", () => openTaskDetailModal(String(depId)));
+        inputsEl.appendChild(chip);
+      }
+    }
+  }
+
+  // Outputs (tasks that depend on this one)
+  const outputsEl = $("tdm_outputs");
+  if (outputsEl) {
+    outputsEl.innerHTML = "";
+    const dependents = allTasks.filter((t) => {
+      const d = Array.isArray(t.dependencies) ? t.dependencies : Array.isArray(t.depends_on) ? t.depends_on : [];
+      return d.map(String).includes(tid);
+    });
+    if (!dependents.length) {
+      outputsEl.innerHTML = '<span class="tdm-io-empty">No dependents</span>';
+    } else {
+      for (const dep of dependents) {
+        const chip = document.createElement("div");
+        chip.className = `tdm-io-chip status-${normalizeTaskStatus(dep.status)}`;
+        chip.textContent = String(dep.title || dep.id).slice(0, 28);
+        chip.title = "Click to open";
+        chip.addEventListener("click", () => openTaskDetailModal(String(dep.id)));
+        outputsEl.appendChild(chip);
+      }
+    }
+  }
+
+  // Description
+  const descEl = $("tdm_desc");
+  if (descEl) {
+    const openDeps = Number(task?.metadata?._system_dependency_open || 0);
+    descEl.className = "tdm-desc" + (openDeps > 0 ? " blocked-desc" : "");
+    descEl.textContent = openDeps > 0
+      ? `Blocked by ${openDeps} open ${openDeps === 1 ? "dependency" : "dependencies"}. ` + (String(task.description || "").trim())
+      : (String(task.description || "").trim() || "(No description — main agent will define details during execution.)");
+  }
+
+  // Issues — derived from task state
+  const issuesEl = $("tdm_issues");
+  if (issuesEl) {
+    issuesEl.innerHTML = "";
+    const taskIssues = [];
+    if (statusValue === "blocked") {
+      const openDeps = Number(task?.metadata?._system_dependency_open || 0);
+      taskIssues.push({ label: openDeps > 0 ? `Blocked by ${openDeps} open ${openDeps === 1 ? "dependency" : "dependencies"}` : "Task is blocked" });
+    }
+    const checkout = task?.checkout;
+    if (checkout?.is_active && !isTaskCheckoutMine(checkout)) {
+      taskIssues.push({ label: `Checked out by ${String(checkout.checked_out_by_label || checkout.checked_out_by || "another user")}` });
+    }
+    if (!taskIssues.length) {
+      issuesEl.innerHTML = '<p class="tdm-empty">No issues for this task.</p>';
+    } else {
+      for (const iss of taskIssues) {
+        const row = document.createElement("div");
+        row.className = "tdm-issue-row";
+        const label = document.createElement("span");
+        label.className = "tdm-issue-label";
+        label.textContent = iss.label;
+        const commentInput = document.createElement("input");
+        commentInput.type = "text";
+        commentInput.className = "tdm-issue-comment";
+        commentInput.placeholder = "Add comment or skip…";
+        commentInput.maxLength = 400;
+        row.appendChild(label);
+        row.appendChild(commentInput);
+        issuesEl.appendChild(row);
+      }
+    }
+  }
+
+  // Comments
+  const commentsList = $("tdm_comments_list");
+  if (commentsList) {
+    commentsList.innerHTML = "";
+    const cs = taskCommentsState(tid);
+    if (cs.loading) {
+      commentsList.innerHTML = '<p class="helper">Loading…</p>';
+    } else if (!cs.items.length) {
+      commentsList.innerHTML = '<p class="tdm-empty">No comments yet.</p>';
+    } else {
+      for (const item of cs.items) {
+        const row = document.createElement("div");
+        row.className = "tdm-comment-row";
+        const author = document.createElement("span");
+        author.className = "tdm-comment-author";
+        author.textContent = String(item.author_label || item.author_id || "user");
+        const body = document.createElement("p");
+        body.className = "tdm-comment-body";
+        body.textContent = String(item.body || "");
+        row.appendChild(author);
+        row.appendChild(body);
+        commentsList.appendChild(row);
+      }
+    }
+    // Load comments if not loaded
+    if (!cs.loaded && !cs.loading) {
+      loadTaskComments(tid, { silent: true }).then(() => {
+        if (tdmCurrentTaskId === tid) openTaskDetailModal(tid);
+      }).catch(() => {});
+    }
+  }
+
+  // Comment form
+  const commentForm = $("tdm_comment_form");
+  if (commentForm) {
+    commentForm.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const input = $("tdm_comment_input");
+      const body = String(input?.value || "").trim();
+      if (!body) return;
+      if (input) input.disabled = true;
+      try {
+        await createTaskComment(tid, body);
+        if (input) { input.value = ""; input.disabled = false; }
+        openTaskDetailModal(tid); // refresh comments
+      } catch (e) {
+        const msg = $("tdm_msg");
+        if (msg) { msg.textContent = detailToText(e?.message || e); msg.className = "helper error"; }
+        if (input) input.disabled = false;
+      }
+    };
+  }
+
+  // Footer controls
+  const statusSel = $("tdm_status_select");
+  if (statusSel) {
+    statusSel.innerHTML = "";
+    for (const opt of buildTaskStatusOptions(statusValue)) statusSel.appendChild(opt);
+    statusSel.onchange = async () => {
+      try {
+        await patchProjectTask(tid, { status: statusSel.value });
+        renderProjectTaskList();
+        renderProgressMap();
+      } catch (e) {
+        statusSel.value = statusValue;
+        const msg = $("tdm_msg");
+        if (msg) { msg.textContent = detailToText(e?.message || e); msg.className = "helper error"; }
+      }
+    };
+  }
+
+  const priSel = $("tdm_priority_select");
+  if (priSel) {
+    priSel.innerHTML = "";
+    for (const opt of buildTaskPriorityOptions(priorityValue)) priSel.appendChild(opt);
+    priSel.onchange = async () => {
+      try { await patchProjectTask(tid, { priority: priSel.value }); renderProjectTaskList(); }
+      catch (e) { priSel.value = priorityValue; }
+    };
+  }
+
+  const assigneeSel = $("tdm_assignee_select");
+  if (assigneeSel) {
+    assigneeSel.innerHTML = "";
+    const noneOpt = document.createElement("option");
+    noneOpt.value = ""; noneOpt.textContent = "— Unassigned —";
+    assigneeSel.appendChild(noneOpt);
+    for (const ag of agents) {
+      const opt = document.createElement("option");
+      opt.value = String(ag.id); opt.textContent = String(ag.name || ag.id);
+      assigneeSel.appendChild(opt);
+    }
+    assigneeSel.value = assigneeId;
+    assigneeSel.onchange = async () => {
+      const val = assigneeSel.value;
+      try { await patchProjectTask(tid, val ? { assignee_agent_id: val } : { clear_assignee: true }); renderProjectTaskList(); renderProgressMap(); }
+      catch (e) { assigneeSel.value = assigneeId; }
+    };
+  }
+
+  const msgEl = $("tdm_msg");
+  if (msgEl) { msgEl.textContent = ""; msgEl.className = "helper"; }
+
+  dlg.showModal();
+}
+
 function renderProjectActivityFeed() {
   const box = $("project_activity_feed");
   if (!box) return;
@@ -8866,6 +9105,8 @@ function bindActions() {
   $("btn_ntask_cancel")?.addEventListener("click", () => closeNewTaskModal());
   $("btn_ntask_close")?.addEventListener("click", () => closeNewTaskModal());
   $("new_task_dialog")?.addEventListener("click", (e) => { if (e.target === e.currentTarget) closeNewTaskModal(); });
+  $("btn_close_tdm")?.addEventListener("click", () => closeTaskDetailModal());
+  $("task_detail_modal")?.addEventListener("click", (e) => { if (e.target === e.currentTarget) closeTaskDetailModal(); });
   $("form_task_create")?.addEventListener("submit", (ev) => {
     createProjectTaskFromForm(ev).catch((e) => setMessage("tasks_msg", detailToText(e?.message || e), "error"));
   });

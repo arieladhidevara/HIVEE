@@ -457,16 +457,6 @@
                     <button id="btn_task_refresh" class="secondary" type="button">Refresh</button>
                   </div>
                 </div>
-                <!-- Interactive horizontal dependency DAG -->
-                <div id="task_dag_wrap" class="task-dag-wrap">
-                  <div id="task_dag_viewport" class="task-dag-viewport">
-                    <div id="task_dag_canvas" class="task-dag-canvas">
-                      <svg id="task_dag_svg" class="task-dag-svg" overflow="visible" aria-hidden="true"></svg>
-                      <div id="task_dag_nodes" class="task-dag-nodes"></div>
-                    </div>
-                  </div>
-                  <p class="task-dag-hint">Double-click to add &middot; Drag from &rarr; port to connect</p>
-                </div>
                 <p id="tasks_msg" class="helper"></p>
                 <div id="project_tasks_list" class="task-list"></div>
               </div>
@@ -765,6 +755,57 @@
       </section>
 
       <!-- New Task Dialog -->
+      <!-- Task Detail Modal -->
+      <dialog id="task_detail_modal" class="tdm-dialog">
+        <div class="tdm-inner">
+          <div class="tdm-header">
+            <div class="tdm-header-left">
+              <span id="tdm_status_dot" class="tdm-status-dot"></span>
+              <h3 id="tdm_title">—</h3>
+            </div>
+            <button id="btn_close_tdm" class="modal-close-btn" type="button" aria-label="Close">
+              <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="tdm-meta-row">
+            <div class="tdm-meta-item"><span class="tdm-meta-label">From</span><span id="tdm_from">—</span></div>
+            <div class="tdm-meta-item"><span class="tdm-meta-label">To</span><span id="tdm_to">—</span></div>
+            <div class="tdm-meta-item"><span class="tdm-meta-label">Priority</span><span id="tdm_priority">—</span></div>
+            <div class="tdm-meta-item"><span class="tdm-meta-label">Status</span><span id="tdm_status_label">—</span></div>
+          </div>
+          <div class="tdm-io-row">
+            <div class="tdm-io-col">
+              <div class="tdm-section-label">Inputs — depends on</div>
+              <div id="tdm_inputs" class="tdm-io-list"></div>
+            </div>
+            <div class="tdm-io-col">
+              <div class="tdm-section-label">Outputs — unblocks</div>
+              <div id="tdm_outputs" class="tdm-io-list"></div>
+            </div>
+          </div>
+          <div class="tdm-body">
+            <div class="tdm-section-label">Description</div>
+            <p id="tdm_desc" class="tdm-desc"></p>
+            <div class="tdm-section-label">Issues</div>
+            <div id="tdm_issues" class="tdm-issues-list"></div>
+            <div class="tdm-section-label">Comments</div>
+            <div id="tdm_comments_list" class="tdm-comments-list"></div>
+            <form id="tdm_comment_form" class="tdm-comment-form">
+              <input id="tdm_comment_input" type="text" placeholder="Add a comment…" maxlength="1200" autocomplete="off">
+              <button type="submit">Send</button>
+            </form>
+          </div>
+          <div class="tdm-footer">
+            <div class="tdm-controls">
+              <select id="tdm_status_select" class="task-select"></select>
+              <select id="tdm_priority_select" class="task-select"></select>
+              <select id="tdm_assignee_select" class="task-select"></select>
+            </div>
+            <p id="tdm_msg" class="helper"></p>
+          </div>
+        </div>
+      </dialog>
+
       <dialog id="new_task_dialog" class="ntask-dialog">
         <div class="ntask-inner">
           <div class="ntask-header">
