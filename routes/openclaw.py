@@ -18,7 +18,7 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(
                 400,
                 {
-                    "message": "OpenClaw validation/bootstrap failed. Ensure base_url and API key point to a reachable OpenClaw instance.",
+                    "message": f"OpenClaw validation/bootstrap failed: {detail_to_text(bootstrap.get('error') or bootstrap.get('agent_probe') or bootstrap)[:500]}",
                     "details": bootstrap,
                 },
             )

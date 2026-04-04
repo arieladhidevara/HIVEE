@@ -51,14 +51,40 @@ async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: 
     discovered_agents: List[Dict[str, Any]] = []
     probe = await openclaw_list_agents(base_url, api_key)
     if not probe.get("ok"):
-        return {
-            "ok": False,
-            "error": "Could not verify OpenClaw agent endpoint. Check base_url and API key/token.",
-            "main_agent_id": None,
-            "main_agent_name": None,
-            "agent_probe": probe,
-            "agents": [],
-        }
+        fallback_health = await openclaw_health(base_url, api_key)
+        fallback_agents: List[Dict[str, Any]] = []
+        if fallback_health.get("ok"):
+            fallback_payload = fallback_health.get("payload")
+            fallback_raw_agents = _extract_agents_list(fallback_payload) or []
+            if fallback_raw_agents:
+                fallback_agents = _normalize_agents(fallback_raw_agents)
+        if fallback_agents:
+            probe = {
+                "ok": True,
+                "transport": "health-fallback",
+                "path": str(fallback_health.get("path") or ""),
+                "agents": fallback_agents,
+                "warning": "Agent list resolved from health payload fallback.",
+                "original_error": detail_to_text(probe.get("error") or probe.get("details") or probe)[:1000],
+            }
+        else:
+            probe_error = detail_to_text(probe.get("error") or probe.get("details") or probe)[:1200]
+            probe_hint = detail_to_text(probe.get("hint") or "")[:400]
+            health_error = detail_to_text(fallback_health.get("error") or fallback_health.get("details") or "")[:600]
+            composed_error = probe_error or "Could not verify OpenClaw agent endpoint. Check base_url and API key/token."
+            if probe_hint:
+                composed_error = f"{composed_error} Hint: {probe_hint}"
+            if health_error and health_error not in composed_error:
+                composed_error = f"{composed_error} Health: {health_error}"
+            return {
+                "ok": False,
+                "error": composed_error[:1800],
+                "main_agent_id": None,
+                "main_agent_name": None,
+                "agent_probe": probe,
+                "health_probe": fallback_health,
+                "agents": [],
+            }
     if probe.get("ok"):
         discovered_agents = [dict(a) for a in (probe.get("agents") or []) if isinstance(a, dict)]
         picked = _pick_main_agent(probe.get("agents") or [])
@@ -1362,6 +1388,9 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
         ("models.list", {}, False),
     ]
     saw_models_only = False
+    models_as_agents: List[Dict[str, Any]] = []
+    models_source_path = ""
+    models_source_method = ""
 
     for ws_url in ws_urls:
         try:
@@ -1439,6 +1468,10 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                             if not is_agent_method:
                                 if norm:
                                     saw_models_only = True
+                                    if not models_as_agents:
+                                        models_as_agents = norm
+                                        models_source_path = ws_url
+                                        models_source_method = method
                                 break
                             return {"ok": True, "transport": "ws", "path": ws_url, "method": method, "agents": norm}
                         if msg.get("type") == "err" and msg.get("id") == req_id:
@@ -1447,6 +1480,16 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
         except Exception as e:
             errors.append(f"{ws_url}: {str(e)}")
             continue
+
+    if models_as_agents:
+        return {
+            "ok": True,
+            "transport": "ws-models-fallback",
+            "path": models_source_path,
+            "method": models_source_method or "models.list",
+            "agents": models_as_agents,
+            "warning": "Only models.list is available; using models as chat targets fallback.",
+        }
 
     return {
         "ok": False,
