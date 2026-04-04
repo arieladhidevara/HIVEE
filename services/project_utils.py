@@ -157,6 +157,7 @@ def _project_readme_markdown(
         if answer_lines:
             lines.extend(["## Setup Answers Snapshot", *answer_lines, ""])
     lines.extend(["## Setup Details File", f"- See `{PROJECT_SETUP_FILE}` for the full structured setup data.", ""])
+    lines.extend(["## Project Protocol", f"- See `{PROJECT_PROTOCOL_FILE}` for delegation, mentions, task/issue status updates, and UI sync rules.", ""])
     return "\n".join(lines).strip() + "\n"
 
 def _project_brief_markdown(*, brief: str, setup_details: Optional[Dict[str, Any]] = None) -> str:
@@ -171,6 +172,51 @@ def _project_brief_markdown(*, brief: str, setup_details: Optional[Dict[str, Any
     if summary:
         lines.extend(["## Setup Chat Summary", summary, ""])
     return "\n".join(lines).strip() + "\n"
+
+def _project_protocol_markdown(*, title: str, brief: str, goal: str) -> str:
+    lines = [
+        "# Project Protocol",
+        "",
+        f"Project: {title}",
+        "",
+        "## Purpose",
+        "- Define how agents delegate, communicate, and keep project state synced for UI.",
+        "",
+        "## Communication",
+        "- Use exact invited `agent_id` in mentions: `@agent_id`.",
+        "- Every dependency handoff must include `Handoff: @agent_id` in chat_update.",
+        "- If blocked by owner approval/input, mention `@owner` and set requires_user_input=true.",
+        "",
+        "## Delegation Flow",
+        "1. Primary agent creates delegation plan and per-agent tasks.",
+        "2. Each agent executes scope, writes artifacts via output_files, then reports chat_update.",
+        "3. Next agent continues only after explicit handoff mention.",
+        "",
+        "## UI Sync Contract (API Source Of Truth)",
+        "- Task cards: project task APIs and DB task state (`todo`, `in_progress`, `blocked`, `review`, `done`).",
+        "- Issue cards: backend issue/approval signals (failed execution, blocked tasks, pending approvals).",
+        "- Progress/status maps: project execution status + progress percentage + task dependency/state data.",
+        "- Activity feed/live updates: project activity log and project event stream.",
+        "",
+        "## Agent Output Contract",
+        "- Return JSON with `chat_update`, `output_files`, optional `notes`, and pause fields.",
+        "- Persist every deliverable/handoff artifact through `output_files` using project-relative paths.",
+        "- Do not mark work done if artifacts only exist outside Hivee project files.",
+        "",
+        "## Task And Issue Update Expectations",
+        "- Keep chat_update explicit about current status and blockers for downstream UI clarity.",
+        "- If blocker/risk appears, state blocker owner and next required action.",
+        "",
+        "## Writable Roots",
+        f"- `{USER_OUTPUTS_DIRNAME}`, `{PROJECT_INFO_DIRNAME}`, `agents`, `logs`.",
+        "",
+        "## Core Context",
+        f"- Brief: {brief.strip() or '-'}",
+        f"- Goal: {goal.strip() or '-'}",
+        "",
+    ]
+    return "\n".join(lines).strip() + "\n"
+
 
 def _artifact_sync_rule_lines(*, project_root: Optional[str] = None) -> List[str]:
     lines = [
@@ -218,6 +264,7 @@ def _project_context_instruction(
             marker = " (primary)" if primary else ""
             role_part = f" | role: {role}" if role else ""
             sections.append(f"  - {name} [{aid}]{marker}{role_part}")
+    sections.append(f"- Read and follow `{PROJECT_PROTOCOL_FILE}` before planning/delegation/execution updates.")
     if plan_status != PLAN_STATUS_APPROVED:
         sections.append("- Project plan is not approved yet. Only planning/discussion is allowed; do not execute tasks.")
         sections.append(f"- Before planning, read `{PROJECT_INFO_FILE}` and align with setup chat history.")
@@ -306,6 +353,7 @@ def _build_project_file_context(
         PROJECT_PLAN_FILE,
         PROJECT_DELEGATION_FILE,
         PROJECT_INFO_FILE,
+        PROJECT_PROTOCOL_FILE,
         README_FILE,
         BRIEF_FILE,
         GOAL_FILE,
@@ -317,6 +365,7 @@ def _build_project_file_context(
         "overview.md",
         "project-plan.md",
         "project-delegation.md",
+        "project-protocol.md",
         "README.md",
         "brief.md",
         "goal.md",
@@ -1173,6 +1222,12 @@ def _initialize_project_folder(
     goal_file.write_text(goal.strip() + "\n", encoding="utf-8")
     setup_file = info_dir / "project-setup.md"
     setup_file.write_text(_setup_details_markdown(details), encoding="utf-8")
+    protocol_file = info_dir / "project-protocol.md"
+    if not protocol_file.exists():
+        protocol_file.write_text(
+            _project_protocol_markdown(title=title, brief=brief, goal=goal),
+            encoding="utf-8",
+        )
     explicit_history_text = str(setup_chat_history_text or "").replace("\r", "").strip()
     history_text = explicit_history_text
     if not history_text:
@@ -1283,7 +1338,7 @@ def _plan_prompt_from_project(
         f"{context}\n\n"
         f"{roster}\n\n"
         "Task for primary agent:\n"
-        f"1) Read `{PROJECT_INFO_FILE}` first and align every plan detail with it.\n"
+        f"1) Read `{PROJECT_INFO_FILE}` and `{PROJECT_PROTOCOL_FILE}` first and align every plan detail with them.\n"
         "2) Build project plan only (do not execute tasks yet).\n"
         "3) Include: work program, timeline/milestones, deliverables, dependencies, risks, and delegation proposal per invited agent.\n"
         "4) Add dependency flow with explicit trigger conditions (example: designbot finishes research, then @techbot starts).\n"
@@ -1326,7 +1381,7 @@ def _delegate_prompt_from_project(
     return (
         f"{context}\n\n"
         f"{roster_text}\n\n"
-        f"Plan approved by user. Read `{PROJECT_INFO_FILE}` first, then delegate tasks into Markdown documents.\n"
+        f"Plan approved by user. Read `{PROJECT_INFO_FILE}` and `{PROJECT_PROTOCOL_FILE}` first, then delegate tasks into Markdown documents.\n"
         "Return JSON object only:\n"
         "{\n"
         "  \"project_delegation_md\": \"...\",\n"
@@ -2807,6 +2862,9 @@ def _seed_project_info_markdown(*, title: str, brief: str, goal: str) -> str:
         "## Team Roles",
         "- Read `agents/ROLES.md` and list responsibilities.",
         "",
+        "## Operating Protocol",
+        f"- Read `{PROJECT_PROTOCOL_FILE}` and follow delegation/mention/status rules.",
+        "",
         "## Open Questions",
         "-",
         "",
@@ -2861,6 +2919,7 @@ def _python_project_info_markdown(
             lines.append(f"- {name} [{aid}]{primary}: {role}")
     else:
         lines.append("- No invited agents yet.")
+    lines.extend(["", "## Operating Protocol", f"- Follow `{PROJECT_PROTOCOL_FILE}` for delegation and status updates."])
     lines.extend(["", "## Assumptions", "- Project info fallback used due missing primary output.", ""])
     return "\n".join(lines).strip() + "\n"
 

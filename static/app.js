@@ -8,6 +8,11 @@ let selectedProjectReadiness = null;
 let selectedPrimaryAgentId = null;
 let selectedAssignedAgents = [];
 let currentAgents = [];
+let agentLiveState = {}; // agentId -> { taskTitle, note, status }
+let expandedTaskRowIds = new Set(); // task rows showing edit controls
+let dagDragState = null;  // { fromId, line } during connection drag
+let dagPan = { x: 0, y: 0 }; // persists across dag re-renders
+let dagZoom = 1;
 let streamAbort = null;
 
 let connectionsCache = [];
@@ -271,6 +276,10 @@ function clearAuthSession() {
   selectedProjectReadiness = null;
   selectedPrimaryAgentId = null;
   selectedAssignedAgents = [];
+  agentLiveState = {};
+  expandedTaskRowIds = new Set();
+  dagPan = { x: 0, y: 0 };
+  dagZoom = 1;
   taskBlueprints = [];
   projectTasks = [];
   projectActivityEvents = [];
@@ -542,20 +551,7 @@ function resetClaimConnectionContext() {
 
 function claimRequiresManualOpenclaw() {
   if (!claimAuthContext.active) return false;
-  if (!claimConnectionContext.loaded) return true;
-  if (!claimConnectionContext.claimValid) return true;
-  if (claimConnectionContext.stagedOpenclawReady) return false;
-  return Boolean(claimConnectionContext.requiresManualOpenclaw);
-}
-
-function claimHasStagedOpenclaw() {
-  return Boolean(
-    claimAuthContext.active
-    && claimConnectionContext.loaded
-    && claimConnectionContext.claimValid
-    && claimConnectionContext.stagedOpenclawReady
-    && !claimConnectionContext.requiresManualOpenclaw
-  );
+  return true;
 }
 
 function assertClaimContextUsable() {
@@ -571,14 +567,8 @@ function claimConnectionPromptText() {
   if (!claimConnectionContext.claimValid) {
     return claimConnectionContext.message || "Claim link is not valid.";
   }
-  if (claimHasStagedOpenclaw()) {
-    const label = claimConnectionContext.stagedOpenclawName
-      || claimConnectionContext.stagedOpenclawBaseUrl
-      || "agent-staged OpenClaw";
-    return `OpenClaw ready from agent (${label}). No Base URL or token input needed.`;
-  }
   if (claimConnectionContext.message) return claimConnectionContext.message;
-  return "OpenClaw is not staged yet. Enter Base URL and API key/token below.";
+  return "Enter OpenClaw Base URL and API key/token below.";
 }
 
 async function loadClaimConnectionContext() {
@@ -601,6 +591,7 @@ async function loadClaimConnectionContext() {
       requiresManualOpenclaw: res?.requires_manual_openclaw == null ? true : Boolean(res?.requires_manual_openclaw),
       message: String(res?.message || "").trim(),
     });
+    applyClaimBaseHintFromClaimContext(res);
   } catch (e) {
     const msg = detailToText(e?.message || e || "");
     setClaimConnectionContext({
@@ -614,6 +605,21 @@ async function loadClaimConnectionContext() {
       requiresManualOpenclaw: true,
       message: msg || "Could not read claim context. Enter OpenClaw manually.",
     });
+  }
+}
+function applyClaimBaseHintFromClaimContext(ctx) {
+  const base = String(ctx?.staged_openclaw_base_url || "").trim();
+  const name = String(ctx?.staged_openclaw_name || "").trim();
+  if (!base && !name) return;
+  for (const prefix of ["li", "su"]) {
+    const baseEl = $(`${prefix}_oc_base`);
+    const nameEl = $(`${prefix}_oc_name`);
+    if (baseEl && !String(baseEl.value || "").trim() && base) {
+      baseEl.value = base;
+    }
+    if (nameEl && !String(nameEl.value || "").trim() && name) {
+      nameEl.value = name;
+    }
   }
 }
 
@@ -726,9 +732,7 @@ function applyOAuthProvidersUI() {
       hint.textContent = "Some providers are not enabled yet.";
       return;
     }
-    hint.textContent = claimRequiresManualOpenclaw()
-      ? "Some providers are not enabled yet. You can sign in with social auth first or fill OpenClaw details first."
-      : "Some providers are not enabled yet. You can still sign in and claim.";
+    hint.textContent = "Some providers are not enabled yet. You can sign in with social auth first or fill OpenClaw details first.";
     return;
   }
   if (!claimAuthContext.active) {
@@ -736,14 +740,10 @@ function applyOAuthProvidersUI() {
     return;
   }
   if (claimSessionState.connected) {
-    hint.textContent = claimRequiresManualOpenclaw()
-      ? "Session is connected. Enter OpenClaw Base URL + API key, then click Claim Environment."
-      : "Session is connected. OpenClaw is staged by agent, click Claim Environment.";
+    hint.textContent = "Session is connected. Enter OpenClaw Base URL + API key, then click Claim Environment.";
     return;
   }
-  hint.textContent = claimRequiresManualOpenclaw()
-    ? "You can sign in with social auth first, then continue by entering OpenClaw Base URL + API key."
-    : "You can sign in with social auth first, then click Claim Environment.";
+  hint.textContent = "You can sign in with social auth first, then continue by entering OpenClaw Base URL + API key.";
 }
 async function loadOAuthProviders() {
   oauthProvidersState = new Map();
@@ -1463,7 +1463,17 @@ function validateClaimConnectionForActiveContext(payload) {
   assertClaimContextUsable();
   if (!claimAuthContext.active) return;
   if (claimRequiresManualOpenclaw()) {
-    validateClaimConnectionPayload(payload);
+    const candidate = { ...(payload || {}) };
+    if (!String(candidate.openclaw_base_url || "").trim()) {
+      const hintedBase = String(claimConnectionContext?.stagedOpenclawBaseUrl || "").trim();
+      if (hintedBase) {
+        candidate.openclaw_base_url = hintedBase;
+        if (payload && typeof payload === "object") {
+          payload.openclaw_base_url = hintedBase;
+        }
+      }
+    }
+    validateClaimConnectionPayload(candidate);
     return;
   }
   validateOptionalClaimConnectionPayload(payload);
@@ -1779,33 +1789,16 @@ function activityFilterValue() {
 }
 
 function renderProjectTaskList() {
-  hydrateTaskCreateAssigneeSelect();
-  hydrateTaskBlueprintAssigneeSelect();
-  hydrateTaskBlueprintSelect();
-  hydrateTaskFilterAssigneeSelect();
-  renderTaskMap(); // keep task map in sync if it's open
+  hydrateNewTaskAssigneeSelect();
+  renderTaskDag();
   const list = $("project_tasks_list");
   if (!list) return;
 
-  const includeClosed = Boolean($("task_include_closed")?.checked);
-  const filters = taskFilterValues();
-  const rows = (Array.isArray(projectTasks) ? projectTasks : []).filter((task) => {
-    if (filters.status && normalizeTaskStatus(task?.status) !== filters.status) return false;
-    if (filters.priority && normalizeTaskPriority(task?.priority) !== filters.priority) return false;
-    if (filters.assignee_agent_id) {
-      const assignee = String(task?.assignee_agent_id || "").trim();
-      if (assignee !== filters.assignee_agent_id) return false;
-    }
-    if (includeClosed) return true;
-    return normalizeTaskStatus(task?.status) !== "done";
-  });
+  const rows = Array.isArray(projectTasks) ? projectTasks : [];
 
   list.innerHTML = "";
   if (!rows.length) {
-    const empty = document.createElement("p");
-    empty.className = "helper";
-    empty.textContent = "No tasks yet.";
-    list.appendChild(empty);
+    list.innerHTML = '<p class="helper">No tasks yet — double-click the diagram above or click + New Task.</p>';
     return;
   }
 
@@ -1817,50 +1810,96 @@ function renderProjectTaskList() {
     const lockedByOther = Boolean(checkout?.is_active) && !isTaskCheckoutMine(checkout);
     const commentState = taskCommentsState(taskId);
     const commentsExpanded = expandedTaskCommentTaskIds.has(taskId);
+    const isExpanded = expandedTaskRowIds.has(taskId);
+    const assignee = String(task?.assignee_agent_id || "").trim();
 
     const card = document.createElement("article");
-    card.className = "task-row";
+    card.className = `task-srow${isExpanded ? " expanded" : ""}`;
+    card.dataset.taskId = taskId;
 
+    // ── Compact always-visible header ──
     const head = document.createElement("div");
-    head.className = "task-row-head";
+    head.className = "task-srow-head";
 
-    const title = document.createElement("strong");
-    title.textContent = String(task?.title || taskId || "Untitled task");
+    const dot = document.createElement("button");
+    dot.type = "button";
+    dot.className = `task-srow-dot status-${statusValue}`;
+    dot.title = `${taskStatusLabel(statusValue)} — click to cycle`;
+    dot.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const order = ["todo", "in_progress", "blocked", "review", "done"];
+      const next = order[(order.indexOf(statusValue) + 1) % order.length];
+      patchProjectTask(taskId, { status: next }).catch((er) => setMessage("tasks_msg", detailToText(er?.message || er), "error"));
+    });
 
-    const meta = document.createElement("div");
-    meta.className = "task-row-meta";
-    meta.textContent = `#${taskId.slice(0, 8)} - ${taskPriorityLabel(priorityValue)}`;
+    const titleEl = document.createElement("span");
+    titleEl.className = "task-srow-title";
+    titleEl.textContent = String(task?.title || "Untitled task");
 
-    head.appendChild(title);
-    head.appendChild(meta);
+    const badges = document.createElement("div");
+    badges.className = "task-srow-badges";
 
-    const desc = document.createElement("p");
-    desc.className = "helper";
-    const descText = String(task?.description || "").trim();
-    desc.textContent = descText || "No description.";
-    const openDeps = Number(task?.metadata?._system_dependency_open || 0);
-    if (Number.isFinite(openDeps) && openDeps > 0) {
-      const depLabel = openDeps === 1 ? "dependency" : "dependencies";
-      meta.textContent = `${meta.textContent} - blocked by ${openDeps} ${depLabel}`;
-      meta.classList.add("task-row-blockers");
-    } else {
-      meta.classList.remove("task-row-blockers");
+    const priBadge = document.createElement("span");
+    priBadge.className = `task-srow-pri pri-${priorityValue}`;
+    priBadge.textContent = taskPriorityLabel(priorityValue);
+
+    const agentBadge = document.createElement("span");
+    agentBadge.className = "task-srow-agent";
+    agentBadge.textContent = assignee ? `@${agentShortName(assignee) || assignee.slice(0, 10)}` : "—";
+
+    badges.appendChild(priBadge);
+    badges.appendChild(agentBadge);
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "task-srow-toggle";
+    toggleBtn.textContent = isExpanded ? "▲" : "▼";
+    toggleBtn.title = isExpanded ? "Collapse" : "Expand";
+    toggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (isExpanded) expandedTaskRowIds.delete(taskId); else expandedTaskRowIds.add(taskId);
+      renderProjectTaskList();
+    });
+
+    head.appendChild(dot);
+    head.appendChild(titleEl);
+    head.appendChild(badges);
+    head.appendChild(toggleBtn);
+    card.appendChild(head);
+
+    if (!isExpanded) {
+      list.appendChild(card);
+      continue;
     }
 
+    // ── Expanded detail section ──
+    const detail = document.createElement("div");
+    detail.className = "task-srow-detail";
+
+    // Description
+    const descText = String(task?.description || "").trim();
+    const openDeps = Number(task?.metadata?._system_dependency_open || 0);
+    const descEl = document.createElement("p");
+    descEl.className = "task-srow-desc";
+    if (openDeps > 0) {
+      descEl.textContent = `Blocked by ${openDeps} open ${openDeps === 1 ? "dependency" : "dependencies"}. ` + (descText || "");
+      descEl.classList.add("blocked-desc");
+    } else {
+      descEl.textContent = descText || "(No description — main agent will define details during execution.)";
+    }
+    detail.appendChild(descEl);
+
+    // Controls row
     const controls = document.createElement("div");
-    controls.className = "task-row-controls";
+    controls.className = "task-srow-controls";
 
     const statusSelect = document.createElement("select");
     statusSelect.className = "task-select";
     for (const opt of buildTaskStatusOptions(statusValue)) statusSelect.appendChild(opt);
     statusSelect.disabled = lockedByOther;
     statusSelect.addEventListener("change", async () => {
-      try {
-        await patchProjectTask(taskId, { status: statusSelect.value });
-      } catch (e) {
-        statusSelect.value = statusValue;
-        setMessage("tasks_msg", detailToText(e?.message || e), "error");
-      }
+      try { await patchProjectTask(taskId, { status: statusSelect.value }); }
+      catch (e) { statusSelect.value = statusValue; setMessage("tasks_msg", detailToText(e?.message || e), "error"); }
     });
 
     const prioritySelect = document.createElement("select");
@@ -1868,12 +1907,8 @@ function renderProjectTaskList() {
     for (const opt of buildTaskPriorityOptions(priorityValue)) prioritySelect.appendChild(opt);
     prioritySelect.disabled = lockedByOther;
     prioritySelect.addEventListener("change", async () => {
-      try {
-        await patchProjectTask(taskId, { priority: prioritySelect.value });
-      } catch (e) {
-        prioritySelect.value = priorityValue;
-        setMessage("tasks_msg", detailToText(e?.message || e), "error");
-      }
+      try { await patchProjectTask(taskId, { priority: prioritySelect.value }); }
+      catch (e) { prioritySelect.value = priorityValue; setMessage("tasks_msg", detailToText(e?.message || e), "error"); }
     });
 
     const assigneeSelect = document.createElement("select");
@@ -1882,15 +1917,9 @@ function renderProjectTaskList() {
     assigneeSelect.disabled = lockedByOther;
     assigneeSelect.addEventListener("change", async () => {
       try {
-        const value = String(assigneeSelect.value || "").trim();
-        if (!value) {
-          await patchProjectTask(taskId, { clear_assignee: true });
-        } else {
-          await patchProjectTask(taskId, { assignee_agent_id: value });
-        }
-      } catch (e) {
-        setMessage("tasks_msg", detailToText(e?.message || e), "error");
-      }
+        const val = String(assigneeSelect.value || "").trim();
+        await patchProjectTask(taskId, val ? { assignee_agent_id: val } : { clear_assignee: true });
+      } catch (e) { setMessage("tasks_msg", detailToText(e?.message || e), "error"); }
     });
 
     const lockBtn = document.createElement("button");
@@ -1899,53 +1928,31 @@ function renderProjectTaskList() {
     if (checkout?.is_active) {
       if (isTaskCheckoutMine(checkout)) {
         lockBtn.textContent = "Release";
-        lockBtn.addEventListener("click", async () => {
-          try {
-            await releaseProjectTask(taskId, false);
-          } catch (e) {
-            setMessage("tasks_msg", detailToText(e?.message || e), "error");
-          }
-        });
+        lockBtn.addEventListener("click", async () => { try { await releaseProjectTask(taskId, false); } catch (e) { setMessage("tasks_msg", detailToText(e?.message || e), "error"); } });
       } else {
         lockBtn.textContent = "Force Checkout";
-        lockBtn.addEventListener("click", async () => {
-          try {
-            await checkoutProjectTask(taskId, true);
-          } catch (e) {
-            setMessage("tasks_msg", detailToText(e?.message || e), "error");
-          }
-        });
+        lockBtn.addEventListener("click", async () => { try { await checkoutProjectTask(taskId, true); } catch (e) { setMessage("tasks_msg", detailToText(e?.message || e), "error"); } });
       }
     } else {
       lockBtn.textContent = "Checkout";
-      lockBtn.addEventListener("click", async () => {
-        try {
-          await checkoutProjectTask(taskId, false);
-        } catch (e) {
-          setMessage("tasks_msg", detailToText(e?.message || e), "error");
-        }
-      });
+      lockBtn.addEventListener("click", async () => { try { await checkoutProjectTask(taskId, false); } catch (e) { setMessage("tasks_msg", detailToText(e?.message || e), "error"); } });
     }
 
+    const commentsCount = commentState.loaded ? Number(commentState.items.length || 0) : null;
     const commentsBtn = document.createElement("button");
     commentsBtn.type = "button";
     commentsBtn.className = "secondary";
-    const commentsCount = commentState.loaded ? Number(commentState.items.length || 0) : null;
-    commentsBtn.textContent = commentsExpanded
-      ? "Hide Comments"
-      : `Comments${commentsCount == null ? "" : ` (${commentsCount})`}`;
+    commentsBtn.textContent = commentsExpanded ? "Hide Comments" : `Comments${commentsCount == null ? "" : ` (${commentsCount})`}`;
     commentsBtn.addEventListener("click", () => {
-      if (commentsExpanded) {
-        expandedTaskCommentTaskIds.delete(taskId);
-        renderProjectTaskList();
-        return;
-      }
+      if (commentsExpanded) { expandedTaskCommentTaskIds.delete(taskId); renderProjectTaskList(); return; }
       expandedTaskCommentTaskIds.add(taskId);
       renderProjectTaskList();
-      loadTaskComments(taskId, { silent: true }).catch((e) => {
-        setMessage("tasks_msg", detailToText(e?.message || e), "error");
-      });
+      loadTaskComments(taskId, { silent: true }).catch((e) => setMessage("tasks_msg", detailToText(e?.message || e), "error"));
     });
+
+    const checkoutMeta = document.createElement("p");
+    checkoutMeta.className = "helper";
+    checkoutMeta.textContent = taskCheckoutSummary(checkout);
 
     controls.appendChild(statusSelect);
     controls.appendChild(prioritySelect);
@@ -1953,14 +1960,8 @@ function renderProjectTaskList() {
     controls.appendChild(lockBtn);
     controls.appendChild(commentsBtn);
 
-    const checkoutMeta = document.createElement("p");
-    checkoutMeta.className = "helper";
-    checkoutMeta.textContent = taskCheckoutSummary(checkout);
-
-    card.appendChild(head);
-    card.appendChild(desc);
-    card.appendChild(controls);
-    card.appendChild(checkoutMeta);
+    detail.appendChild(controls);
+    detail.appendChild(checkoutMeta);
 
     if (commentsExpanded) {
       const commentsPanel = document.createElement("section");
@@ -2137,11 +2138,104 @@ function renderProjectTaskList() {
 
       commentsPanel.appendChild(commentsList);
       commentsPanel.appendChild(commentForm);
-      card.appendChild(commentsPanel);
+      detail.appendChild(commentsPanel);
     }
 
+    card.appendChild(detail);
     list.appendChild(card);
   }
+}
+
+// ── New Task Modal ──────────────────────────────────────────────────────────
+
+function hydrateNewTaskAssigneeSelect() {
+  const sel = $("ntask_assignee");
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "— Unassigned —";
+  sel.appendChild(none);
+  for (const agent of Array.isArray(currentAgents) ? currentAgents : []) {
+    const id = String(agent?.id || "").trim();
+    if (!id) continue;
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = String(agent?.name || id);
+    sel.appendChild(opt);
+  }
+  if (current) sel.value = current;
+}
+
+function openNewTaskModal(prefill = {}) {
+  hydrateNewTaskAssigneeSelect();
+  const dlg = $("new_task_dialog");
+  if (!dlg) return;
+  const titleEl = $("ntask_title");
+  const assigneeEl = $("ntask_assignee");
+  const priorityEl = $("ntask_priority");
+  const descEl = $("ntask_description");
+  const msgEl = $("ntask_msg");
+  if (titleEl) titleEl.value = String(prefill.title || "");
+  if (assigneeEl) assigneeEl.value = String(prefill.assignee_agent_id || "");
+  if (priorityEl) priorityEl.value = String(prefill.priority || "medium");
+  if (descEl) descEl.value = String(prefill.description || "");
+  if (msgEl) { msgEl.textContent = ""; msgEl.className = ""; }
+  dlg.showModal();
+  if (titleEl) titleEl.focus();
+}
+
+function closeNewTaskModal() {
+  const dlg = $("new_task_dialog");
+  if (dlg) dlg.close();
+}
+
+async function submitNewTaskModal() {
+  const titleEl = $("ntask_title");
+  const assigneeEl = $("ntask_assignee");
+  const priorityEl = $("ntask_priority");
+  const descEl = $("ntask_description");
+  const msgEl = $("ntask_msg");
+  const submitBtn = $("btn_ntask_submit");
+
+  const title = String(titleEl?.value || "").trim();
+  if (!title) {
+    if (msgEl) { msgEl.textContent = "Task name is required."; msgEl.className = "error"; }
+    titleEl?.focus();
+    return;
+  }
+  if (!selectedProjectId) {
+    if (msgEl) { msgEl.textContent = "No project selected."; msgEl.className = "error"; }
+    return;
+  }
+
+  const payload = { title, priority: String(priorityEl?.value || "medium") };
+  const assignee = String(assigneeEl?.value || "").trim();
+  if (assignee) payload.assignee_agent_id = assignee;
+  const desc = String(descEl?.value || "").trim();
+  if (desc) payload.description = desc;
+
+  if (submitBtn) submitBtn.disabled = true;
+  if (msgEl) { msgEl.textContent = "Creating…"; msgEl.className = ""; }
+
+  try {
+    await api(`/api/projects/${encodeURIComponent(selectedProjectId)}/tasks`, "POST", payload);
+    await loadProjectTasks(selectedProjectId, { silent: true });
+    closeNewTaskModal();
+    renderProjectTaskList();
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = detailToText(e?.message || e); msgEl.className = "error"; }
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
+async function addTaskDependencyApi(toId, fromId) {
+  if (!toId || !fromId || toId === fromId) return;
+  await api(`/api/tasks/${encodeURIComponent(toId)}/dependencies`, "POST", { depends_on_task_id: fromId });
+  await loadProjectTasks(selectedProjectId, { silent: true });
+  renderProjectTaskList();
 }
 
 function renderProjectActivityFeed() {
@@ -2860,6 +2954,10 @@ function showEmptyProject() {
   selectedProjectReadiness = null;
   selectedPrimaryAgentId = null;
   selectedAssignedAgents = [];
+  agentLiveState = {};
+  expandedTaskRowIds = new Set();
+  dagPan = { x: 0, y: 0 };
+  dagZoom = 1;
   taskBlueprints = [];
   projectTasks = [];
   projectActivityEvents = [];
@@ -3054,12 +3152,22 @@ function addEvent(kind, payload) {
 function addLiveUpdate(kind, payload) {
   const box = $("overview_live_updates");
   if (!box) return;
+  const summary = eventSummary(kind, payload);
+  if (!summary) return;
   const row = document.createElement("div");
-  row.className = "event";
-  row.innerHTML = `<div class="meta">${new Date().toLocaleTimeString()} - ${kind}</div><div class="text"></div>`;
-  row.querySelector(".text").textContent = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+  row.className = "live-update-row";
+  const timeEl = document.createElement("span");
+  timeEl.className = "lu-time";
+  timeEl.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const textEl = document.createElement("span");
+  textEl.className = "lu-text";
+  textEl.textContent = summary;
+  row.appendChild(timeEl);
+  row.appendChild(textEl);
   box.appendChild(row);
   box.scrollTop = box.scrollHeight;
+  // Keep list manageable — remove oldest entries beyond 60
+  while (box.children.length > 60) box.removeChild(box.firstChild);
 }
 
 function eventSummary(kind, payload) {
@@ -3169,6 +3277,38 @@ function scheduleProjectDataRefresh() {
 function handleProjectEvent(kind, payload) {
   addEvent(kind, payload);
   addLiveUpdate(kind, payload);
+
+  // Track per-agent live state from SSE events so live cards always show current task
+  const data = payload && typeof payload === "object" ? payload : {};
+  const evtAgentId = String(data.agent_id || "").trim();
+  if (evtAgentId) {
+    if (kind === "agent.task.assigned") {
+      agentLiveState[evtAgentId] = { taskTitle: data.task_title || data.task_id || "Task", note: "", status: "assigned" };
+      renderAgentLiveCards();
+    } else if (kind === "agent.task.started") {
+      if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      agentLiveState[evtAgentId].taskTitle = agentLiveState[evtAgentId].taskTitle || data.task_title || data.task_id || "Task";
+      agentLiveState[evtAgentId].status = "working";
+      agentLiveState[evtAgentId].note = "";
+      renderAgentLiveCards();
+    } else if (kind === "agent.task.live") {
+      if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      agentLiveState[evtAgentId].note = String(data.note || "").trim();
+      agentLiveState[evtAgentId].status = "working";
+      renderAgentLiveCards();
+    } else if (kind === "agent.task.reported") {
+      if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      agentLiveState[evtAgentId].status = "reported";
+      agentLiveState[evtAgentId].note = "";
+      renderAgentLiveCards();
+    } else if (kind === "agent.task.failed") {
+      if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      agentLiveState[evtAgentId].status = "failed";
+      agentLiveState[evtAgentId].note = String(data.error || "").trim().slice(0, 80);
+      renderAgentLiveCards();
+    }
+  }
+
   const livePath = captureLiveOutputPath(payload);
   if (livePath) {
     livePreviewPath = livePath;
@@ -4072,6 +4212,12 @@ function renderProjectExecutionInfo() {
   progressLabel.textContent = `${pct}%`;
   statusEl.textContent = `Status: ${executionStatusLabel(status)}`;
   if (progressFill) progressFill.style.width = `${pct}%`;
+  const progressBar = $("detail_progress_bar");
+  if (progressBar) {
+    progressBar.style.width = `${pct}%`;
+    const barColor = status === "running" ? "var(--cyan)" : status === "paused" ? "var(--orange)" : status === "completed" ? "var(--cyan)" : status === "stopped" ? "var(--red)" : "var(--muted)";
+    progressBar.style.background = barColor;
+  }
 
   pauseBtn.textContent = status === "paused" ? "Resume" : "Pause";
   pauseBtn.disabled = status === "stopped" || status === "completed" || status === "idle";
@@ -5219,12 +5365,6 @@ function renderDashboard() {
       else if (st === "running" || st === "planning") bucket.running++;
       else if (st === "failed") bucket.failed++;
     }
-    // Add some fake historical spread if data exists, to make chart look meaningful
-    if (projects.length > 1) {
-      for (let i = 0; i < buckets.length - 1; i++) {
-        buckets[i].completed = Math.max(0, Math.round(projects.filter(p => p.execution_status === "completed").length * (0.3 + Math.random() * 0.5)));
-      }
-    }
     const maxVal = Math.max(1, ...buckets.map((b) => b.completed + b.running + b.failed));
     runActivityEl.innerHTML = buckets.map((b, i) => {
       const total = b.completed + b.running + b.failed;
@@ -5345,9 +5485,21 @@ function renderAgentLiveCards() {
     header.appendChild(nameEl);
     header.appendChild(dot);
 
+    const live = agentLiveState[agentId] || null;
+    const agentStatusLabel = live?.status === "working" ? "working"
+      : live?.status === "assigned" ? "assigned"
+      : live?.status === "reported" ? "reported"
+      : live?.status === "failed" ? "failed"
+      : null;
+
     const roleEl = document.createElement("div");
     roleEl.className = "alc-task";
-    roleEl.textContent = String(agent.role || agent.specialization || "").trim() || (agent.is_primary ? "Primary Agent" : "Supporting Agent");
+    if (live?.taskTitle && agentStatusLabel) {
+      const statusIcon = agentStatusLabel === "failed" ? "✕" : agentStatusLabel === "reported" ? "✓" : "→";
+      roleEl.textContent = `${statusIcon} ${live.taskTitle}`;
+    } else {
+      roleEl.textContent = String(agent.role || agent.specialization || "").trim() || (agent.is_primary ? "Primary Agent" : "Supporting Agent");
+    }
 
     const tokensEl = document.createElement("div");
     tokensEl.className = "alc-tokens";
@@ -5356,182 +5508,248 @@ function renderAgentLiveCards() {
 
     card.appendChild(header);
     card.appendChild(roleEl);
+
+    if (live?.note) {
+      const noteEl = document.createElement("div");
+      noteEl.className = "alc-note";
+      noteEl.textContent = live.note;
+      card.appendChild(noteEl);
+    }
+
     card.appendChild(tokensEl);
     container.appendChild(card);
   }
 }
 
-function renderTaskMap() {
-  const mapWrapper = $("task_map_wrapper");
-  const mapBody = $("task_map_body");
-  if (!mapWrapper || !mapBody) return;
-  if (mapWrapper.classList.contains("hidden")) return;
+/* ===== INTERACTIVE TASK DAG ===== */
 
-  mapBody.innerHTML = "";
+function computeDagLevels(tasks) {
+  const idSet = new Set(tasks.map((t) => String(t.id)));
+  const levels = new Map();
+  const visiting = new Set();
+  function getLevel(taskId) {
+    if (levels.has(taskId)) return levels.get(taskId);
+    if (visiting.has(taskId)) return 0;
+    visiting.add(taskId);
+    const task = tasks.find((t) => String(t.id) === taskId);
+    if (!task) { visiting.delete(taskId); return 0; }
+    const deps = (task.dependencies || task.depends_on || []).map(String).filter((d) => idSet.has(d));
+    const lvl = deps.length ? Math.max(...deps.map((d) => getLevel(d))) + 1 : 0;
+    levels.set(taskId, lvl);
+    visiting.delete(taskId);
+    return lvl;
+  }
+  for (const t of tasks) getLevel(String(t.id));
+  return levels;
+}
+
+function renderTaskDag() {
+  const viewport = $("task_dag_viewport");
+  const canvas   = $("task_dag_canvas");
+  const svgEl    = $("task_dag_svg");
+  const nodesEl  = $("task_dag_nodes");
+  if (!viewport || !canvas || !svgEl || !nodesEl) return;
+
   const tasks = Array.isArray(projectTasks) ? projectTasks : [];
+
   if (!tasks.length) {
-    mapBody.innerHTML = '<p class="helper" style="padding:20px">No tasks yet.</p>';
+    canvas.style.width = "100%";
+    canvas.style.height = "120px";
+    svgEl.innerHTML = "";
+    nodesEl.innerHTML = '<p class="helper" style="padding:20px;position:absolute;left:0;top:0">No tasks yet — double-click to add one.</p>';
     return;
   }
 
-  // Inject the canvas structure
-  const canvasId = "tmap_canvas_inner";
-  mapBody.innerHTML = `
-    <div class="tmap-viewport" id="tmap_viewport">
-      <div class="tmap-canvas" id="${canvasId}">
-        <svg class="tmap-svg" id="tmap_svg" aria-hidden="true" overflow="visible"></svg>
-        <div class="tmap-nodes" id="tmap_nodes"></div>
-      </div>
-    </div>
-  `;
+  // --- Layout constants ---
+  const NW = 152, NH = 56, COL_GAP = 72, ROW_GAP = 10;
+  const STATUS_COLOR = { todo: "var(--muted)", in_progress: "var(--yellow)", blocked: "var(--red)", review: "var(--orange)", done: "var(--cyan)" };
 
-  const viewport = $("tmap_viewport");
-  const canvas   = $(canvasId);
-  const svgEl    = $("tmap_svg");
-  const nodesEl  = $("tmap_nodes");
+  // --- Topological levels ---
+  const levelMap = computeDagLevels(tasks);
+  const byLevel = new Map();
+  for (const [id, lvl] of levelMap) {
+    if (!byLevel.has(lvl)) byLevel.set(lvl, []);
+    byLevel.get(lvl).push(id);
+  }
+  const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b);
 
-  // Layout constants
-  const NODE_W = 176, NODE_H = 72, COL_GAP = 56, ROW_GAP = 18;
-
-  // Column order by status
-  const STATUS_COLS = [
-    { key: "todo",        label: "To Do",      color: "var(--muted)"   },
-    { key: "in_progress", label: "In Progress", color: "var(--yellow)"  },
-    { key: "blocked",     label: "Blocked",     color: "var(--red)"     },
-    { key: "review",      label: "Review",      color: "var(--orange)"  },
-    { key: "done",        label: "Done",        color: "var(--cyan)"    },
-  ];
-
-  // Assign columns — filter out empty ones
-  const cols = STATUS_COLS.map((s) => ({
-    ...s,
-    tasks: tasks.filter((t) => normalizeTaskStatus(t?.status) === s.key),
-  })).filter((c) => c.tasks.length > 0);
-
-  // If all tasks are in one status just show all
-  if (!cols.length) {
-    cols.push({ ...STATUS_COLS[0], tasks });
+  // Sort within each level: in_progress → blocked → todo → review → done
+  const statusOrder = { in_progress: 0, blocked: 1, todo: 2, review: 3, done: 4 };
+  const taskById = new Map(tasks.map((t) => [String(t.id), t]));
+  for (const lvl of sortedLevels) {
+    byLevel.get(lvl).sort((a, b) => {
+      const sa = statusOrder[normalizeTaskStatus(taskById.get(a)?.status)] ?? 2;
+      const sb = statusOrder[normalizeTaskStatus(taskById.get(b)?.status)] ?? 2;
+      return sa - sb;
+    });
   }
 
-  // Compute positions for each task node
-  const nodePos = new Map(); // taskId → {x, y, cx, cy}
-  const HEADER_H = 28; // column header height
+  // --- Compute node positions ---
+  const nodePos = new Map(); // id → { x, y }
   let canvasW = 0, canvasH = 0;
-
-  cols.forEach((col, ci) => {
-    const x = ci * (NODE_W + COL_GAP) + 20;
-    col.tasks.forEach((task, ri) => {
-      const y = HEADER_H + ri * (NODE_H + ROW_GAP) + 12;
-      nodePos.set(String(task.id), { x, y, cx: x + NODE_W / 2, cy: y + NODE_H / 2 });
-      canvasW = Math.max(canvasW, x + NODE_W + 20);
-      canvasH = Math.max(canvasH, y + NODE_H + 20);
+  for (const lvl of sortedLevels) {
+    const ids = byLevel.get(lvl);
+    const x = lvl * (NW + COL_GAP) + 12;
+    ids.forEach((id, row) => {
+      const y = row * (NH + ROW_GAP) + 10;
+      nodePos.set(id, { x, y });
+      canvasW = Math.max(canvasW, x + NW + 12);
+      canvasH = Math.max(canvasH, y + NH + 10);
     });
-  });
+  }
+  canvasW = Math.max(canvasW, 200);
+  canvasH = Math.max(canvasH, NH + 20);
 
   canvas.style.width  = canvasW + "px";
   canvas.style.height = canvasH + "px";
   svgEl.setAttribute("width",  canvasW);
   svgEl.setAttribute("height", canvasH);
 
-  // Draw edges — connect tasks that have dependencies
-  let edgePaths = "";
+  // --- Draw dependency edges ---
+  let paths = "";
   for (const task of tasks) {
-    const deps = Array.isArray(task.dependencies) ? task.dependencies
-                : Array.isArray(task.depends_on) ? task.depends_on : [];
+    const deps = (task.dependencies || task.depends_on || []).map(String);
+    const to = nodePos.get(String(task.id));
+    if (!to) continue;
     for (const depId of deps) {
-      const from = nodePos.get(String(depId));
-      const to   = nodePos.get(String(task.id));
-      if (!from || !to) continue;
-      // Right-angle connector: from right-center of dependency to left-center of current
-      const x1 = from.x + NODE_W, y1 = from.cy;
-      const x2 = to.x,            y2 = to.cy;
+      const from = nodePos.get(depId);
+      if (!from) continue;
+      const x1 = from.x + NW, y1 = from.y + NH / 2;
+      const x2 = to.x,        y2 = to.y + NH / 2;
       const mx = (x1 + x2) / 2;
-      edgePaths += `<path class="tmap-edge" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"/>`;
+      paths += `<path class="tdag-edge" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}" marker-end="url(#tdag-arrow)"/>`;
     }
   }
-  svgEl.innerHTML = edgePaths;
+  svgEl.innerHTML = `<defs><marker id="tdag-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="rgba(148,163,184,0.5)"/></marker></defs>${paths}`;
 
-  // Draw column headers + nodes
-  let headerHtml = "";
-  cols.forEach((col, ci) => {
-    const hx = ci * (NODE_W + COL_GAP) + 20;
-    headerHtml += `<div class="tmap-col-header" style="left:${hx}px;width:${NODE_W}px;color:${col.color}">${col.label} <span class="tmap-col-count">${col.tasks.length}</span></div>`;
-  });
-
-  let nodesHtml = "";
+  // --- Draw nodes ---
+  nodesEl.innerHTML = "";
   for (const task of tasks) {
-    const pos = nodePos.get(String(task.id));
+    const tid = String(task.id);
+    const pos = nodePos.get(tid);
     if (!pos) continue;
     const status = normalizeTaskStatus(task?.status);
     const priority = normalizeTaskPriority(task?.priority);
-    const statusColorMap = { todo:"var(--muted)", in_progress:"var(--yellow)", blocked:"var(--red)", review:"var(--orange)", done:"var(--cyan)" };
-    const accentColor = statusColorMap[status] || "var(--muted)";
+    const color = STATUS_COLOR[status] || "var(--muted)";
     const assignee = String(task?.assignee_agent_id || "").trim();
-    const assigneeLabel = assignee ? `@${assignee.slice(0, 10)}` : taskPriorityLabel(priority);
-    nodesHtml += `
-      <div class="tmap-node" data-task-id="${esc(String(task.id))}" style="left:${pos.x}px;top:${pos.y}px;--tnode-accent:${accentColor}">
-        <div class="tmap-node-accent"></div>
-        <div class="tmap-node-body">
-          <div class="tmap-node-title">${esc(String(task?.title || "Untitled"))}</div>
-          <div class="tmap-node-meta">${esc(assigneeLabel)}</div>
-        </div>
+    const assigneeLabel = assignee ? `@${agentShortName(assignee) || assignee.slice(0, 8)}` : taskPriorityLabel(priority);
+
+    const node = document.createElement("div");
+    node.className = "tdag-node";
+    node.dataset.taskId = tid;
+    node.style.cssText = `left:${pos.x}px;top:${pos.y}px;--tdag-color:${color}`;
+    node.innerHTML = `
+      <div class="tdag-node-bar"></div>
+      <div class="tdag-node-body">
+        <div class="tdag-node-title">${esc(String(task?.title || "Untitled").slice(0, 38))}</div>
+        <div class="tdag-node-meta">${esc(assigneeLabel)}</div>
       </div>
+      <button class="tdag-node-port" data-task-id="${esc(tid)}" title="Drag to connect" type="button" aria-label="Connect"></button>
     `;
-  }
-  nodesEl.innerHTML = headerHtml + nodesHtml;
 
-  // Node click → scroll to task in list, toggle back to list view
-  for (const nodeEl of nodesEl.querySelectorAll(".tmap-node")) {
-    nodeEl.addEventListener("click", () => {
-      const taskId = nodeEl.dataset.taskId;
-      // Switch to list view
-      const wrapper = $("task_map_wrapper");
-      const btn = $("btn_task_map_toggle");
-      if (wrapper) wrapper.classList.add("hidden");
-      if (btn) btn.textContent = "Map View";
-      // Highlight the task row
+    // Click node → expand in list below
+    node.addEventListener("click", (e) => {
+      if (e.target.closest(".tdag-node-port")) return;
+      expandedTaskRowIds.add(tid);
+      renderProjectTaskList();
       setTimeout(() => {
-        const taskRow = document.querySelector(`[data-task-id="${taskId}"]`);
-        if (taskRow) { taskRow.scrollIntoView({ behavior: "smooth", block: "center" }); taskRow.classList.add("task-highlight"); setTimeout(() => taskRow.classList.remove("task-highlight"), 1800); }
-      }, 80);
+        const row = document.querySelector(`.task-srow[data-task-id="${tid}"]`);
+        if (row) { row.scrollIntoView({ behavior: "smooth", block: "center" }); row.classList.add("task-highlight"); setTimeout(() => row.classList.remove("task-highlight"), 1400); }
+      }, 60);
     });
+
+    // Port: start connection drag
+    const port = node.querySelector(".tdag-node-port");
+    port.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("class", "tdag-drag-line");
+      svgEl.appendChild(line);
+      const fromPos = nodePos.get(tid);
+      dagDragState = { fromId: tid, line, fromX: fromPos.x + NW, fromY: fromPos.y + NH / 2 };
+    });
+
+    nodesEl.appendChild(node);
   }
 
-  // Pan + zoom
-  let pan = { x: 0, y: 0 }, zoom = 1, dragging = false, lastPos = { x: 0, y: 0 };
-  function applyTransform() {
-    canvas.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
+  // --- Apply persisted transform ---
+  function applyDagTransform() {
+    canvas.style.transform = `translate(${dagPan.x}px,${dagPan.y}px) scale(${dagZoom})`;
     canvas.style.transformOrigin = "0 0";
   }
-  viewport.addEventListener("mousedown", (e) => {
-    if (e.target.closest(".tmap-node")) return;
-    dragging = true; lastPos = { x: e.clientX, y: e.clientY };
-    viewport.style.cursor = "grabbing";
+  applyDagTransform();
+
+  // --- Pan + zoom (remove old listeners by cloning viewport) ---
+  const freshViewport = viewport.cloneNode(false);
+  viewport.parentNode.replaceChild(freshViewport, viewport);
+  // Re-grab since we swapped the DOM node
+  const vp = $("task_dag_viewport");
+  // Re-attach canvas
+  vp.appendChild(canvas);
+
+  let panning = false, lastPanPos = { x: 0, y: 0 };
+
+  vp.addEventListener("mousedown", (e) => {
+    if (e.target.closest(".tdag-node-port") || e.target.closest(".tdag-node")) return;
+    if (dagDragState) return;
+    panning = true;
+    lastPanPos = { x: e.clientX, y: e.clientY };
+    vp.style.cursor = "grabbing";
   });
-  window.addEventListener("mouseup", () => { dragging = false; viewport.style.cursor = "grab"; });
-  viewport.addEventListener("mousemove", (e) => {
-    if (!dragging) return;
-    pan.x += e.clientX - lastPos.x;
-    pan.y += e.clientY - lastPos.y;
-    lastPos = { x: e.clientX, y: e.clientY };
-    applyTransform();
+  vp.addEventListener("dblclick", (e) => {
+    if (e.target.closest(".tdag-node")) return;
+    openNewTaskModal();
   });
-  viewport.addEventListener("wheel", (e) => {
+  vp.addEventListener("wheel", (e) => {
     e.preventDefault();
-    zoom = Math.max(0.3, Math.min(2.5, zoom - e.deltaY * 0.001));
-    applyTransform();
+    dagZoom = Math.max(0.3, Math.min(2.5, dagZoom - e.deltaY * 0.001));
+    applyDagTransform();
   }, { passive: false });
+
+  window.addEventListener("mousemove", onDagMouseMove);
+  window.addEventListener("mouseup",   onDagMouseUp, { once: false });
+
+  function onDagMouseMove(e) {
+    if (panning) {
+      dagPan.x += e.clientX - lastPanPos.x;
+      dagPan.y += e.clientY - lastPanPos.y;
+      lastPanPos = { x: e.clientX, y: e.clientY };
+      applyDagTransform();
+    }
+    if (dagDragState) {
+      const rect = canvas.getBoundingClientRect();
+      const cx = (e.clientX - rect.left) / dagZoom;
+      const cy = (e.clientY - rect.top) / dagZoom;
+      dagDragState.line.setAttribute("x1", dagDragState.fromX);
+      dagDragState.line.setAttribute("y1", dagDragState.fromY);
+      dagDragState.line.setAttribute("x2", cx);
+      dagDragState.line.setAttribute("y2", cy);
+    }
+  }
+  function onDagMouseUp(e) {
+    panning = false;
+    if (vp) vp.style.cursor = "";
+    if (dagDragState) {
+      const targetNode = e.target.closest?.(".tdag-node");
+      const toId = targetNode ? String(targetNode.dataset.taskId || "") : "";
+      if (toId && toId !== dagDragState.fromId) {
+        addTaskDependencyApi(toId, dagDragState.fromId).catch(() => {});
+      }
+      dagDragState.line.remove();
+      dagDragState = null;
+    }
+  }
+  window.removeEventListener("mousemove", onDagMouseMove);
+  window.removeEventListener("mouseup",   onDagMouseUp);
+  window.addEventListener("mousemove", onDagMouseMove);
+  window.addEventListener("mouseup",   onDagMouseUp);
 }
 
-function toggleTaskMapView() {
-  const wrapper = $("task_map_wrapper");
-  const btn = $("btn_task_map_toggle");
-  if (!wrapper || !btn) return;
-  const isHidden = wrapper.classList.contains("hidden");
-  wrapper.classList.toggle("hidden", !isHidden);
-  btn.textContent = isHidden ? "List View" : "Map View";
-  if (isHidden) renderTaskMap();
-}
+// Stub kept for any legacy callers — now a no-op
+function renderTaskMap() {}
+
+function toggleTaskMapView() {}
 
 /* ===== PROGRESS MAP (Live panel DAG) ===== */
 function agentShortName(agentId) {
@@ -6077,11 +6295,18 @@ function renderProjectIssues() {
   const issues = [];
 
   if (exec === "failed") {
-    issues.push({ title: "Execution failed", priority: "high", status: "open", time: p.updated_at });
+    issues.push({ title: "Execution failed", desc: "This project run ended with an error. Check the Activity log for details or re-run.", priority: "high", status: "open", time: p.updated_at });
   }
-  const tasksBlocked = projectTasks.filter((t) => t.status === "blocked");
+  const tasksBlocked = projectTasks.filter((t) => normalizeTaskStatus(t?.status) === "blocked");
   for (const t of tasksBlocked) {
-    issues.push({ title: `Blocked: ${t.title}`, priority: "medium", status: "open", time: t.updated_at });
+    const depCount = Number(t?.metadata?._system_dependency_open || 0);
+    const desc = depCount > 0
+      ? `Waiting on ${depCount} unfinished ${depCount === 1 ? "dependency" : "dependencies"}.`
+      : "This task is marked blocked. Check task dependencies or agent assignment.";
+    issues.push({ title: `Blocked: ${t.title}`, desc, priority: "medium", status: "open", time: t.updated_at, action: "Go to Tasks" });
+  }
+  if (exec === "paused") {
+    issues.push({ title: "Awaiting approval", desc: "Project is paused and waiting for your review. Approve to continue.", priority: "urgent", status: "pending", time: p.updated_at, action: "Review & Approve" });
   }
 
   if (!issues.length) {
@@ -6094,8 +6319,10 @@ function renderProjectIssues() {
           <span class="issue-card-title">${esc(issue.title)}</span>
           <span class="issue-card-status ${issue.status}">${issue.status}</span>
         </div>
+        ${issue.desc ? `<div class="issue-card-desc">${esc(issue.desc)}</div>` : ""}
         <div class="issue-card-meta">
           ${issue.time ? `<span>${relativeTs(issue.time)}</span>` : ""}
+          ${issue.action ? `<span class="issue-card-action">${esc(issue.action)}</span>` : ""}
         </div>
       </div>
     `).join("");
@@ -6490,6 +6717,7 @@ async function selectProject(projectId) {
   selectedProjectId = projectId;
   selectedAssignedAgents = [];
   selectedPrimaryAgentId = null;
+  agentLiveState = {};
   projectStreamConnected = false;
   livePreviewReqSeq += 1;
   livePreviewPath = "";
@@ -7987,19 +8215,44 @@ function refreshAgentGuideUrls() {
   }
 }
 
+function buildAgentSetupPrompt() {
+  const setupUrl = String($("agent_login_url")?.textContent || "").trim();
+  const securityUrl = String($("agent_security_url")?.textContent || "").trim();
+  if (!setupUrl) return "";
+  return [
+    "You are joining a Hivee environment as an AI agent.",
+    "",
+    "1) Read setup guide:",
+    setupUrl,
+    "",
+    "2) Read security rules:",
+    securityUrl || "(security URL not available)",
+    "",
+    "3) OpenClaw base URL requirement:",
+    "The OpenClaw base URL must be publicly reachable from Hivee (not localhost/private IP).",
+    "",
+    "If OpenClaw is not public yet, set it up based on your system:",
+    "- Linux/macOS: use SSH reverse tunnel or a public reverse proxy.",
+    "- Windows: use cloudflared/ngrok or an SSH tunnel via PowerShell/WSL.",
+    "- Docker/NAS: publish OpenClaw port and route it through a public HTTPS domain/proxy.",
+    "",
+    "After it is publicly reachable, continue the setup flow in the guide.",
+  ].join("\n");
+}
+
 async function copyAgentUrl() {
-  const url = $("agent_login_url")?.textContent?.trim();
-  if (!url) return;
+  const prompt = buildAgentSetupPrompt();
+  if (!prompt) return;
 
   try {
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(url);
-      setMessage("auth_msg", "Setup URL copied.", "ok");
+      await navigator.clipboard.writeText(prompt);
+      setMessage("auth_msg", "Setup prompt copied.", "ok");
       return;
     }
   } catch {}
 
-  setMessage("auth_msg", "Copy not available. Please copy URL manually.", "error");
+  setMessage("auth_msg", "Copy not available. Please copy the setup prompt manually.", "error");
 }
 
 function bindAuthMethods() {
@@ -8355,6 +8608,11 @@ function bindActions() {
   };
   $("btn_stop_project").onclick = () => controlProjectExecution("stop").catch((e) => setMessage("chat_hint", detailToText(e), "error"));
 
+  $("btn_new_task")?.addEventListener("click", () => openNewTaskModal());
+  $("btn_ntask_submit")?.addEventListener("click", () => submitNewTaskModal());
+  $("btn_ntask_cancel")?.addEventListener("click", () => closeNewTaskModal());
+  $("btn_ntask_close")?.addEventListener("click", () => closeNewTaskModal());
+  $("new_task_dialog")?.addEventListener("click", (e) => { if (e.target === e.currentTarget) closeNewTaskModal(); });
   $("form_task_create")?.addEventListener("submit", (ev) => {
     createProjectTaskFromForm(ev).catch((e) => setMessage("tasks_msg", detailToText(e?.message || e), "error"));
   });
@@ -8691,9 +8949,7 @@ if (oauthError) {
       await loadClaimSessionState().catch(() => {});
       applyClaimAuthUI();
       if (claimSessionState.connected) {
-        const msg = claimRequiresManualOpenclaw()
-          ? "OAuth login successful. Enter OpenClaw Base URL + API key, then click Claim Environment."
-          : "OAuth login successful. OpenClaw is already staged. Click Claim Environment.";
+        const msg = "OAuth login successful. Enter OpenClaw Base URL + API key, then click Claim Environment.";
         setMessage("auth_msg", msg, "ok");
       } else if (claimConnectionContext.loaded && !claimConnectionContext.claimValid) {
         setMessage("auth_msg", claimConnectionContext.message || "Claim link is not valid.", "error");
@@ -8717,3 +8973,4 @@ if (oauthError) {
       setView("auth");
     });
 })();
+

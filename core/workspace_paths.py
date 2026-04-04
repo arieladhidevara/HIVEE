@@ -165,6 +165,7 @@ def _legacy_project_doc_paths(project_dir: Path) -> List[Path]:
         "usage.md",
         "tracker.md",
         "chat-hivee.md",
+        "project-protocol.md",
         "project.md",
     ]
     out: List[Path] = []
@@ -215,6 +216,8 @@ def _remap_legacy_project_doc_rel_path(rel: str) -> str:
         "project-delegation.md": PROJECT_DELEGATION_FILE,
         "overview.md": OVERVIEW_FILE,
         "project-plan.md": PROJECT_PLAN_FILE,
+        "project-protocol.md": PROJECT_PROTOCOL_FILE,
+        "project-protocol.mdx": PROJECT_PROTOCOL_FILE,
         "usage.md": USAGE_FILE,
         "tracker.md": TRACKER_FILE,
         "chat-hivee.md": CHAT_HIVEE_FILE,

@@ -199,7 +199,7 @@
                     https://hivee.up.railway.app/new-user/AGENT-SECURITY-RULES.MD
                   </a>
                 </p>
-                <button id="btn_copy_agent_url" class="secondary" type="button">Copy Setup URL</button>
+                <button id="btn_copy_agent_url" class="secondary" type="button">Copy Setup Prompt</button>
               </div>
             </div>
 
@@ -405,7 +405,10 @@
                       </div>
                     </div>
                     <div class="exec-pipeline-footer">
-                      <strong id="detail_progress_label">0%</strong>
+                      <div class="exec-progress-wrap">
+                        <div class="exec-progress-track"><div id="detail_progress_bar" class="exec-progress-bar" style="width:0%"></div></div>
+                        <strong id="detail_progress_label">0%</strong>
+                      </div>
                       <span id="detail_execution_status" class="helper">Status: idle</span>
                     </div>
                     <div class="action-row">
@@ -450,63 +453,20 @@
                 <div class="title-row">
                   <h4>Tasks</h4>
                   <div class="action-row">
-                    <button id="btn_task_map_toggle" class="secondary" type="button" onclick="toggleTaskMapView()">Map View</button>
+                    <button id="btn_new_task" class="secondary" type="button">+ New Task</button>
                     <button id="btn_task_refresh" class="secondary" type="button">Refresh</button>
                   </div>
                 </div>
-                <div id="task_map_wrapper" class="task-map-wrapper hidden">
-                  <div class="task-map-header">
-                    <h5>Task Map</h5>
-                    <button class="secondary" type="button" onclick="toggleTaskMapView()" style="min-height:26px;padding:4px 10px;font-size:11px;">List View</button>
+                <!-- Interactive horizontal dependency DAG -->
+                <div id="task_dag_wrap" class="task-dag-wrap">
+                  <div id="task_dag_viewport" class="task-dag-viewport">
+                    <div id="task_dag_canvas" class="task-dag-canvas">
+                      <svg id="task_dag_svg" class="task-dag-svg" overflow="visible" aria-hidden="true"></svg>
+                      <div id="task_dag_nodes" class="task-dag-nodes"></div>
+                    </div>
                   </div>
-                  <div id="task_map_body" class="task-map-body"></div>
+                  <p class="task-dag-hint">Double-click to add &middot; Drag from &rarr; port to connect</p>
                 </div>
-                <form id="form_task_create" class="task-create-form">
-                  <input id="task_new_title" type="text" placeholder="New task title" maxlength="160" required>
-                  <select id="task_new_priority">
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                    <option value="urgent">Urgent</option>
-                    <option value="low">Low</option>
-                  </select>
-                  <select id="task_new_assignee">
-                    <option value="">Unassigned</option>
-                  </select>
-                  <button id="btn_task_create" type="submit">Add Task</button>
-                </form>
-                <div class="task-blueprint-form">
-                  <select id="task_blueprint_select">
-                    <option value="">Select workflow blueprint...</option>
-                  </select>
-                  <select id="task_blueprint_assignee">
-                    <option value="">Assignee (optional)</option>
-                  </select>
-                  <button id="btn_task_apply_blueprint" class="secondary" type="button">Apply Workflow</button>
-                </div>
-                <div class="task-toolbar">
-                  <label for="task_filter_status">Status</label>
-                  <select id="task_filter_status">
-                    <option value="">All status</option>
-                    <option value="todo">To Do</option>
-                    <option value="in_progress">In Progress</option>
-                    <option value="blocked">Blocked</option>
-                    <option value="review">Review</option>
-                    <option value="done">Done</option>
-                  </select>
-                  <label for="task_filter_priority">Priority</label>
-                  <select id="task_filter_priority">
-                    <option value="">All priority</option>
-                    <option value="urgent">Urgent</option>
-                    <option value="high">High</option>
-                    <option value="medium">Medium</option>
-                    <option value="low">Low</option>
-                  </select>
-                  <label for="task_filter_assignee">Assignee</label>
-                  <select id="task_filter_assignee">
-                    <option value="">All assignees</option>
-                  </select>
-                </div>
-                <label class="task-inline-toggle"><input id="task_include_closed" type="checkbox"> Show completed tasks</label>
                 <p id="tasks_msg" class="helper"></p>
                 <div id="project_tasks_list" class="task-list"></div>
               </div>
@@ -804,6 +764,46 @@
         </aside>
       </section>
 
+      <!-- New Task Dialog -->
+      <dialog id="new_task_dialog" class="ntask-dialog">
+        <div class="ntask-inner">
+          <div class="ntask-header">
+            <h3>New Task</h3>
+            <button class="modal-close-btn" type="button" id="btn_ntask_close" aria-label="Close">
+              <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div class="ntask-body">
+            <label class="field-label" for="ntask_title">Task Title</label>
+            <input id="ntask_title" type="text" placeholder="What needs to be done?" maxlength="220" autocomplete="off">
+            <div class="ntask-row">
+              <div class="ntask-col">
+                <label class="field-label" for="ntask_assignee">Assign to</label>
+                <select id="ntask_assignee"><option value="">Unassigned</option></select>
+              </div>
+              <div class="ntask-col">
+                <label class="field-label" for="ntask_priority">Priority</label>
+                <select id="ntask_priority">
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="urgent">Urgent</option>
+                  <option value="low">Low</option>
+                </select>
+              </div>
+            </div>
+            <label class="field-label" for="ntask_description">Description <span class="field-hint">Leave empty — main agent will define this</span></label>
+            <textarea id="ntask_description" placeholder="Optional. If blank, the main agent will fill in the details during execution." rows="3"></textarea>
+          </div>
+          <div class="ntask-footer">
+            <p id="ntask_msg" class="helper"></p>
+            <div class="ntask-actions">
+              <button class="secondary" type="button" id="btn_ntask_cancel">Cancel</button>
+              <button type="button" id="btn_ntask_submit">Add Task</button>
+            </div>
+          </div>
+        </div>
+      </dialog>
+
       <!-- Agent Detail Modal -->
       <dialog id="agent_detail_modal" class="agent-modal">
         <div class="agent-modal-inner">
@@ -1021,3 +1021,4 @@
   <script src="/static/app.js?v=20260403a"></script>
 </body>
 </html>
+

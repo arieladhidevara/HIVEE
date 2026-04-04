@@ -438,6 +438,7 @@ def register_routes(app: FastAPI) -> None:
                         PROJECT_DELEGATION_FILE,
                         OVERVIEW_FILE,
                         PROJECT_PLAN_FILE,
+                        PROJECT_PROTOCOL_FILE,
                         "agents/ROLES.md",
                         SETUP_CHAT_HISTORY_FILE,
                         SETUP_CHAT_HISTORY_COMPAT_FILE,

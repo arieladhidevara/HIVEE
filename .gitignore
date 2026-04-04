@@ -20,3 +20,6 @@ TEMP/
 Thumbs.db
 .vscode/
 
+# Local dev seed script — never commit
+seed_local.py
+

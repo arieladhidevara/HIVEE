@@ -1,4 +1,6 @@
 from hivee_shared import *
+import ipaddress
+from urllib.parse import urlparse
 
 def register_routes(app: FastAPI) -> None:
     def _normalize_openclaw_base_url(raw_value: Any) -> str:
@@ -8,6 +10,39 @@ def register_routes(app: FastAPI) -> None:
         if not (base.startswith("http://") or base.startswith("https://")):
             raise HTTPException(400, "openclaw_base_url must start with http:// or https://")
         return base
+    def _openclaw_public_url_help() -> str:
+        return (
+            "OpenClaw base URL must be publicly reachable (HTTPS/domain). "
+            "If not public yet, set it up based on your system: "
+            "Linux/macOS -> SSH reverse tunnel or public reverse proxy; "
+            "Windows -> cloudflared/ngrok or SSH tunnel via PowerShell/WSL; "
+            "Docker/NAS -> publish OpenClaw port and route it through a public HTTPS domain/proxy."
+        )
+
+    def _ensure_openclaw_base_url_public(base_url: str) -> None:
+        parsed = urlparse(str(base_url or "").strip())
+        host = str(parsed.hostname or "").strip().lower()
+        if not host:
+            raise HTTPException(400, f"openclaw_base_url host is invalid. {_openclaw_public_url_help()}")
+
+        blocked_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"}
+        if host in blocked_hosts or host.endswith(".local"):
+            raise HTTPException(400, f"openclaw_base_url is local-only. {_openclaw_public_url_help()}")
+
+        try:
+            ip = ipaddress.ip_address(host)
+        except Exception:
+            return
+
+        if (
+            ip.is_loopback
+            or ip.is_private
+            or ip.is_link_local
+            or ip.is_unspecified
+            or ip.is_reserved
+            or ip.is_multicast
+        ):
+            raise HTTPException(400, f"openclaw_base_url is not publicly reachable. {_openclaw_public_url_help()}")
 
     def _normalize_openclaw_ws_url(raw_value: Any) -> Optional[str]:
         ws = str(raw_value or "").strip().rstrip("/")
@@ -166,22 +201,23 @@ def register_routes(app: FastAPI) -> None:
         openclaw_ws_url = _normalize_openclaw_ws_url(payload.openclaw_ws_url)
         openclaw_api_key = str(payload.openclaw_api_key or payload.openclaw_auth_token or "").strip()
         openclaw_name = str(payload.openclaw_name or "").strip()[:180] or None
-        source = _normalize_openclaw_stage_source(payload.source) or "agent_staged"
+        source = _normalize_openclaw_stage_source(payload.source) or ("agent_staged" if openclaw_api_key else "agent_base_hint")
 
         if not openclaw_base_url:
             raise HTTPException(400, "openclaw_base_url is required")
-        if not openclaw_api_key:
-            raise HTTPException(400, "openclaw_api_key or openclaw_auth_token is required")
+        _ensure_openclaw_base_url_public(openclaw_base_url)
 
-        health = await openclaw_health(openclaw_base_url, openclaw_api_key)
-        if not health.get("ok"):
-            raise HTTPException(
-                400,
-                {
-                    "message": "Could not verify OpenClaw health while staging",
-                    "details": health,
-                },
-            )
+        token_provided = bool(openclaw_api_key)
+        if token_provided:
+            health = await openclaw_health(openclaw_base_url, openclaw_api_key)
+            if not health.get("ok"):
+                raise HTTPException(
+                    400,
+                    {
+                        "message": "Could not verify OpenClaw health while staging",
+                        "details": health,
+                    },
+                )
 
         conn = db()
         env_row = conn.execute(
@@ -266,7 +302,7 @@ def register_routes(app: FastAPI) -> None:
             stage_expires_at=stage_expires_at,
             claim_url=claim_url,
             claim_code_expires_at=claim_code_expires_at,
-            message="OpenClaw config staged. Share claim_url so owner can sign up/login and claim.",
+            message=("OpenClaw base URL + token staged. Share claim_url so owner can sign up/login and claim." if token_provided else "OpenClaw base URL staged. Share claim_url so owner can sign up/login and fill API key/token on claim page."),
         )
 
     @app.get("/api/a2a/environments/{env_id}/claim/context", response_model=A2AEnvironmentClaimContextOut)
@@ -358,19 +394,20 @@ def register_routes(app: FastAPI) -> None:
             stage_name = str(stage_row["openclaw_name"] or "").strip() or None
             stage_base = str(stage_row["openclaw_base_url"] or "").strip() or None
             stage_ws = str(stage_row["openclaw_ws_url"] or "").strip() or None
-            label = stage_name or stage_base or "staged OpenClaw"
-            return A2AEnvironmentClaimContextOut(
-                ok=True,
-                environment_id=env_id,
-                claim_valid=True,
-                claim_expires_at=claim_expires_at,
-                staged_openclaw_ready=True,
-                staged_openclaw_name=stage_name,
-                staged_openclaw_base_url=stage_base,
-                staged_openclaw_ws_url=stage_ws,
-                requires_manual_openclaw=False,
-                message=f"OpenClaw is already staged by agent ({label}).",
-            )
+            if stage_base:
+                label = stage_name or stage_base
+                return A2AEnvironmentClaimContextOut(
+                    ok=True,
+                    environment_id=env_id,
+                    claim_valid=True,
+                    claim_expires_at=claim_expires_at,
+                    staged_openclaw_ready=False,
+                    staged_openclaw_name=stage_name,
+                    staged_openclaw_base_url=stage_base,
+                    staged_openclaw_ws_url=stage_ws,
+                    requires_manual_openclaw=True,
+                    message=f"OpenClaw base URL is prefilled from agent ({label}). Enter API key/token manually.",
+                )
 
         return A2AEnvironmentClaimContextOut(
             ok=True,
@@ -382,7 +419,7 @@ def register_routes(app: FastAPI) -> None:
             staged_openclaw_base_url=None,
             staged_openclaw_ws_url=None,
             requires_manual_openclaw=True,
-            message="Agent has not staged OpenClaw yet. Enter OpenClaw base URL + API key manually.",
+            message="Enter OpenClaw base URL + API key/token manually to claim this environment. If OpenClaw is local, set up SSH/public gateway first.",
         )
 
     @app.post("/api/a2a/environments/claim/complete", response_model=A2AEnvironmentClaimCompleteOut)
@@ -402,9 +439,8 @@ def register_routes(app: FastAPI) -> None:
         if not env_id or not claim_code:
             raise HTTPException(400, "environment_id and code are required")
 
-        manual_credentials_provided = bool(openclaw_base_url and openclaw_api_key)
-        if (openclaw_base_url and not openclaw_api_key) or (openclaw_api_key and not openclaw_base_url):
-            raise HTTPException(400, "Provide both openclaw_base_url and openclaw_api_key together")
+        if not openclaw_api_key:
+            raise HTTPException(400, "openclaw_api_key is required")
 
         if mode in {"signup", "login"} and not email:
             raise HTTPException(400, "email is required")
@@ -457,30 +493,29 @@ def register_routes(app: FastAPI) -> None:
         consumed_stage_id: Optional[str] = None
         connection_source = "manual"
 
-        if not manual_credentials_provided:
-            if not stage_row:
-                conn.close()
-                raise HTTPException(
-                    400,
-                    "OpenClaw config is missing. Ask the agent to stage OpenClaw first or provide openclaw_base_url + openclaw_api_key manually.",
-                )
+        if not resolved_base_url and stage_row:
             try:
-                resolved_api_key = _unseal_secret_value(str(stage_row["api_key_encrypted"] or ""))
-            except Exception:
-                conn.close()
-                raise HTTPException(400, "Staged OpenClaw token is invalid. Ask agent to restage OpenClaw.")
-            resolved_base_url = _normalize_openclaw_base_url(stage_row["openclaw_base_url"])
-            try:
-                resolved_ws_url = _normalize_openclaw_ws_url(stage_row["openclaw_ws_url"])
+                resolved_base_url = _normalize_openclaw_base_url(stage_row["openclaw_base_url"])
             except HTTPException:
-                resolved_ws_url = None
-            resolved_name = openclaw_name or (str(stage_row["openclaw_name"] or "").strip() or None)
-            consumed_stage_id = str(stage_row["id"])
-            connection_source = str(stage_row["source"] or "").strip() or "agent_staged"
+                resolved_base_url = ""
+            if not resolved_ws_url:
+                try:
+                    resolved_ws_url = _normalize_openclaw_ws_url(stage_row["openclaw_ws_url"])
+                except HTTPException:
+                    resolved_ws_url = None
+            if not resolved_name:
+                resolved_name = str(stage_row["openclaw_name"] or "").strip() or None
+            consumed_stage_id = str(stage_row["id"] or "").strip() or None
+            connection_source = "agent_base_url"
 
         if not resolved_base_url:
             conn.close()
-            raise HTTPException(400, "openclaw_base_url is required")
+            raise HTTPException(400, "openclaw_base_url is required (or agent must stage base URL first)")
+        try:
+            _ensure_openclaw_base_url_public(resolved_base_url)
+        except HTTPException:
+            conn.close()
+            raise
         if not resolved_api_key:
             conn.close()
             raise HTTPException(400, "openclaw_api_key is required")
@@ -1230,3 +1265,4 @@ def register_routes(app: FastAPI) -> None:
             ],
         }
     
+

@@ -744,7 +744,7 @@ async def openclaw_health(base_url: str, api_key: str) -> Dict[str, Any]:
                 return {"ok": True, "path": p, "status": status, "payload": payload}
         return {
             "ok": False,
-            "error": "Could not reach health endpoint on common paths. Check base_url/port/firewall/path prefix.",
+            "error": "Could not reach health endpoint on common paths. Check base_url/port/firewall/path prefix. If OpenClaw is local, expose it via SSH/public tunnel first.",
         }
 
 async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
@@ -1475,7 +1475,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         f"{context}\n\n"
         f"{roster}\n\n"
         "Task:\n"
-        f"1) Read `{SETUP_CHAT_HISTORY_FILE}` and `agents/ROLES.md`.\n"
+        f"1) Read `{SETUP_CHAT_HISTORY_FILE}`, `agents/ROLES.md`, and `{PROJECT_PROTOCOL_FILE}`.\n"
         f"2) Write or replace `{PROJECT_INFO_FILE}` with complete project context.\n"
         "3) Include: project summary, user requirements, constraints, assumptions, role responsibilities, execution prerequisites, and open questions.\n"
         "4) If some information is missing, make reasonable assumptions and clearly mark them under `Assumptions`.\n"
@@ -1490,6 +1490,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
             "agents/ROLES.md",
             OVERVIEW_FILE,
             PROJECT_SETUP_FILE,
+            PROJECT_PROTOCOL_FILE,
             SETUP_CHAT_HISTORY_FILE,
             SETUP_CHAT_HISTORY_COMPAT_FILE,
         ],
@@ -1687,6 +1688,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
             PROJECT_INFO_FILE,
             OVERVIEW_FILE,
             PROJECT_SETUP_FILE,
+            PROJECT_PROTOCOL_FILE,
             "agents/ROLES.md",
             SETUP_CHAT_HISTORY_FILE,
             SETUP_CHAT_HISTORY_COMPAT_FILE,
@@ -1818,6 +1820,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             OVERVIEW_FILE,
             PROJECT_PLAN_FILE,
             PROJECT_SETUP_FILE,
+            PROJECT_PROTOCOL_FILE,
             "agents/ROLES.md",
             SETUP_CHAT_HISTORY_FILE,
             SETUP_CHAT_HISTORY_COMPAT_FILE,
@@ -1916,7 +1919,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
         row_item = by_id.get(aid) or {}
         role = str(row_item.get("role") or "").strip() or "Collaborate based on project plan."
         default_task = (
-            f"Read {PROJECT_INFO_FILE}, {OVERVIEW_FILE}, {PROJECT_PLAN_FILE}, and {PROJECT_DELEGATION_FILE}, then execute assigned scope and report progress in chat.\n"
+            f"Read {PROJECT_INFO_FILE}, {PROJECT_PROTOCOL_FILE}, {OVERVIEW_FILE}, {PROJECT_PLAN_FILE}, and {PROJECT_DELEGATION_FILE}, then execute assigned scope and report progress in chat.\n"
             f"- Follow dependency order from {PROJECT_DELEGATION_FILE}.\n"
             "- If your output unblocks another agent, mention them explicitly as @agent_id in chat_update so handoff happens in chat.\n"
             "- Save concrete artifacts into project files using output_files.\n"
@@ -2018,6 +2021,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 PROJECT_DELEGATION_FILE,
                 PROJECT_PLAN_FILE,
                 OVERVIEW_FILE,
+                PROJECT_PROTOCOL_FILE,
                 "agents/ROLES.md",
                 SETUP_CHAT_HISTORY_FILE,
             ],
@@ -2060,7 +2064,8 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "- Persist deliverables in Hivee project files; do not keep final-only copies on provider/local runtime server.\n"
             + "- Use relative paths inside this project only.\n"
             + "- Use exact IDs from roster when mentioning other agents.\n"
-            + "- Mention handoff needs in chat_update with @agent_id if needed.\n\n"
+            + "- Mention handoff needs in chat_update with @agent_id if needed.\n"
+            + f"- Follow `{PROJECT_PROTOCOL_FILE}` for delegation, mention, and status update rules.\n\n"
             + "- If blocked by user approval/input or planned pit stop, set requires_user_input=true and explain pause_reason.\n"
             + "- If user says SKIP for missing info, proceed with assumptions and state them briefly in chat_update.\n"
             + "Assigned task:\n"
@@ -2578,3 +2583,4 @@ def _read_project_execution_state(project_id: str) -> Tuple[str, int]:
     return _coerce_execution_status(row["execution_status"]), _clamp_progress(row["progress_pct"])
 
 __all__ = [name for name in globals() if not name.startswith('__')]
+

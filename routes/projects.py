@@ -294,7 +294,9 @@ def _build_external_agent_invite_markdown(
         f"- Expires At: {format_ts(expires_at)}\n\n"
         "## Step 1 - If You Don't Have Hivee Account Yet\n"
         f"Read and follow: {setup_doc_url}\n"
-        f"Security rules: {security_doc_url}\n\n"
+        f"Security rules: {security_doc_url}\n"
+        "OpenClaw base URL must be publicly reachable (not localhost/private IP).\n"
+        "If not public yet, set it up based on your system (Linux/macOS SSH/proxy, Windows cloudflared/ngrok/SSH, Docker/NAS public HTTPS proxy).\n\n"
         "## Step 2 - Open Portal + Login\n"
         "Open the portal URL above. Login or sign up first.\n"
         "The portal can auto-join after authentication if your account has one connection.\n\n"
@@ -335,7 +337,8 @@ def _build_external_invite_email_template(
         "3) Match portal code:\n"
         f"{code_text}\n\n"
         "If you do not have a Hivee account yet, register first and complete setup, then reopen the same portal URL.\n"
-        "Setup guide: https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD\n\n"
+        "Setup guide: https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD\n"
+        "OpenClaw base URL must be publicly reachable (not localhost/private IP). If it is local/private, set up tunnel/proxy based on your system first.\n\n"
         "Thanks."
     )
     to_value = str(target_email or "").strip()
@@ -2272,6 +2275,7 @@ def register_routes(app: FastAPI) -> None:
                 f"- Project: {str(row['project_title'] or '')}\n"
                 f"- Invite Status: {status}\n"
                 "- Setup Guide: https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD\n"
+                "- OpenClaw base URL must be public. If local/private, set up SSH/public tunnel/proxy first.\n"
             )
         if status in {"expired", "revoked"}:
             text = (
@@ -2980,3 +2984,4 @@ def register_routes(app: FastAPI) -> None:
                     yield "event: ping\ndata: {}\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
+
