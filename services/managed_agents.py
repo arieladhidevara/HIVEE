@@ -67,6 +67,15 @@ async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: 
                 "warning": "Agent list resolved from health payload fallback.",
                 "original_error": detail_to_text(probe.get("error") or probe.get("details") or probe)[:1000],
             }
+        elif fallback_health.get("ok"):
+            probe = {
+                "ok": True,
+                "transport": "health-only",
+                "path": str(fallback_health.get("path") or ""),
+                "agents": [],
+                "warning": "Agent list endpoint unavailable; using health-only bootstrap fallback.",
+                "original_error": detail_to_text(probe.get("error") or probe.get("details") or probe)[:1000],
+            }
         else:
             probe_error = detail_to_text(probe.get("error") or probe.get("details") or probe)[:1200]
             probe_hint = detail_to_text(probe.get("hint") or "")[:400]

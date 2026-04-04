@@ -4855,9 +4855,9 @@ async function loadChatAgents() {
     connectionHealthy = Boolean(activeConnectionId);
     applyConnectionStatus();
     if (listErr) {
-      setMessage("chat_hint", `Could not load workspace agents: ${listErr}`, "error");
+      setMessage("chat_hint", `Agent list endpoint unavailable. You can still chat using default route. Detail: ${listErr}`, "");
     } else {
-      setMessage("chat_hint", "No workspace agents available. Re-bootstrap OpenClaw connection.", "error");
+      setMessage("chat_hint", "No explicit agent list available. You can still chat without @mention.", "");
     }
     return;
   }
@@ -4940,12 +4940,12 @@ async function sendChatPrototype() {
     throw new Error(msg);
   }
   if (contextMode === "workspace" && !resolved.agent) {
-    throw new Error("Workspace context requires at least one loaded agent.");
+    setMessage("chat_hint", "No agent selected. Sending via default OpenClaw route.", "");
   }
 
   const targetName = resolved.agent
     ? `${resolved.agent.name} (${resolved.agent.id})`
-    : (usingProjectContext ? "project auto route" : "main workspace agent");
+    : (usingProjectContext ? "project auto route" : "default OpenClaw route");
   appendChatMessage("user", resolved.message, `you -> ${targetName}`);
 
   const payload = {

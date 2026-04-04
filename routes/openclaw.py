@@ -487,8 +487,7 @@ def register_routes(app: FastAPI) -> None:
                     effective_agent_id = workspace_agent_ids[0]
             session_key = "main"
             if not effective_agent_id:
-                conn.close()
-                raise HTTPException(400, "No workspace agent is available. Re-run OpenClaw bootstrap.")
+                effective_agent_id = None
 
         conn.close()
         scoped_message = _compose_guardrailed_message(
