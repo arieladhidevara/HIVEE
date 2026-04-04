@@ -850,6 +850,17 @@ def _is_credit_or_max_token_error(detail: Any) -> bool:
     ]
     return any(m in low for m in markers)
 
+
+def _is_ws_device_identity_error(detail: Any) -> bool:
+    low = detail_to_text(detail).lower()
+    if not low:
+        return False
+    if "control_ui_device_identity_required" in low:
+        return True
+    if "control ui requires device identity" in low:
+        return True
+    return ("device identity" in low) and ("secure context" in low or "https" in low or "localhost" in low)
+
 async def openclaw_chat(
     base_url: str,
     api_key: str,
@@ -1068,6 +1079,33 @@ async def openclaw_ws_chat(
             ),
         }
 
+
+    async def _retry_http_on_ws_connect_requirement(reason: Any, ws_path: str) -> Optional[Dict[str, Any]]:
+        if not _is_ws_device_identity_error(reason):
+            return None
+        http_res = await openclaw_chat(
+            base_url=base_url,
+            api_key=api_key,
+            message=message,
+            agent_id=agent_id,
+        )
+        if http_res.get("ok"):
+            return {
+                "ok": True,
+                "transport": "http-fallback",
+                "path": str(http_res.get("path") or ws_path),
+                "text": http_res.get("text"),
+                "response": http_res.get("response"),
+                "fallback_reason": detail_to_text(reason)[:1000],
+            }
+        return {
+            "ok": False,
+            "path": ws_path,
+            "error": detail_to_text(reason)[:1500] or "WS connect rejected",
+            "details": http_res.get("error") or http_res.get("details"),
+            "hint": "OpenClaw WS connect requires device identity/secure context on this gateway, and HTTP fallback also failed.",
+        }
+
     async with httpx.AsyncClient(follow_redirects=True) as http:
         try:
             await http.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=10)
@@ -1096,7 +1134,7 @@ async def openclaw_ws_chat(
                 "maxProtocol": 3,
                 # Match OpenClaw webchat client schema expected by gateway
                 "client": {
-                    "id": "openclaw-control-ui",
+                    "id": "hivee-server-bridge",
                     "version": "vdev",
                     "platform": "web",
                     "mode": "webchat",
@@ -1153,14 +1191,21 @@ async def openclaw_ws_chat(
                     frames.append(payload)
                     if payload.get("type") == "res" and payload.get("id") == connect_id:
                         if payload.get("ok") is False or payload.get("error"):
+                            connect_reason = payload.get("error") or payload
+                            retry = await _retry_http_on_ws_connect_requirement(connect_reason, ws_url)
+                            if retry:
+                                return retry
                             return {
                                 "ok": False,
                                 "path": ws_url,
-                                "error": f"WS connect rejected: {payload.get('error') or payload}",
+                                "error": f"WS connect rejected: {connect_reason}",
                             }
                         connected = True
                         break
                     if payload.get("type") == "err" and payload.get("id") == connect_id:
+                        retry = await _retry_http_on_ws_connect_requirement(payload, ws_url)
+                        if retry:
+                            return retry
                         return {"ok": False, "path": ws_url, "error": f"WS connect error: {payload}"}
                 if not connected:
                     errors.append(f"{ws_url}: no connect ack")
@@ -1297,6 +1342,7 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
     ws_origin = _gateway_origin(base_url)
     errors: List[str] = []
 
+
     async with httpx.AsyncClient(follow_redirects=True) as http:
         try:
             await http.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=10)
@@ -1334,7 +1380,7 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                     "params": {
                         "minProtocol": 3,
                         "maxProtocol": 3,
-                        "client": {"id": "openclaw-control-ui", "version": "vdev", "platform": "web", "mode": "webchat"},
+                        "client": {"id": "hivee-server-bridge", "version": "vdev", "platform": "web", "mode": "webchat"},
                         "auth": {"token": api_key},
                         "role": "operator",
                         "scopes": ["operator.read", "operator.write"],
