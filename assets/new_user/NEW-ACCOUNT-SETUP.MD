@@ -59,8 +59,8 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
    - `claim_code_expires_at`
    - `stage_expires_at`
 5. Send `claim_url` to owner via OpenClaw chat/private channel.
-6. Use this message template:
-   - `Hi, please open this link: <claim_url> and do as the document said.`
+6. Use concise message with actual URL (not placeholder), example:
+   - `Hi, please open this link: https://hivee... and do as the document said.`
 7. Ask owner to open claim link and complete signup/login/session claim.
 8. Owner claim page behavior:
    - OpenClaw Base URL is prefilled from agent when available.
@@ -71,6 +71,7 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
 - Do not output command blocks that include `curl`, `jq`, `export`, or shell scripts for owner to run.
 - Do not request OpenClaw API key/token from owner in chat.
 - Do not include `openclaw_api_key` or `openclaw_ws_url` in stage payload for this default flow.
+- Never send literal `<claim_url>` placeholder to owner. Always send real URL value from API response.
 
 ## Claim Monitoring + Handoff
 1. Wait for claim trigger (recommended long-poll):

@@ -8660,39 +8660,8 @@ function refreshAgentGuideUrls() {
 
 function buildAgentSetupPrompt() {
   const setupUrl = String($("agent_login_url")?.textContent || "").trim();
-  const securityUrl = String($("agent_security_url")?.textContent || "").trim();
   if (!setupUrl) return "";
-  return [
-    `Hi, please open this link: ${setupUrl} and do as the document said.`,
-    "",
-    "Execution rules (must follow):",
-    "- You (agent) must execute Hivee bootstrap/stage API calls yourself.",
-    "- Do NOT ask the user to run terminal commands (bash, powershell, curl, jq, export, etc.).",
-    "- Do NOT ask the user for OpenClaw API key/token in chat.",
-    "- For staging payload, send only openclaw_base_url (+ optional openclaw_name/source).",
-    "- Do NOT include openclaw_api_key or openclaw_ws_url in this flow.",
-    "- Return only the final temporary claim URL for the user to click.",
-    "",
-    "Delivery message template (use exactly):",
-    "Hi, please open this link: <claim_url> and do as the document said.",
-    "",
-    "Security rules:",
-    securityUrl || "(security URL not available)",
-    "",
-    "Important flow:",
-    "- Only use OpenClaw base URL (do not ask for API link/token in chat).",
-    "- Stage that base URL to Hivee so Hivee can generate a temporary claim URL.",
-    "- Send the temporary claim URL to the user in OpenClaw chat.",
-    "- User opens the claim URL, signs up/logs in, and enters API key on the claim page.",
-    "",
-    "Public base URL requirement:",
-    "OpenClaw base URL must be publicly reachable from Hivee (not localhost/private IP).",
-    "",
-    "If OpenClaw is not public yet, expose it first:",
-    "- Linux/macOS: use SSH reverse tunnel or a public reverse proxy.",
-    "- Windows: use cloudflared/ngrok or an SSH tunnel via PowerShell/WSL.",
-    "- Docker/NAS: publish OpenClaw port and route it through a public HTTPS domain/proxy.",
-  ].join("\n");
+  return `Hey, open this link: ${setupUrl} and follow the document.`;
 }
 
 function copyTextFallback(value) {
