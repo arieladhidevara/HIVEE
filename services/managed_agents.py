@@ -50,6 +50,15 @@ async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: 
     main_agent_name: Optional[str] = None
     discovered_agents: List[Dict[str, Any]] = []
     probe = await openclaw_list_agents(base_url, api_key)
+    if not probe.get("ok"):
+        return {
+            "ok": False,
+            "error": "Could not verify OpenClaw agent endpoint. Check base_url and API key/token.",
+            "main_agent_id": None,
+            "main_agent_name": None,
+            "agent_probe": probe,
+            "agents": [],
+        }
     if probe.get("ok"):
         discovered_agents = [dict(a) for a in (probe.get("agents") or []) if isinstance(a, dict)]
         picked = _pick_main_agent(probe.get("agents") or [])

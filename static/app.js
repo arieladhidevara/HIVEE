@@ -8836,11 +8836,43 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
   }
 
   renderConnections(connections);
-  setView("home");
   await loadAccountProfile({ silent: true }).catch(() => {});
-  await ensureWorkspaceForActiveConnection({ silent: true }).catch((e) => {
-    setMessage("config_msg", detailToText(e), "error");
-  });
+
+  const connectionCandidates = [];
+  if (activeConnectionId) connectionCandidates.push(activeConnectionId);
+  for (const c of connectionsCache) {
+    const cid = String(c?.id || "").trim();
+    if (cid && !connectionCandidates.includes(cid)) connectionCandidates.push(cid);
+  }
+
+  let workspaceReady = false;
+  let workspaceErr = "";
+  for (const cid of connectionCandidates) {
+    activeConnectionId = cid;
+    const sel = $("home_connections");
+    if (sel) sel.value = cid;
+    renderConfigConnectionDetails();
+    try {
+      await ensureWorkspaceForActiveConnection({ silent: true });
+      workspaceReady = true;
+      break;
+    } catch (e) {
+      workspaceErr = detailToText(e);
+    }
+  }
+
+  if (!workspaceReady) {
+    connectionHealthy = false;
+    applyWorkspacePolicy(null);
+    setView("setup");
+    setMessage("setup_msg", "OpenClaw connection check failed. Use a valid base URL and API key to continue.", "error");
+    if (workspaceErr) setMessage("config_msg", workspaceErr, "error");
+    return;
+  }
+
+  connectionHealthy = true;
+  applyConnectionStatus();
+  setView("home");
   await loadConnectionPolicy(activeConnectionId).catch(() => {});
   await loadWorkspaceTree().catch(() => {});
   await loadWorkspaceFiles(DEFAULT_OWNER_FILES_PATH).catch(() => {});

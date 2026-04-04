@@ -583,7 +583,7 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(
                 400,
                 {
-                    "message": "OpenClaw verified, but workspace bootstrap failed during claim",
+                    "message": "OpenClaw validation/bootstrap failed during claim",
                     "details": bootstrap,
                 },
             )

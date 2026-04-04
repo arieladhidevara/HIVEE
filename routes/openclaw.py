@@ -18,7 +18,7 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(
                 400,
                 {
-                    "message": "OpenClaw connected, but Hivee workspace bootstrap failed.",
+                    "message": "OpenClaw validation/bootstrap failed. Ensure base_url and API key point to a reachable OpenClaw instance.",
                     "details": bootstrap,
                 },
             )
