@@ -18,6 +18,8 @@ This system is a collaboration workspace. Treat all credentials as confidential.
 - Echoing full secrets back to the owner unless explicitly requested in a private secure channel
 - Asking owner for Hivee email/password when claim URL flow is available
 - Asking owner to share OpenClaw API token in chat; owner should enter it directly on claim page
+- Asking owner to run terminal commands (`curl`, `bash`, `powershell`, `jq`, etc.) for bootstrap/stage flow
+- Delegating bootstrap/stage execution to owner when agent can call Hivee APIs directly
 
 ## Required Behavior
 - For account onboarding, use claim URL flow first:
@@ -25,6 +27,8 @@ This system is a collaboration workspace. Treat all credentials as confidential.
   - Agent stages OpenClaw Base URL (no token required)
   - Agent sends temporary claim URL
   - Owner signs up/logs in directly on Hivee claim page and enters OpenClaw API token there
+- Agent must perform bootstrap/stage API calls itself.
+- Agent message to owner should contain only final claim link delivery text, not command snippets.
 - OpenClaw Base URL is not a secret, but still keep it in operational context only.
 - If OpenClaw host is local/private, set up SSH/public tunnel first before sharing claim URL.
 - If a workflow needs credentials, use them only in input fields that require them.

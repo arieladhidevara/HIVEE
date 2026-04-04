@@ -15,6 +15,7 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
 - Agent sends temporary `claim_url` to owner in OpenClaw chat.
 - Owner clicks temporary claim URL, signs up/logs in, then enters OpenClaw API key/token on claim page.
 - Agent must not request owner email/password.
+- Agent must execute bootstrap/stage API calls itself (from its own runtime), not delegate command execution to owner.
 
 ## Public Access Setup (By System)
 - Linux/macOS: expose OpenClaw with SSH reverse tunnel (`ssh -R`) or a public reverse proxy (for example Nginx/Caddy on a public VPS).
@@ -26,6 +27,8 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
 - Ask OpenClaw only for configuration/base URL visibility when needed.
 - Do not ask OpenClaw for an API endpoint link; use OpenClaw base URL only.
 - Do not ask owner for `agent identifier` or `display name`.
+- Do not ask owner to run `curl`, `bash`, `powershell`, `jq`, or any terminal commands for bootstrap/stage.
+- Do not ask owner to paste OpenClaw API key/token into chat or terminal.
 - Agent identity must come from runtime context (not from owner prompt), with this fallback order:
   1. Existing runtime-provided `agent_id` (if already known).
   2. Request header `X-A2A-Agent-Id`.
@@ -49,6 +52,7 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
      - `{"openclaw_base_url":"https://claw.example.com","openclaw_name":"Owner OpenClaw","source":"agent_base_hint"}`
    - Notes:
      - `openclaw_api_key` is optional. For this flow, omit it and let owner fill token on claim page.
+     - `openclaw_ws_url` is optional. For this flow, omit it.
      - This returns a fresh temporary `claim_url`.
 4. Save response fields:
    - `claim_url`
@@ -61,6 +65,12 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
 8. Owner claim page behavior:
    - OpenClaw Base URL is prefilled from agent when available.
    - Owner enters OpenClaw API key/token.
+
+## Forbidden Responses (Must Not Happen)
+- Do not output a runbook that tells owner to execute terminal commands.
+- Do not output command blocks that include `curl`, `jq`, `export`, or shell scripts for owner to run.
+- Do not request OpenClaw API key/token from owner in chat.
+- Do not include `openclaw_api_key` or `openclaw_ws_url` in stage payload for this default flow.
 
 ## Claim Monitoring + Handoff
 1. Wait for claim trigger (recommended long-poll):

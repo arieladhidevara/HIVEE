@@ -13,6 +13,7 @@ let expandedTaskRowIds = new Set(); // task rows showing edit controls
 let dagDragState = null;  // { fromId, line } during connection drag
 let dagPan = { x: 0, y: 0 }; // persists across dag re-renders
 let dagZoom = 1;
+let pmapNodePositions = {}; // nodeId → {x,y}, user-dragged positions for project map
 let streamAbort = null;
 
 let connectionsCache = [];
@@ -280,6 +281,7 @@ function clearAuthSession() {
   expandedTaskRowIds = new Set();
   dagPan = { x: 0, y: 0 };
   dagZoom = 1;
+  pmapNodePositions = {};
   taskBlueprints = [];
   projectTasks = [];
   projectActivityEvents = [];
@@ -1790,7 +1792,6 @@ function activityFilterValue() {
 
 function renderProjectTaskList() {
   hydrateNewTaskAssigneeSelect();
-  renderTaskDag();
   const list = $("project_tasks_list");
   if (!list) return;
 
@@ -1798,28 +1799,20 @@ function renderProjectTaskList() {
 
   list.innerHTML = "";
   if (!rows.length) {
-    list.innerHTML = '<p class="helper">No tasks yet — double-click the diagram above or click + New Task.</p>';
+    list.innerHTML = '<p class="helper">No tasks yet — click + New Task to get started.</p>';
     return;
   }
 
   for (const task of rows) {
     const taskId = String(task?.id || "").trim();
-    const checkout = task?.checkout && typeof task.checkout === "object" ? task.checkout : null;
     const statusValue = normalizeTaskStatus(task?.status);
     const priorityValue = normalizeTaskPriority(task?.priority);
-    const lockedByOther = Boolean(checkout?.is_active) && !isTaskCheckoutMine(checkout);
-    const commentState = taskCommentsState(taskId);
-    const commentsExpanded = expandedTaskCommentTaskIds.has(taskId);
-    const isExpanded = expandedTaskRowIds.has(taskId);
     const assignee = String(task?.assignee_agent_id || "").trim();
 
     const card = document.createElement("article");
-    card.className = `task-srow${isExpanded ? " expanded" : ""}`;
+    card.className = "task-srow";
     card.dataset.taskId = taskId;
-
-    // ── Compact always-visible header ──
-    const head = document.createElement("div");
-    head.className = "task-srow-head";
+    card.title = "Click to open task details";
 
     const dot = document.createElement("button");
     dot.type = "button";
@@ -1847,55 +1840,27 @@ function renderProjectTaskList() {
     agentBadge.className = "task-srow-agent";
     agentBadge.textContent = assignee ? `@${agentShortName(assignee) || assignee.slice(0, 10)}` : "—";
 
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "task-srow-toggle";
+    openBtn.textContent = "→";
+    openBtn.title = "Open task";
+    openBtn.addEventListener("click", (e) => { e.stopPropagation(); openTaskDetailModal(taskId); });
+
     badges.appendChild(priBadge);
     badges.appendChild(agentBadge);
 
-    const toggleBtn = document.createElement("button");
-    toggleBtn.type = "button";
-    toggleBtn.className = "task-srow-toggle";
-    toggleBtn.textContent = isExpanded ? "▲" : "▼";
-    toggleBtn.title = isExpanded ? "Collapse" : "Expand";
-    toggleBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (isExpanded) expandedTaskRowIds.delete(taskId); else expandedTaskRowIds.add(taskId);
-      renderProjectTaskList();
-    });
-
-    head.appendChild(dot);
-    head.appendChild(titleEl);
-    head.appendChild(badges);
-    head.appendChild(toggleBtn);
-    card.appendChild(head);
-
-    if (!isExpanded) {
-      list.appendChild(card);
-      continue;
-    }
-
-    // ── Expanded detail section ──
+    card.appendChild(dot);
+    card.appendChild(titleEl);
+    card.appendChild(badges);
+    card.appendChild(openBtn);
+    card.addEventListener("click", () => openTaskDetailModal(taskId));
+    list.appendChild(card);
+    /* eslint-disable no-unreachable */ if (false) {
+    const lockedByOther = false, commentsExpanded = false;
+    const commentState = taskCommentsState(taskId);
     const detail = document.createElement("div");
-    detail.className = "task-srow-detail";
-
-    // Description
-    const descText = String(task?.description || "").trim();
-    const openDeps = Number(task?.metadata?._system_dependency_open || 0);
-    const descEl = document.createElement("p");
-    descEl.className = "task-srow-desc";
-    if (openDeps > 0) {
-      descEl.textContent = `Blocked by ${openDeps} open ${openDeps === 1 ? "dependency" : "dependencies"}. ` + (descText || "");
-      descEl.classList.add("blocked-desc");
-    } else {
-      descEl.textContent = descText || "(No description — main agent will define details during execution.)";
-    }
-    detail.appendChild(descEl);
-
-    // Controls row
-    const controls = document.createElement("div");
-    controls.className = "task-srow-controls";
-
     const statusSelect = document.createElement("select");
-    statusSelect.className = "task-select";
-    for (const opt of buildTaskStatusOptions(statusValue)) statusSelect.appendChild(opt);
     statusSelect.disabled = lockedByOther;
     statusSelect.addEventListener("change", async () => {
       try { await patchProjectTask(taskId, { status: statusSelect.value }); }
@@ -2135,15 +2100,9 @@ function renderProjectTaskList() {
           commentSubmit.disabled = false;
         }
       });
-
-      commentsPanel.appendChild(commentsList);
-      commentsPanel.appendChild(commentForm);
-      detail.appendChild(commentsPanel);
-    }
-
-    card.appendChild(detail);
-    list.appendChild(card);
-  }
+    } // closes if (commentsExpanded)
+    } // end if(false) dead-code block
+  }   // end for loop
 }
 
 // ── New Task Modal ──────────────────────────────────────────────────────────
@@ -2958,6 +2917,7 @@ function showEmptyProject() {
   expandedTaskRowIds = new Set();
   dagPan = { x: 0, y: 0 };
   dagZoom = 1;
+  pmapNodePositions = {};
   taskBlueprints = [];
   projectTasks = [];
   projectActivityEvents = [];
@@ -5771,6 +5731,250 @@ function renderProgressMap() {
   nodesEl.innerHTML = "";
   svgEl.innerHTML = "";
 
+  // ── Data ──────────────────────────────────────────────────────────────────
+  const tasks   = Array.isArray(projectTasks) ? projectTasks : [];
+  const agents  = Array.isArray(selectedAssignedAgents) ? selectedAssignedAgents : [];
+  const proj    = selectedProjectData;
+  if (!proj) { nodesEl.innerHTML = '<p class="helper" style="padding:20px">No project selected.</p>'; return; }
+
+  const primaryId   = String(selectedPrimaryAgentId || agents[0]?.id || "").trim();
+  const agentById   = new Map(agents.map((a) => [String(a.id), a]));
+  const taskById    = new Map(tasks.map((t) => [String(t.id), t]));
+  const agentsWithTasks = new Set(tasks.map((t) => String(t.assignee_agent_id || "")).filter(Boolean));
+  const relevantAgentIds = [...new Set([primaryId, ...agentsWithTasks].filter(Boolean))];
+
+  // ── Node list (type: agent | task) ────────────────────────────────────────
+  const nodes = [];
+  for (const aid of relevantAgentIds) {
+    const agent = agentById.get(aid);
+    nodes.push({ id: `agent:${aid}`, type: "agent", label: String(agent?.name || aid).slice(0, 18),
+      sub: aid === primaryId ? "Main Agent" : (agent?.role || "Agent"), agentId: aid, w: 148, h: 48 });
+  }
+  for (const task of tasks) {
+    const tid = String(task.id);
+    nodes.push({ id: `task:${tid}`, type: "task", label: String(task.title || "Untitled").slice(0, 28),
+      sub: taskStatusLabel(normalizeTaskStatus(task.status)), status: normalizeTaskStatus(task.status),
+      agentId: String(task.assignee_agent_id || ""), taskId: tid, w: 158, h: 54 });
+  }
+
+  // ── Edge list ─────────────────────────────────────────────────────────────
+  const edges = [];
+  for (const task of tasks) {
+    const aid = String(task.assignee_agent_id || "").trim();
+    const agNodeId = aid && relevantAgentIds.includes(aid) ? `agent:${aid}` : (primaryId ? `agent:${primaryId}` : null);
+    if (agNodeId) edges.push({ from: agNodeId, to: `task:${String(task.id)}`, kind: "assign" });
+  }
+  for (const task of tasks) {
+    const deps = Array.isArray(task.dependencies) ? task.dependencies : Array.isArray(task.depends_on) ? task.depends_on : [];
+    for (const depId of deps) {
+      if (taskById.has(String(depId))) edges.push({ from: `task:${String(depId)}`, to: `task:${String(task.id)}`, kind: "dep" });
+    }
+  }
+
+  // ── Topological level assignment ──────────────────────────────────────────
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const outAdj  = new Map(nodes.map((n) => [n.id, []]));
+  const inDeg   = new Map(nodes.map((n) => [n.id, 0]));
+  for (const e of edges) {
+    if (outAdj.has(e.from) && nodeMap.has(e.to)) {
+      outAdj.get(e.from).push(e.to);
+      inDeg.set(e.to, (inDeg.get(e.to) || 0) + 1);
+    }
+  }
+  const level = new Map(nodes.map((n) => [n.id, 0]));
+  const seen = new Set();
+  let bfsQ = nodes.filter((n) => !(inDeg.get(n.id) || 0)).map((n) => n.id);
+  while (bfsQ.length) {
+    const id = bfsQ.shift();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const lvl = level.get(id) || 0;
+    for (const nid of (outAdj.get(id) || [])) {
+      level.set(nid, Math.max(level.get(nid) || 0, lvl + 1));
+      if (!seen.has(nid)) bfsQ.push(nid);
+    }
+  }
+  const maxLvl = Math.max(0, ...[...level.values()]);
+  for (const n of nodes) { if (!seen.has(n.id)) level.set(n.id, maxLvl + 1); }
+
+  const byLevel = new Map();
+  const statusOrd = { in_progress: 0, blocked: 1, todo: 2, review: 3, done: 4 };
+  for (const n of nodes) {
+    const lvl = level.get(n.id) || 0;
+    if (!byLevel.has(lvl)) byLevel.set(lvl, []);
+    byLevel.get(lvl).push(n);
+  }
+  for (const arr of byLevel.values()) {
+    arr.sort((a, b) => {
+      if (a.type !== b.type) return a.type === "agent" ? -1 : 1;
+      return (statusOrd[a.status] ?? 2) - (statusOrd[b.status] ?? 2);
+    });
+  }
+
+  // ── Auto-layout positions ─────────────────────────────────────────────────
+  const COL_GAP = 80, ROW_GAP = 12, PAD = 20;
+  const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b);
+  const autoPos = new Map();
+  let colX = PAD, totalH = 0;
+  for (const lvl of sortedLevels) {
+    const group = byLevel.get(lvl);
+    const colW = Math.max(...group.map((n) => n.w));
+    let rowY = PAD;
+    for (const n of group) { autoPos.set(n.id, { x: colX, y: rowY }); rowY += n.h + ROW_GAP; }
+    totalH = Math.max(totalH, rowY);
+    colX += colW + COL_GAP;
+  }
+  const canvasW = Math.max(colX + PAD, 400);
+  const canvasH = Math.max(totalH + PAD, 200);
+  canvas.style.width = canvasW + "px"; canvas.style.height = canvasH + "px";
+  svgEl.setAttribute("width", canvasW); svgEl.setAttribute("height", canvasH);
+
+  // Merge user-dragged positions
+  const pos = new Map();
+  for (const n of nodes) {
+    const saved = pmapNodePositions[n.id];
+    pos.set(n.id, saved ? { ...saved } : (autoPos.get(n.id) || { x: PAD, y: PAD }));
+  }
+
+  // ── SVG defs ──────────────────────────────────────────────────────────────
+  svgEl.innerHTML = `<defs>
+    <marker id="pm-arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="rgba(148,163,184,0.4)"/></marker>
+    <marker id="pm-arr-dep" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="rgba(99,202,255,0.55)"/></marker>
+  </defs>`;
+
+  // ── Draw edges ────────────────────────────────────────────────────────────
+  const edgeEls = new Map(); // "from|to" → SVGPathElement
+  function bezierD(fid, tid) {
+    const fp = pos.get(fid), tp = pos.get(tid), fn = nodeMap.get(fid), tn = nodeMap.get(tid);
+    if (!fp || !tp || !fn || !tn) return null;
+    const x1 = fp.x + fn.w, y1 = fp.y + fn.h / 2;
+    const x2 = tp.x,        y2 = tp.y + tn.h / 2;
+    const cx = (x1 + x2) / 2;
+    return `M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}`;
+  }
+  for (const e of edges) {
+    const d = bezierD(e.from, e.to); if (!d) continue;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("class", `pmap-edge${e.kind === "dep" ? " pmap-edge-dep" : ""}`);
+    path.setAttribute("d", d);
+    path.setAttribute("marker-end", e.kind === "dep" ? "url(#pm-arr-dep)" : "url(#pm-arr)");
+    svgEl.appendChild(path);
+    edgeEls.set(`${e.from}|${e.to}`, path);
+  }
+
+  // ── Draw nodes ────────────────────────────────────────────────────────────
+  const nodeEls = new Map();
+  const STATUS_COLOR = { todo: "var(--muted)", in_progress: "var(--cyan)", blocked: "var(--red)", review: "var(--purple)", done: "var(--green)" };
+  for (const n of nodes) {
+    const p = pos.get(n.id) || { x: PAD, y: PAD };
+    const el = document.createElement("div");
+    el.className = `pmap-mnode pmap-mnode-${n.type}`;
+    el.dataset.nodeId = n.id;
+    el.style.cssText = `left:${p.x}px;top:${p.y}px;width:${n.w}px;height:${n.h}px;`;
+    if (n.type === "agent") {
+      const color = colorHexForAgent(n.agentId) || "var(--cyan)";
+      el.style.setProperty("--pmap-accent", color);
+      el.innerHTML = `<div class="pmap-mnode-bar"></div><div class="pmap-mnode-body"><div class="pmap-mnode-label">${esc(n.label)}</div><div class="pmap-mnode-sub" style="color:${color}">${esc(n.sub)}</div></div>`;
+    } else {
+      const sc = STATUS_COLOR[n.status] || "var(--muted)";
+      const agColor = n.agentId ? (colorHexForAgent(n.agentId) || "var(--muted)") : "var(--muted)";
+      el.style.setProperty("--pmap-accent", sc);
+      el.innerHTML = `<div class="pmap-mnode-bar" style="background:${sc}"></div><div class="pmap-mnode-body"><div class="pmap-mnode-label">${esc(n.label)}</div><div class="pmap-mnode-sub" style="color:${agColor}">@${esc(agentShortName(n.agentId) || n.agentId.slice(0,8) || "—")} · ${esc(n.sub)}</div></div>`;
+    }
+    nodesEl.appendChild(el);
+    nodeEls.set(n.id, el);
+  }
+
+  // ── Live edge updater ─────────────────────────────────────────────────────
+  function refreshEdges(nodeId) {
+    for (const e of edges) {
+      if (e.from !== nodeId && e.to !== nodeId) continue;
+      const path = edgeEls.get(`${e.from}|${e.to}`); if (!path) continue;
+      const d = bezierD(e.from, e.to); if (d) path.setAttribute("d", d);
+    }
+  }
+
+  // ── Interaction: pan / zoom / node-drag ───────────────────────────────────
+  let pmapPan = { x: 0, y: 0 }, pmapZoom = 1;
+  let panActive = false, panLast = { x: 0, y: 0 };
+  let nodeDrag = null; // { nodeId, sx, sy, ox, oy }
+
+  function applyTransform() {
+    canvas.style.transform = `translate(${pmapPan.x}px,${pmapPan.y}px) scale(${pmapZoom})`;
+    canvas.style.transformOrigin = "0 0";
+  }
+  applyTransform();
+
+  for (const [nid, el] of nodeEls) {
+    el.style.cursor = "grab";
+    let clickStart = { x: 0, y: 0 };
+    el.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      const p = pos.get(nid) || { x: 0, y: 0 };
+      clickStart = { x: e.clientX, y: e.clientY };
+      nodeDrag = { nodeId: nid, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y };
+      el.style.zIndex = 20; el.style.cursor = "grabbing";
+    });
+    el.addEventListener("click", (e) => {
+      if (Math.abs(e.clientX - clickStart.x) > 5 || Math.abs(e.clientY - clickStart.y) > 5) return;
+      const n = nodeMap.get(nid);
+      if (!n) return;
+      if (n.type === "task") openTaskDetailModal(n.taskId);
+      else { const ag = agentById.get(n.agentId); if (ag) openAgentDetailModal(ag); }
+    });
+  }
+
+  const freshVP = viewport.cloneNode(false);
+  viewport.parentNode.replaceChild(freshVP, viewport);
+  const vp = $("pmap_viewport");
+  vp.appendChild(canvas);
+
+  vp.addEventListener("mousedown", (e) => {
+    if (e.target.closest(".pmap-mnode")) return;
+    panActive = true; panLast = { x: e.clientX, y: e.clientY }; vp.style.cursor = "grabbing";
+  });
+  vp.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    pmapZoom = Math.max(0.2, Math.min(2.5, pmapZoom - e.deltaY * 0.001));
+    applyTransform();
+  }, { passive: false });
+
+  function onMMove(e) {
+    if (panActive) {
+      pmapPan.x += e.clientX - panLast.x; pmapPan.y += e.clientY - panLast.y;
+      panLast = { x: e.clientX, y: e.clientY }; applyTransform();
+    }
+    if (nodeDrag) {
+      const dx = (e.clientX - nodeDrag.sx) / pmapZoom;
+      const dy = (e.clientY - nodeDrag.sy) / pmapZoom;
+      const nx = nodeDrag.ox + dx, ny = nodeDrag.oy + dy;
+      pos.set(nodeDrag.nodeId, { x: nx, y: ny });
+      const el = nodeEls.get(nodeDrag.nodeId);
+      if (el) { el.style.left = nx + "px"; el.style.top = ny + "px"; }
+      refreshEdges(nodeDrag.nodeId);
+    }
+  }
+  function onMUp() {
+    if (nodeDrag) {
+      pmapNodePositions[nodeDrag.nodeId] = { ...pos.get(nodeDrag.nodeId) };
+      const el = nodeEls.get(nodeDrag.nodeId);
+      if (el) { el.style.zIndex = ""; el.style.cursor = "grab"; }
+      nodeDrag = null;
+    }
+    panActive = false;
+    if (vp) vp.style.cursor = "";
+  }
+  window.removeEventListener("mousemove", onMMove);
+  window.removeEventListener("mouseup",   onMUp);
+  window.addEventListener("mousemove", onMMove);
+  window.addEventListener("mouseup",   onMUp);
+}
+
+function _pmapOldUnused() {
+  // ── Original task-only map body below — kept for reference only ──
+
   const tasks = Array.isArray(projectTasks) ? projectTasks : [];
   const proj = selectedProjectData;
   if (!proj) { nodesEl.innerHTML = '<p class="helper" style="padding:20px">No project selected.</p>'; return; }
@@ -8222,6 +8426,17 @@ function buildAgentSetupPrompt() {
   return [
     `Hi, please open this link: ${setupUrl} and do as the document said.`,
     "",
+    "Execution rules (must follow):",
+    "- You (agent) must execute Hivee bootstrap/stage API calls yourself.",
+    "- Do NOT ask the user to run terminal commands (bash, powershell, curl, jq, export, etc.).",
+    "- Do NOT ask the user for OpenClaw API key/token in chat.",
+    "- For staging payload, send only openclaw_base_url (+ optional openclaw_name/source).",
+    "- Do NOT include openclaw_api_key or openclaw_ws_url in this flow.",
+    "- Return only the final temporary claim URL for the user to click.",
+    "",
+    "Delivery message template (use exactly):",
+    "Hi, please open this link: <claim_url> and do as the document said.",
+    "",
     "Security rules:",
     securityUrl || "(security URL not available)",
     "",
@@ -8241,16 +8456,53 @@ function buildAgentSetupPrompt() {
   ].join("\n");
 }
 
+function copyTextFallback(value) {
+  const text = String(value || "");
+  if (!text) return false;
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "readonly");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  ta.style.pointerEvents = "none";
+  ta.style.left = "-9999px";
+  ta.style.top = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  let ok = false;
+  try {
+    ok = Boolean(document.execCommand && document.execCommand("copy"));
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return ok;
+}
+
 async function copyAgentUrl() {
   const prompt = buildAgentSetupPrompt();
   if (!prompt) return;
 
+  let copied = false;
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(prompt);
-      setMessage("auth_msg", "Setup prompt copied.", "ok");
-      return;
+      copied = true;
     }
+  } catch {}
+
+  if (!copied) copied = copyTextFallback(prompt);
+  if (copied) {
+    setMessage("auth_msg", "Setup prompt copied.", "ok");
+    return;
+  }
+
+  try {
+    window.prompt("Copy setup prompt:", prompt);
+    setMessage("auth_msg", "Setup prompt ready. Please copy it from the popup.", "ok");
+    return;
   } catch {}
 
   setMessage("auth_msg", "Copy not available. Please copy the setup prompt manually.", "error");
