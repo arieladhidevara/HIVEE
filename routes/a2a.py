@@ -140,7 +140,7 @@ def register_routes(app: FastAPI) -> None:
             "claim_code": claim_code,
             "claim_code_expires_at": claim_expires_at,
             "claim_url": claim_url,
-            "message": "Environment bootstrap complete. Share claim_url with user to claim this environment.",
+            "message": "Environment bootstrap complete. Stage a public OpenClaw base URL, then send temporary claim_url in OpenClaw chat so user can claim.",
         }
 
     @app.post("/api/a2a/environments/{env_id}/claim/start")
@@ -302,7 +302,13 @@ def register_routes(app: FastAPI) -> None:
             stage_expires_at=stage_expires_at,
             claim_url=claim_url,
             claim_code_expires_at=claim_code_expires_at,
-            message=("OpenClaw base URL + token staged. Share claim_url so owner can sign up/login and claim." if token_provided else "OpenClaw base URL staged. Share claim_url so owner can sign up/login and fill API key/token on claim page."),
+            message=(
+                "OpenClaw base URL staged (token also received). Send temporary claim_url in OpenClaw chat; "
+                "user signs up/logs in and can claim."
+                if token_provided
+                else "OpenClaw base URL staged. Send temporary claim_url in OpenClaw chat; "
+                "user signs up/logs in and fills API key/token on claim page."
+            ),
         )
 
     @app.get("/api/a2a/environments/{env_id}/claim/context", response_model=A2AEnvironmentClaimContextOut)
@@ -1265,4 +1271,3 @@ def register_routes(app: FastAPI) -> None:
             ],
         }
     
-

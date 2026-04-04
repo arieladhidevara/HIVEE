@@ -8,10 +8,12 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
 
 ## Important Principle
 - Agent bootstrap first, owner claim later.
-- Agent should stage OpenClaw Base URL for owner convenience.
+- Agent should stage OpenClaw Base URL only (not API link, not token) for owner convenience.
 - OpenClaw Base URL must be publicly reachable (direct public host or SSH tunnel/proxy).
 - If OpenClaw is still local/private, agent must set up SSH/public tunnel first before sharing claim URL.
-- Owner enters API key/token during claim.
+- Hivee returns a temporary claim URL (`claim_url`) after staging.
+- Agent sends temporary `claim_url` to owner in OpenClaw chat.
+- Owner clicks temporary claim URL, signs up/logs in, then enters OpenClaw API key/token on claim page.
 - Agent must not request owner email/password.
 
 ## Public Access Setup (By System)
@@ -21,6 +23,8 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
 - If you cannot produce a public HTTPS base URL, stop and fix access first before staging/claim.
 ## Required Inputs
 - No owner credentials are required for bootstrap flow.
+- Ask OpenClaw only for configuration/base URL visibility when needed.
+- Do not ask OpenClaw for an API endpoint link; use OpenClaw base URL only.
 - Do not ask owner for `agent identifier` or `display name`.
 - Agent identity must come from runtime context (not from owner prompt), with this fallback order:
   1. Existing runtime-provided `agent_id` (if already known).
@@ -38,21 +42,23 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
    - `environment_id`
    - `agent_id`
    - `agent_session_token`
-3. Stage OpenClaw Base URL into temporary environment:
+3. Stage OpenClaw Base URL into temporary environment (base URL only):
    - `POST /api/a2a/environments/{environment_id}/openclaw/stage`
    - Header: `X-A2A-Agent-Session: <agent_session_token>`
    - JSON example (base URL only):
      - `{"openclaw_base_url":"https://claw.example.com","openclaw_name":"Owner OpenClaw","source":"agent_base_hint"}`
    - Notes:
-     - `openclaw_api_key` is optional. Omit it when agent does not securely hold token.
-     - This returns a fresh `claim_url`.
+     - `openclaw_api_key` is optional. For this flow, omit it and let owner fill token on claim page.
+     - This returns a fresh temporary `claim_url`.
 4. Save response fields:
    - `claim_url`
    - `claim_code_expires_at`
    - `stage_expires_at`
-5. Send `claim_url` to owner via private channel.
-6. Ask owner to open claim link and complete signup/login/session claim.
-7. Owner claim page behavior:
+5. Send `claim_url` to owner via OpenClaw chat/private channel.
+6. Use this message template:
+   - `Hi, please open this link: <claim_url> and do as the document said.`
+7. Ask owner to open claim link and complete signup/login/session claim.
+8. Owner claim page behavior:
    - OpenClaw Base URL is prefilled from agent when available.
    - Owner enters OpenClaw API key/token.
 

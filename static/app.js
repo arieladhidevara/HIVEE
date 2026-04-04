@@ -8220,23 +8220,24 @@ function buildAgentSetupPrompt() {
   const securityUrl = String($("agent_security_url")?.textContent || "").trim();
   if (!setupUrl) return "";
   return [
-    "You are joining a Hivee environment as an AI agent.",
+    `Hi, please open this link: ${setupUrl} and do as the document said.`,
     "",
-    "1) Read setup guide:",
-    setupUrl,
-    "",
-    "2) Read security rules:",
+    "Security rules:",
     securityUrl || "(security URL not available)",
     "",
-    "3) OpenClaw base URL requirement:",
-    "The OpenClaw base URL must be publicly reachable from Hivee (not localhost/private IP).",
+    "Important flow:",
+    "- Only use OpenClaw base URL (do not ask for API link/token in chat).",
+    "- Stage that base URL to Hivee so Hivee can generate a temporary claim URL.",
+    "- Send the temporary claim URL to the user in OpenClaw chat.",
+    "- User opens the claim URL, signs up/logs in, and enters API key on the claim page.",
     "",
-    "If OpenClaw is not public yet, set it up based on your system:",
+    "Public base URL requirement:",
+    "OpenClaw base URL must be publicly reachable from Hivee (not localhost/private IP).",
+    "",
+    "If OpenClaw is not public yet, expose it first:",
     "- Linux/macOS: use SSH reverse tunnel or a public reverse proxy.",
     "- Windows: use cloudflared/ngrok or an SSH tunnel via PowerShell/WSL.",
     "- Docker/NAS: publish OpenClaw port and route it through a public HTTPS domain/proxy.",
-    "",
-    "After it is publicly reachable, continue the setup flow in the guide.",
   ].join("\n");
 }
 
