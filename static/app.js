@@ -85,8 +85,6 @@ let chatAutocompleteIndex = 0;
 let chatContextMode = "workspace";
 const DEFAULT_OWNER_FILES_PATH = "";
 const SESSION_TOKEN_KEY = "hivee_session_token_v2";
-const AGENT_SETUP_DOC_PATH = "/new-user/NEW-ACCOUNT-SETUP.MD";
-const AGENT_SECURITY_DOC_PATH = "/new-user/AGENT-SECURITY-RULES.MD";
 const CLAIM_ENV_PARAM = "claim_env_id";
 const CLAIM_CODE_PARAM = "claim_code";
 const PROJECT_INVITE_PARAM = "project_invite";
@@ -908,7 +906,6 @@ function renderProjectInviteUI() {
   const title = $("project_invite_title");
   const meta = $("project_invite_meta");
   const loggedIn = $("project_invite_logged_in");
-  const setupBtn = $("btn_open_project_setup_doc");
   const docBtn = $("btn_open_project_invite_doc");
   const linksHint = $("project_invite_links_hint");
   const codeInput = $("invite_portal_code");
@@ -928,10 +925,6 @@ function renderProjectInviteUI() {
     if (docBtn) {
       docBtn.disabled = true;
       docBtn.dataset.url = "";
-    }
-    if (setupBtn) {
-      setupBtn.disabled = true;
-      setupBtn.dataset.url = "";
     }
     if (connectionSelect) connectionSelect.innerHTML = "";
     if (codeInput) codeInput.value = "";
@@ -973,17 +966,11 @@ function renderProjectInviteUI() {
     info.invitation_doc_url
     || (`/api/projects/invites/${encodeURIComponent(projectInviteContext.token || "")}/Project-Invitation.md`)
   );
-  const setupDocUrl = toAbsoluteAppUrl(info.setup_doc_url || AGENT_SETUP_DOC_PATH);
 
   if (docBtn) {
     docBtn.dataset.url = inviteDocUrl || "";
     docBtn.disabled = !Boolean(inviteDocUrl);
   }
-  if (setupBtn) {
-    setupBtn.dataset.url = setupDocUrl || "";
-    setupBtn.disabled = !Boolean(setupDocUrl);
-  }
-
   if (!hasSession) {
     card.classList.add("hidden");
     if (loggedIn) loggedIn.textContent = "";
@@ -1014,8 +1001,8 @@ function renderProjectInviteUI() {
   }
   if (linksHint) {
     linksHint.textContent = canAccept
-      ? "Open docs if you need details, then continue with connection and agent selection."
-      : "Open docs if needed. This invitation is not currently accept-able.";
+      ? "Open invitation doc if you need details, then continue with connection and agent selection."
+      : "Open invitation doc if needed. This invitation is not currently accept-able.";
   }
 
   if (codeInput) {
@@ -8645,93 +8632,15 @@ function openProjectInviteDocFromButton(buttonId, emptyMsg = "Link is not availa
   window.open(url, "_blank", "noopener");
 }
 
-function refreshAgentGuideUrls() {
-  const setupUrl = toAbsoluteAppUrl(AGENT_SETUP_DOC_PATH);
-  const securityUrl = toAbsoluteAppUrl(AGENT_SECURITY_DOC_PATH);
-  const setupEl = $("agent_login_url");
-  const securityEl = $("agent_security_url");
-  if (setupEl) setupEl.textContent = setupUrl;
-  if (securityEl) {
-    securityEl.href = securityUrl;
-    securityEl.textContent = securityUrl;
-  }
-}
-
-function buildAgentSetupPrompt() {
-  const setupUrl = String($("agent_login_url")?.textContent || "").trim();
-  if (!setupUrl) return "";
-  return `Hey, open this link: ${setupUrl}. Then execute the flow from your side: trigger Hivee bootstrap + openclaw/stage (base URL only), wait until real claim_url is returned, and send that exact claim_url to user. If your HTTP/API tool is disabled, reply only: BLOCKED_HTTP_TOOL_DISABLED.`;
-}
-
-function copyTextFallback(value) {
-  const text = String(value || "");
-  if (!text) return false;
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.setAttribute("readonly", "readonly");
-  ta.style.position = "fixed";
-  ta.style.opacity = "0";
-  ta.style.pointerEvents = "none";
-  ta.style.left = "-9999px";
-  ta.style.top = "0";
-  document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
-  ta.setSelectionRange(0, ta.value.length);
-  let ok = false;
-  try {
-    ok = Boolean(document.execCommand && document.execCommand("copy"));
-  } catch {
-    ok = false;
-  }
-  document.body.removeChild(ta);
-  return ok;
-}
-
-async function copyAgentUrl() {
-  const prompt = buildAgentSetupPrompt();
-  if (!prompt) return;
-
-  let copied = false;
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(prompt);
-      copied = true;
-    }
-  } catch {}
-
-  if (!copied) copied = copyTextFallback(prompt);
-  if (copied) {
-    setMessage("auth_msg", "Setup prompt copied.", "ok");
-    return;
-  }
-
-  try {
-    window.prompt("Copy setup prompt:", prompt);
-    setMessage("auth_msg", "Setup prompt ready. Please copy it from the popup.", "ok");
-    return;
-  } catch {}
-
-  setMessage("auth_msg", "Copy not available. Please copy the setup prompt manually.", "error");
-}
-
 function bindAuthMethods() {
   $("method_hooman")?.addEventListener("click", () => setAuthMethod("hooman"));
   $("method_agent")?.addEventListener("click", () => setAuthMethod("agent"));
-  $("btn_copy_agent_url")?.addEventListener("click", () => copyAgentUrl().catch(() => {}));
   $("btn_accept_project_invite")?.addEventListener("click", () => {
     openProjectInviteAgentModal().catch((e) => setMessage("project_invite_msg", detailToText(e?.message || e), "error"));
   });
   $("btn_open_project_invite_doc")?.addEventListener("click", () => {
     try {
       openProjectInviteDocFromButton("btn_open_project_invite_doc", "Invitation document is not available.");
-    } catch (e) {
-      setMessage("project_invite_msg", detailToText(e?.message || e), "error");
-    }
-  });
-  $("btn_open_project_setup_doc")?.addEventListener("click", () => {
-    try {
-      openProjectInviteDocFromButton("btn_open_project_setup_doc", "Setup guide is not available.");
     } catch (e) {
       setMessage("project_invite_msg", detailToText(e?.message || e), "error");
     }
@@ -8760,7 +8669,6 @@ function bindAuthMethods() {
   });
   $("btn_cancel_project_invite_accept")?.addEventListener("click", () => closeProjectInviteAgentModal({ reset: false }));
   $("btn_close_project_invite_agent_modal")?.addEventListener("click", () => closeProjectInviteAgentModal({ reset: false }));
-  refreshAgentGuideUrls();
   applyClaimAuthUI();
   renderProjectInviteUI();
   setAuthMethod(activeAuthMethod);

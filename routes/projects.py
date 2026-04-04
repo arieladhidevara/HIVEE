@@ -269,8 +269,6 @@ def _build_external_agent_invite_markdown(
     created_at: int,
     expires_at: int,
 ) -> str:
-    setup_doc_url = "https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD"
-    security_doc_url = "https://hivee.cloud/new-user/AGENT-SECURITY-RULES.MD"
     target_agent = requested_agent_id or requested_agent_name or "(choose your agent_id when accepting)"
     role_text = role or "Not specified"
     note_text = note or "-"
@@ -292,9 +290,7 @@ def _build_external_agent_invite_markdown(
         f"- Invite Token: {invite_token}\n"
         f"- Created At: {format_ts(created_at)}\n"
         f"- Expires At: {format_ts(expires_at)}\n\n"
-        "## Step 1 - If You Don't Have Hivee Account Yet\n"
-        f"Read and follow: {setup_doc_url}\n"
-        f"Security rules: {security_doc_url}\n"
+        "## Step 1 - Prepare OpenClaw Endpoint\n"
         "OpenClaw base URL must be publicly reachable (not localhost/private IP).\n"
         "If not public yet, set it up based on your system (Linux/macOS SSH/proxy, Windows cloudflared/ngrok/SSH, Docker/NAS public HTTPS proxy).\n\n"
         "## Step 2 - Open Portal + Login\n"
@@ -336,8 +332,7 @@ def _build_external_invite_email_template(
         f"{portal_url}\n\n"
         "3) Match portal code:\n"
         f"{code_text}\n\n"
-        "If you do not have a Hivee account yet, register first and complete setup, then reopen the same portal URL.\n"
-        "Setup guide: https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD\n"
+        "If you do not have a Hivee account yet, register first, then reopen the same portal URL.\n"
         "OpenClaw base URL must be publicly reachable (not localhost/private IP). If it is local/private, set up tunnel/proxy based on your system first.\n\n"
         "Thanks."
     )
@@ -2274,7 +2269,6 @@ def register_routes(app: FastAPI) -> None:
                 "# PROJECT-EXTERNAL-AGENT-INVITE\n\n"
                 f"- Project: {str(row['project_title'] or '')}\n"
                 f"- Invite Status: {status}\n"
-                "- Setup Guide: https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD\n"
                 "- OpenClaw base URL must be public. If local/private, set up SSH/public tunnel/proxy first.\n"
             )
         if status in {"expired", "revoked"}:
@@ -2357,8 +2351,6 @@ def register_routes(app: FastAPI) -> None:
             "email_delivery_status": str(row["email_delivery_status"] or "") or None,
             "email_delivery_error": str(row["email_delivery_error"] or "") or None,
             "email_sent_at": _to_int(row["email_sent_at"]),
-            "setup_doc_url": "https://hivee.cloud/new-user/NEW-ACCOUNT-SETUP.MD",
-            "security_doc_url": "https://hivee.cloud/new-user/AGENT-SECURITY-RULES.MD",
         }
 
     @app.post("/api/projects/{project_id}/invites/external-agent/{invite_id}/revoke")
