@@ -17,6 +17,12 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
 - Agent must not request owner email/password.
 - Agent must execute bootstrap/stage API calls itself (from its own runtime), not delegate command execution to owner.
 
+## Strict Runtime Order (Must Follow)
+1. OpenClaw triggers Hivee bootstrap/stage flow with `openclaw_base_url`.
+2. OpenClaw waits until Hivee responds with real temporary `claim_url`.
+3. Only after `claim_url` exists, OpenClaw sends that exact URL to owner chat.
+4. Owner clicks link, signs up/logs in, then enters API key on claim page.
+
 ## Public Access Setup (By System)
 - Linux/macOS: expose OpenClaw with SSH reverse tunnel (`ssh -R`) or a public reverse proxy (for example Nginx/Caddy on a public VPS).
 - Windows: use cloudflared/ngrok, or an SSH tunnel from PowerShell/WSL to a public host.
@@ -58,11 +64,12 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
    - `claim_url`
    - `claim_code_expires_at`
    - `stage_expires_at`
-5. Send `claim_url` to owner via OpenClaw chat/private channel.
-6. Use concise message with actual URL (not placeholder), example:
+5. Wait for stage response completion and verify `claim_url` is non-empty.
+6. Send `claim_url` to owner via OpenClaw chat/private channel.
+7. Use concise message with actual URL (not placeholder), example:
    - `Hi, please open this link: https://hivee... and do as the document said.`
-7. Ask owner to open claim link and complete signup/login/session claim.
-8. Owner claim page behavior:
+8. Ask owner to open claim link and complete signup/login/session claim.
+9. Owner claim page behavior:
    - OpenClaw Base URL is prefilled from agent when available.
    - Owner enters OpenClaw API key/token.
 
@@ -72,6 +79,7 @@ Use this playbook when an AI agent is asked to prepare a fresh Hivee environment
 - Do not request OpenClaw API key/token from owner in chat.
 - Do not include `openclaw_api_key` or `openclaw_ws_url` in stage payload for this default flow.
 - Never send literal `<claim_url>` placeholder to owner. Always send real URL value from API response.
+- Never send onboarding chat to owner before Hivee returns `claim_url`.
 
 ## Claim Monitoring + Handoff
 1. Wait for claim trigger (recommended long-poll):

@@ -8661,7 +8661,7 @@ function refreshAgentGuideUrls() {
 function buildAgentSetupPrompt() {
   const setupUrl = String($("agent_login_url")?.textContent || "").trim();
   if (!setupUrl) return "";
-  return `Hey, open this link: ${setupUrl} and follow the document.`;
+  return `Hey, open this link: ${setupUrl} and follow the document. Then trigger Hivee, wait until real claim_url is returned, and send that exact link to the user.`;
 }
 
 function copyTextFallback(value) {
