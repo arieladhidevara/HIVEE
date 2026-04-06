@@ -12,17 +12,9 @@ def register_routes(app: FastAPI) -> None:
         health = await openclaw_health(payload.base_url, payload.api_key)
         if not health.get("ok"):
             raise HTTPException(400, {"message": "Could not verify OpenClaw health", "details": health})
-    
-        bootstrap = await _bootstrap_connection_workspace(user_id, payload.base_url.rstrip("/"), payload.api_key)
-        if not bootstrap.get("ok"):
-            raise HTTPException(
-                400,
-                {
-                    "message": "OpenClaw connected, but Hivee workspace bootstrap failed.",
-                    "details": bootstrap,
-                },
-            )
-    
+
+        # Health passed — save the connection before attempting bootstrap so a
+        # temporarily-unavailable WS/agent endpoint doesn't block the save.
         conn = db()
         conn_id = new_id("oc")
         conn.execute(
@@ -31,35 +23,51 @@ def register_routes(app: FastAPI) -> None:
         )
         conn.commit()
         conn.close()
-    
+
+        bootstrap = await _bootstrap_connection_workspace(user_id, payload.base_url.rstrip("/"), payload.api_key)
+        bootstrap_ok = bool(bootstrap.get("ok"))
         _upsert_connection_policy(
             conn_id,
             user_id,
             main_agent_id=bootstrap.get("main_agent_id"),
             main_agent_name=bootstrap.get("main_agent_name"),
-            bootstrap_status="ok",
-            bootstrap_error=None,
+            bootstrap_status="ok" if bootstrap_ok else "failed",
+            bootstrap_error=None if bootstrap_ok else detail_to_text(bootstrap.get("error") or bootstrap.get("ws_result")),
             workspace_tree=bootstrap.get("workspace_tree"),
             workspace_root=str(bootstrap.get("workspace_root") or HIVEE_ROOT),
             templates_root=str(bootstrap.get("templates_root") or HIVEE_TEMPLATES_ROOT),
         )
-        provision = _provision_managed_agents_for_connection(
-            user_id=user_id,
-            env_id=env_id,
-            connection_id=conn_id,
-            base_url=payload.base_url.rstrip("/"),
-            raw_agents=bootstrap.get("agents") or [],
-            fallback_agent_id=bootstrap.get("main_agent_id"),
-            fallback_agent_name=bootstrap.get("main_agent_name"),
-        )
-    
-        return {
+        provision = None
+        if bootstrap_ok:
+            provision = _provision_managed_agents_for_connection(
+                user_id=user_id,
+                env_id=env_id,
+                connection_id=conn_id,
+                base_url=payload.base_url.rstrip("/"),
+                raw_agents=bootstrap.get("agents") or [],
+                fallback_agent_id=bootstrap.get("main_agent_id"),
+                fallback_agent_name=bootstrap.get("main_agent_name"),
+            )
+
+        response: Dict[str, Any] = {
             "ok": True,
             "connection": {"id": conn_id, "base_url": payload.base_url.rstrip("/"), "name": payload.name},
             "health": health,
             "bootstrap": bootstrap,
+            "bootstrap_status": "ok" if bootstrap_ok else "failed",
             "agent_provision": provision,
         }
+        if not bootstrap_ok:
+            response["warning"] = (
+                "Connected, but bootstrap failed. Fix OpenClaw WS/HTTP config and retry bootstrap "
+                f"via POST /api/openclaw/{conn_id}/bootstrap."
+            )
+            response["hint"] = (
+                bootstrap.get("hint")
+                or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow "
+                   "HTTP agent listing, or ensure the WS gateway is accessible without device-identity pairing."
+            )
+        return response
     
     @app.post("/api/openclaw/{connection_id}/bootstrap")
     async def bootstrap_openclaw_connection(request: Request, connection_id: str):

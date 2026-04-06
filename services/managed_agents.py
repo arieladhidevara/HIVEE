@@ -1073,7 +1073,7 @@ async def openclaw_chat(
         last_err = None
         saw_405 = False
         for p in CHAT_PATHS:
-            model_hint = f"openclaw/{agent_id}" if agent_id else "openclaw/default"
+            model_hint = f"openclaw:{agent_id}" if agent_id else "openclaw:default"
             extra_headers: Dict[str, str] = {}
             if agent_id:
                 extra_headers["x-openclaw-agent-id"] = agent_id
