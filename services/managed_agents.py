@@ -736,6 +736,33 @@ def _normalize_agents(agents: List[Any]) -> List[Dict[str, Any]]:
             norm.append({"id": str(aid), "name": str(nm), "raw": a})
     return norm
 
+def _merge_unique_agents(
+    target: List[Dict[str, Any]],
+    incoming: List[Dict[str, Any]],
+    *,
+    seen_ids: Optional[set[str]] = None,
+) -> int:
+    if seen_ids is None:
+        seen_ids = {
+            str(item.get("id") or "").strip().lower()
+            for item in target
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
+    added = 0
+    for item in incoming:
+        if not isinstance(item, dict):
+            continue
+        aid = str(item.get("id") or "").strip()
+        if not aid:
+            continue
+        key = aid.lower()
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
+        target.append(item)
+        added += 1
+    return added
+
 async def _request_openclaw_with_auth(
     client: httpx.AsyncClient,
     method: str,
@@ -794,7 +821,12 @@ async def openclaw_health(base_url: str, api_key: str) -> Dict[str, Any]:
 
 async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        last_err = None
+        last_err: Optional[str] = None
+        rest_agents: List[Dict[str, Any]] = []
+        rest_seen_ids: set[str] = set()
+        rest_ok_paths: List[str] = []
+        saw_non_model_agent_payload = False
+
         for p in AGENTS_PATHS:
             try:
                 r = await _request_openclaw_with_auth(client, "GET", base_url, p, api_key, timeout=15)
@@ -812,7 +844,8 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
                 if data is None:
                     raw = (r.text or "").strip()
                     if not raw:
-                        return {"ok": True, "path": p, "agents": []}
+                        rest_ok_paths.append(p)
+                        continue
                     ctype = r.headers.get("content-type") or "unknown"
                     last_err = f"{p}: expected JSON but got {ctype}; body={raw[:300]}"
                     if parse_err:
@@ -821,13 +854,46 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
 
                 agents = _extract_agents_list(data) or []
                 norm = _normalize_agents(agents)
-                return {"ok": True, "path": p, "agents": norm}
+                if norm:
+                    _merge_unique_agents(rest_agents, norm, seen_ids=rest_seen_ids)
+                    if "/model" not in p.lower():
+                        saw_non_model_agent_payload = True
+                rest_ok_paths.append(p)
             except Exception as e:
                 last_err = str(e)
 
-        ws_res = await openclaw_ws_list_agents(base_url, api_key)
+        ws_res: Dict[str, Any] = {}
+        should_probe_ws = (not rest_agents) or (not saw_non_model_agent_payload)
+        if should_probe_ws:
+            ws_res = await openclaw_ws_list_agents(base_url, api_key)
+            if ws_res.get("ok"):
+                ws_agents = [dict(a) for a in (ws_res.get("agents") or []) if isinstance(a, dict)]
+                _merge_unique_agents(rest_agents, ws_agents, seen_ids=rest_seen_ids)
+                if rest_agents:
+                    rest_agents.sort(key=lambda a: (str(a.get("name") or "").lower(), str(a.get("id") or "").lower()))
+                    return {
+                        "ok": True,
+                        "transport": "rest+ws",
+                        "path": str(rest_ok_paths[0] if rest_ok_paths else ws_res.get("path") or ""),
+                        "agents": rest_agents,
+                        "ws_source": {
+                            "path": ws_res.get("path"),
+                            "method": ws_res.get("method"),
+                            "client_id": ws_res.get("client_id"),
+                        },
+                    }
+
+        if rest_agents:
+            rest_agents.sort(key=lambda a: (str(a.get("name") or "").lower(), str(a.get("id") or "").lower()))
+            return {"ok": True, "path": rest_ok_paths[0] if rest_ok_paths else AGENTS_PATHS[0], "agents": rest_agents}
+
         if ws_res.get("ok"):
             return ws_res
+        if not ws_res:
+            ws_res = await openclaw_ws_list_agents(base_url, api_key)
+            if ws_res.get("ok"):
+                return ws_res
+
         return {
             "ok": False,
             "error": f"Could not list agents on common paths. Last error: {last_err}",
@@ -835,7 +901,6 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
             "ws_fallback_details": ws_res.get("details"),
             "hint": "This OpenClaw likely does not expose REST JSON agent listing on your base_url path. WS fallback was attempted.",
         }
-
 def _extract_chat_text(payload: Any) -> Optional[str]:
     if isinstance(payload, str):
         return payload
@@ -909,6 +974,69 @@ def _is_ws_client_id_mismatch_error(detail: Any) -> bool:
     if "must match a schema in anyof" in low:
         return True
     return "invalid connect params" in low
+
+def _looks_like_ws_client_id(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    cid = value.strip()
+    if len(cid) < 3 or len(cid) > 120:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9._:-]+", cid):
+        return False
+    return any(ch.isalpha() for ch in cid)
+
+def _extract_ws_client_ids_from_error(detail: Any) -> List[str]:
+    found: List[str] = []
+
+    def _push(value: Any) -> None:
+        cid = str(value or "").strip()
+        if not _looks_like_ws_client_id(cid):
+            return
+        if cid not in found:
+            found.append(cid)
+
+    def _visit(node: Any, path: str = "") -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                lk = str(key).lower()
+                next_path = f"{path}.{lk}" if path else lk
+                if lk in {"client_id", "clientid", "allowedvalue"}:
+                    _push(value)
+                if lk == "const" and "client" in path and "id" in path:
+                    _push(value)
+                if lk in {"enum", "allowedvalues", "allowed"} and isinstance(value, list):
+                    if "client" in path and "id" in path:
+                        for item in value:
+                            _push(item)
+                _visit(value, next_path)
+        elif isinstance(node, list):
+            for idx, item in enumerate(node):
+                _visit(item, f"{path}[{idx}]")
+
+    _visit(detail)
+
+    text = detail_to_text(detail)
+    if text:
+        patterns = [
+            r'"allowedValue"\s*:\s*"([A-Za-z0-9._:-]{3,120})"',
+            r"'allowedValue'\s*:\s*'([A-Za-z0-9._:-]{3,120})'",
+            r'"client_id"\s*:\s*"([A-Za-z0-9._:-]{3,120})"',
+            r"'client_id'\s*:\s*'([A-Za-z0-9._:-]{3,120})'",
+        ]
+        for pattern in patterns:
+            for match in re.findall(pattern, text, flags=re.IGNORECASE):
+                _push(match)
+
+    return found
+
+def _append_ws_client_id_hints(detail: Any, candidates: List[str]) -> List[str]:
+    added: List[str] = []
+    for cid in _extract_ws_client_ids_from_error(detail):
+        if cid in candidates:
+            continue
+        candidates.append(cid)
+        added.append(cid)
+    return added
 
 def _candidate_ws_client_ids() -> List[str]:
     raw = str(os.environ.get("OPENCLAW_WS_CLIENT_IDS") or "").strip()
@@ -1148,7 +1276,6 @@ async def openclaw_ws_chat(
             ),
         }
 
-
     async def _retry_http_on_ws_connect_requirement(reason: Any, ws_path: str) -> Optional[Dict[str, Any]]:
         if not _is_ws_device_identity_error(reason):
             return None
@@ -1175,6 +1302,29 @@ async def openclaw_ws_chat(
             "hint": "OpenClaw WS connect requires device identity/secure context on this gateway, and HTTP fallback also failed.",
         }
 
+    async def _retry_http_after_ws_exhausted() -> Dict[str, Any]:
+        http_res = await openclaw_chat(
+            base_url=base_url,
+            api_key=api_key,
+            message=message,
+            agent_id=agent_id,
+        )
+        if http_res.get("ok"):
+            return {
+                "ok": True,
+                "transport": "http-fallback",
+                "path": str(http_res.get("path") or "http"),
+                "text": http_res.get("text"),
+                "response": http_res.get("response"),
+                "fallback_reason": "WS chat failed across all candidate WS paths/client IDs",
+                "ws_details": errors[-8:],
+            }
+        return {
+            "ok": False,
+            "http_fallback_error": http_res.get("error"),
+            "http_fallback_details": http_res.get("details"),
+        }
+
     async with httpx.AsyncClient(follow_redirects=True) as http:
         try:
             await http.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=10)
@@ -1187,7 +1337,10 @@ async def openclaw_ws_chat(
             extra_headers["Cookie"] = cookie
 
     for ws_url in ws_urls:
-        for ws_client_id in ws_client_ids:
+        client_idx = 0
+        while client_idx < len(ws_client_ids):
+            ws_client_id = ws_client_ids[client_idx]
+            client_idx += 1
             frames: List[Dict[str, Any]] = []
             text_best = ""
             delta_parts: List[str] = []
@@ -1225,7 +1378,6 @@ async def openclaw_ws_chat(
                 "idempotencyKey": uuid.uuid4().hex,
                 "timeoutMs": 120000,
             }
-            # Keep WS payload strict to protocol schema; route by session key.
             chat_payload = {
                 "type": "req",
                 "id": chat_id,
@@ -1241,7 +1393,6 @@ async def openclaw_ws_chat(
                     origin=ws_origin,
                     extra_headers=extra_headers,
                 ) as ws:
-                    # Some deployments emit connect.challenge first; capture if present.
                     try:
                         peek = await asyncio.wait_for(ws.recv(), timeout=1.0)
                         msg = await _to_json(peek)
@@ -1263,9 +1414,9 @@ async def openclaw_ws_chat(
                             if payload.get("ok") is False or payload.get("error"):
                                 connect_terminal_seen = True
                                 connect_reason = payload.get("error") or payload
+                                hinted: List[str] = []
                                 if _is_ws_client_id_mismatch_error(connect_reason):
-                                    errors.append(f"{ws_url} client={ws_client_id}: connect rejected: {detail_to_text(connect_reason)[:420]}")
-                                    break
+                                    hinted = _append_ws_client_id_hints(connect_reason, ws_client_ids)
                                 retry = await _retry_http_on_ws_connect_requirement(connect_reason, ws_url)
                                 if retry and retry.get("ok"):
                                     retry["client_id"] = ws_client_id
@@ -1275,19 +1426,18 @@ async def openclaw_ws_chat(
                                         f"{ws_url} client={ws_client_id}: {detail_to_text(retry.get('error') or retry.get('details'))[:420]}"
                                     )
                                     break
-                                return {
-                                    "ok": False,
-                                    "path": ws_url,
-                                    "error": f"WS connect rejected: {connect_reason}",
-                                    "client_id": ws_client_id,
-                                }
+                                hint_suffix = f"; discovered client ids={','.join(hinted[:4])}" if hinted else ""
+                                errors.append(
+                                    f"{ws_url} client={ws_client_id}: connect rejected: {detail_to_text(connect_reason)[:420]}{hint_suffix}"
+                                )
+                                break
                             connected = True
                             break
                         if payload.get("type") == "err" and payload.get("id") == connect_id:
                             connect_terminal_seen = True
+                            hinted = []
                             if _is_ws_client_id_mismatch_error(payload):
-                                errors.append(f"{ws_url} client={ws_client_id}: connect error: {detail_to_text(payload)[:420]}")
-                                break
+                                hinted = _append_ws_client_id_hints(payload, ws_client_ids)
                             retry = await _retry_http_on_ws_connect_requirement(payload, ws_url)
                             if retry and retry.get("ok"):
                                 retry["client_id"] = ws_client_id
@@ -1297,12 +1447,11 @@ async def openclaw_ws_chat(
                                     f"{ws_url} client={ws_client_id}: {detail_to_text(retry.get('error') or retry.get('details'))[:420]}"
                                 )
                                 break
-                            return {
-                                "ok": False,
-                                "path": ws_url,
-                                "error": f"WS connect error: {payload}",
-                                "client_id": ws_client_id,
-                            }
+                            hint_suffix = f"; discovered client ids={','.join(hinted[:4])}" if hinted else ""
+                            errors.append(
+                                f"{ws_url} client={ws_client_id}: connect error: {detail_to_text(payload)[:420]}{hint_suffix}"
+                            )
+                            break
                     if not connected:
                         if not connect_terminal_seen:
                             errors.append(f"{ws_url} client={ws_client_id}: no connect ack")
@@ -1312,6 +1461,7 @@ async def openclaw_ws_chat(
                     accepted = False
                     first_text_at: Optional[float] = None
                     idle_grace_sec = 2.0
+                    chat_terminal_error: Optional[Any] = None
                     while time.time() < deadline:
                         wait_for = min(2.0, max(0.1, deadline - time.time()))
                         try:
@@ -1330,15 +1480,16 @@ async def openclaw_ws_chat(
                                 retry = await _retry_http_on_budget_error(payload.get("error") or payload, ws_url)
                                 if retry:
                                     return retry
-                                return {"ok": False, "path": ws_url, "error": f"chat.send rejected: {payload.get('error') or payload}"}
+                                chat_terminal_error = payload.get("error") or payload
+                                break
                             accepted = True
                         if payload.get("type") == "err" and payload.get("id") == chat_id:
                             retry = await _retry_http_on_budget_error(payload, ws_url)
                             if retry:
                                 return retry
-                            return {"ok": False, "path": ws_url, "error": f"chat.send error: {payload}"}
+                            chat_terminal_error = payload
+                            break
 
-                        # Detect runtime failures emitted as events so UI gets a concise error.
                         if payload.get("type") == "event":
                             ev = payload.get("event")
                             evp = payload.get("payload")
@@ -1369,19 +1520,20 @@ async def openclaw_ws_chat(
                                 delta_parts.append(candidate)
                                 first_text_at = time.time()
 
+                    if chat_terminal_error is not None:
+                        errors.append(
+                            f"{ws_url} client={ws_client_id}: chat.send rejected: {detail_to_text(chat_terminal_error)[:420]}"
+                        )
+                        continue
+
                     text = text_best or _join_delta_chunks(delta_parts) or None
                     if runtime_error:
                         retry = await _retry_http_on_budget_error(runtime_error, ws_url)
                         if retry:
                             return retry
-                        return {
-                            "ok": False,
-                            "path": ws_url,
-                            "error": runtime_error[:1500],
-                            "accepted": accepted,
-                            "frames": frames[-8:],
-                            "client_id": ws_client_id,
-                        }
+                        errors.append(f"{ws_url} client={ws_client_id}: runtime error: {runtime_error[:420]}")
+                        continue
+
                     return {
                         "ok": True,
                         "transport": "ws",
@@ -1400,11 +1552,17 @@ async def openclaw_ws_chat(
         if retry:
             return retry
 
+    http_fallback = await _retry_http_after_ws_exhausted()
+    if http_fallback.get("ok"):
+        return http_fallback
+
     return {
         "ok": False,
         "error": "WS chat failed across all candidate WS paths.",
-        "details": errors[-5:],
-        "hint": "OpenClaw may require a specific connect.params.client.id. Set OPENCLAW_WS_CLIENT_IDS (comma-separated) to include the gateway-required id.",
+        "details": errors[-8:],
+        "http_fallback_error": http_fallback.get("http_fallback_error"),
+        "http_fallback_details": http_fallback.get("http_fallback_details"),
+        "hint": "OpenClaw may require a specific connect.params.client.id or WS route; HTTP fallback was also attempted.",
     }
 async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int = 12) -> Dict[str, Any]:
     try:
@@ -1441,6 +1599,12 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
     errors: List[str] = []
     ws_client_ids = _candidate_ws_client_ids()
 
+    discovered_agents: List[Dict[str, Any]] = []
+    discovered_seen_ids: set[str] = set()
+    discovered_source_path = ""
+    discovered_source_method = ""
+    discovered_source_client_id = ""
+
     async with httpx.AsyncClient(follow_redirects=True) as http:
         try:
             await http.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=10)
@@ -1461,11 +1625,15 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
     ]
     saw_models_only = False
     models_as_agents: List[Dict[str, Any]] = []
+    models_seen_ids: set[str] = set()
     models_source_path = ""
     models_source_method = ""
 
     for ws_url in ws_urls:
-        for ws_client_id in ws_client_ids:
+        client_idx = 0
+        while client_idx < len(ws_client_ids):
+            ws_client_id = ws_client_ids[client_idx]
+            client_idx += 1
             try:
                 async with websockets.connect(
                     ws_url,
@@ -1513,13 +1681,23 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                             if msg.get("ok") is False or msg.get("error"):
                                 connect_terminal_seen = True
                                 reason = msg.get("error") or msg
-                                errors.append(f"{ws_url} client={ws_client_id}: connect rejected: {detail_to_text(reason)[:420]}")
+                                hinted = []
+                                if _is_ws_client_id_mismatch_error(reason):
+                                    hinted = _append_ws_client_id_hints(reason, ws_client_ids)
+                                hint_suffix = f"; discovered client ids={','.join(hinted[:4])}" if hinted else ""
+                                errors.append(
+                                    f"{ws_url} client={ws_client_id}: connect rejected: {detail_to_text(reason)[:420]}{hint_suffix}"
+                                )
                                 break
                             connected = True
                             break
                         if msg.get("type") == "err" and msg.get("id") == connect_id:
                             connect_terminal_seen = True
-                            errors.append(f"{ws_url} client={ws_client_id}: connect error: {detail_to_text(msg)[:420]}")
+                            hinted = []
+                            if _is_ws_client_id_mismatch_error(msg):
+                                hinted = _append_ws_client_id_hints(msg, ws_client_ids)
+                            hint_suffix = f"; discovered client ids={','.join(hinted[:4])}" if hinted else ""
+                            errors.append(f"{ws_url} client={ws_client_id}: connect error: {detail_to_text(msg)[:420]}{hint_suffix}")
                             break
                     if not connected:
                         if not connect_terminal_seen:
@@ -1547,19 +1725,18 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                                 if not is_agent_method:
                                     if norm:
                                         saw_models_only = True
-                                        if not models_as_agents:
-                                            models_as_agents = norm
+                                        _merge_unique_agents(models_as_agents, norm, seen_ids=models_seen_ids)
+                                        if not models_source_path:
                                             models_source_path = ws_url
                                             models_source_method = method
                                     break
-                                return {
-                                    "ok": True,
-                                    "transport": "ws",
-                                    "path": ws_url,
-                                    "method": method,
-                                    "agents": norm,
-                                    "client_id": ws_client_id,
-                                }
+                                if norm:
+                                    added = _merge_unique_agents(discovered_agents, norm, seen_ids=discovered_seen_ids)
+                                    if added > 0 and not discovered_source_path:
+                                        discovered_source_path = ws_url
+                                        discovered_source_method = method
+                                        discovered_source_client_id = ws_client_id
+                                break
                             if msg.get("type") == "err" and msg.get("id") == req_id:
                                 errors.append(f"{ws_url} client={ws_client_id} {method}: error: {msg}")
                                 break
@@ -1567,7 +1744,19 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                 errors.append(f"{ws_url} client={ws_client_id}: {str(e)}")
                 continue
 
+    if discovered_agents:
+        discovered_agents.sort(key=lambda a: (str(a.get("name") or "").lower(), str(a.get("id") or "").lower()))
+        return {
+            "ok": True,
+            "transport": "ws",
+            "path": discovered_source_path or (ws_urls[0] if ws_urls else ""),
+            "method": discovered_source_method or "multi",
+            "client_id": discovered_source_client_id or None,
+            "agents": discovered_agents,
+        }
+
     if models_as_agents:
+        models_as_agents.sort(key=lambda a: (str(a.get("name") or "").lower(), str(a.get("id") or "").lower()))
         return {
             "ok": True,
             "transport": "ws-models-fallback",
@@ -2766,4 +2955,3 @@ def _read_project_execution_state(project_id: str) -> Tuple[str, int]:
     return _coerce_execution_status(row["execution_status"]), _clamp_progress(row["progress_pct"])
 
 __all__ = [name for name in globals() if not name.startswith('__')]
-
