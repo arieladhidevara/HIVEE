@@ -18,23 +18,16 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(
                 400,
                 {
-                    "message": f"OpenClaw validation/bootstrap failed: {detail_to_text(bootstrap.get('error') or bootstrap.get('agent_probe') or bootstrap)[:500]}",
+                    "message": "OpenClaw connected, but Hivee workspace bootstrap failed.",
                     "details": bootstrap,
                 },
             )
     
         conn = db()
         conn_id = new_id("oc")
-        created_at = int(time.time())
-        secret_id = _store_connection_api_key_secret(
-            conn,
-            user_id=user_id,
-            connection_id=conn_id,
-            api_key=payload.api_key,
-        )
         conn.execute(
-            "INSERT INTO openclaw_connections (id, user_id, env_id, base_url, api_key, api_key_secret_id, name, created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (conn_id, user_id, env_id, payload.base_url.rstrip("/"), "", secret_id, payload.name, created_at),
+            "INSERT INTO openclaw_connections (id, user_id, env_id, base_url, api_key, name, created_at) VALUES (?,?,?,?,?,?,?)",
+            (conn_id, user_id, env_id, payload.base_url.rstrip("/"), payload.api_key, payload.name, int(time.time())),
         )
         conn.commit()
         conn.close()
