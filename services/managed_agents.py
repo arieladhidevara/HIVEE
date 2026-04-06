@@ -1049,9 +1049,9 @@ def _candidate_ws_client_ids() -> List[str]:
                 out.append(cid)
     defaults = [
         "hivee-server-bridge",
-        "openclaw-control-ui",
         "openclaw-webchat",
         "openclaw-client",
+        "openclaw-api",
     ]
     for cid in defaults:
         if cid not in out:
@@ -1155,6 +1155,8 @@ def _candidate_ws_urls(base_url: str) -> List[str]:
         (base_path + "/ws") if base_path else "/ws",
         (base_path + "/gateway/ws") if base_path else "/gateway/ws",
         (base_path + "/__openclaw__/ws") if base_path else "/__openclaw__/ws",
+        (base_path + "/api/ws") if base_path else "/api/ws",
+        (base_path + "/v1/ws") if base_path else "/v1/ws",
     ]
     seen: set[str] = set()
     urls: List[str] = []
@@ -1336,7 +1338,15 @@ async def openclaw_ws_chat(
         if cookie:
             extra_headers["Cookie"] = cookie
 
+    import ssl as _ssl_mod
+    _ws_ssl: Any = None
+    if ws_urls and ws_urls[0].startswith("wss://"):
+        _ws_ssl = _ssl_mod.create_default_context()
+        _ws_ssl.check_hostname = False
+        _ws_ssl.verify_mode = _ssl_mod.CERT_NONE
+
     for ws_url in ws_urls:
+        _url_ssl: Any = _ws_ssl if ws_url.startswith("wss://") else None
         client_idx = 0
         while client_idx < len(ws_client_ids):
             ws_client_id = ws_client_ids[client_idx]
@@ -1353,13 +1363,13 @@ async def openclaw_ws_chat(
                 "id": connect_id,
                 "method": "connect",
                 "params": {
-                    "minProtocol": 3,
-                    "maxProtocol": 3,
+                    "minProtocol": 1,
+                    "maxProtocol": 5,
                     "client": {
                         "id": ws_client_id,
                         "version": "vdev",
-                        "platform": "web",
-                        "mode": "webchat",
+                        "platform": "server",
+                        "mode": "api",
                     },
                     "auth": {"token": api_key},
                     "role": "operator",
@@ -1392,6 +1402,7 @@ async def openclaw_ws_chat(
                     max_size=4 * 1024 * 1024,
                     origin=ws_origin,
                     extra_headers=extra_headers,
+                    ssl=_url_ssl,
                 ) as ws:
                     try:
                         peek = await asyncio.wait_for(ws.recv(), timeout=1.0)
@@ -1629,7 +1640,15 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
     models_source_path = ""
     models_source_method = ""
 
+    import ssl as _ssl_mod
+    _ws_ssl: Any = None
+    if ws_urls and ws_urls[0].startswith("wss://"):
+        _ws_ssl = _ssl_mod.create_default_context()
+        _ws_ssl.check_hostname = False
+        _ws_ssl.verify_mode = _ssl_mod.CERT_NONE
+
     for ws_url in ws_urls:
+        _url_ssl: Any = _ws_ssl if ws_url.startswith("wss://") else None
         client_idx = 0
         while client_idx < len(ws_client_ids):
             ws_client_id = ws_client_ids[client_idx]
@@ -1641,6 +1660,7 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                     max_size=4 * 1024 * 1024,
                     origin=ws_origin,
                     extra_headers=extra_headers,
+                    ssl=_url_ssl,
                 ) as ws:
                     connect_id = f"connect_{uuid.uuid4().hex[:10]}"
                     connect_payload = {
@@ -1648,9 +1668,9 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                         "id": connect_id,
                         "method": "connect",
                         "params": {
-                            "minProtocol": 3,
-                            "maxProtocol": 3,
-                            "client": {"id": ws_client_id, "version": "vdev", "platform": "web", "mode": "webchat"},
+                            "minProtocol": 1,
+                            "maxProtocol": 5,
+                            "client": {"id": ws_client_id, "version": "vdev", "platform": "server", "mode": "api"},
                             "auth": {"token": api_key},
                             "role": "operator",
                             "scopes": ["operator.read", "operator.write"],
