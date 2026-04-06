@@ -1048,10 +1048,10 @@ def _candidate_ws_client_ids() -> List[str]:
             if cid and cid not in out:
                 out.append(cid)
     defaults = [
+        "openclaw-control-ui",
         "hivee-server-bridge",
         "openclaw-webchat",
         "openclaw-client",
-        "openclaw-api",
     ]
     for cid in defaults:
         if cid not in out:
@@ -1358,28 +1358,35 @@ async def openclaw_ws_chat(
             deadline = time.time() + max(8, min(timeout_sec, 90))
             connect_id = f"connect_{uuid.uuid4().hex[:10]}"
             chat_id = f"chat_{uuid.uuid4().hex[:10]}"
+            connect_params: Dict[str, Any] = {
+                "minProtocol": 1,
+                "maxProtocol": 5,
+                "client": {
+                    "id": ws_client_id,
+                    "version": "vdev",
+                    "platform": "web",
+                    "mode": "webchat",
+                },
+                "auth": {"token": api_key},
+                "role": "operator",
+                "scopes": ["operator.read", "operator.write"],
+                "caps": [],
+                "commands": [],
+                "permissions": {},
+                "locale": "en-US",
+                "userAgent": "hivee/0.1.0",
+            }
+            if ws_client_id == "openclaw-control-ui":
+                connect_params["deviceIdentity"] = {
+                    "id": f"hivee-server-{uuid.uuid4().hex[:16]}",
+                    "fingerprint": uuid.uuid4().hex,
+                    "type": "server",
+                }
             connect_payload = {
                 "type": "req",
                 "id": connect_id,
                 "method": "connect",
-                "params": {
-                    "minProtocol": 1,
-                    "maxProtocol": 5,
-                    "client": {
-                        "id": ws_client_id,
-                        "version": "vdev",
-                        "platform": "server",
-                        "mode": "api",
-                    },
-                    "auth": {"token": api_key},
-                    "role": "operator",
-                    "scopes": ["operator.read", "operator.write"],
-                    "caps": [],
-                    "commands": [],
-                    "permissions": {},
-                    "locale": "en-US",
-                    "userAgent": "hivee/0.1.0",
-                },
+                "params": connect_params,
             }
             routed_session_key = _derive_ws_session_key(session_key=session_key, agent_id=agent_id)
             chat_params: Dict[str, Any] = {
@@ -1664,23 +1671,30 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                     ssl=_url_ssl,
                 ) as ws:
                     connect_id = f"connect_{uuid.uuid4().hex[:10]}"
+                    connect_params: Dict[str, Any] = {
+                        "minProtocol": 1,
+                        "maxProtocol": 5,
+                        "client": {"id": ws_client_id, "version": "vdev", "platform": "web", "mode": "webchat"},
+                        "auth": {"token": api_key},
+                        "role": "operator",
+                        "scopes": ["operator.read", "operator.write"],
+                        "caps": [],
+                        "commands": [],
+                        "permissions": {},
+                        "locale": "en-US",
+                        "userAgent": "hivee/0.1.0",
+                    }
+                    if ws_client_id == "openclaw-control-ui":
+                        connect_params["deviceIdentity"] = {
+                            "id": f"hivee-server-{uuid.uuid4().hex[:16]}",
+                            "fingerprint": uuid.uuid4().hex,
+                            "type": "server",
+                        }
                     connect_payload = {
                         "type": "req",
                         "id": connect_id,
                         "method": "connect",
-                        "params": {
-                            "minProtocol": 1,
-                            "maxProtocol": 5,
-                            "client": {"id": ws_client_id, "version": "vdev", "platform": "server", "mode": "api"},
-                            "auth": {"token": api_key},
-                            "role": "operator",
-                            "scopes": ["operator.read", "operator.write"],
-                            "caps": [],
-                            "commands": [],
-                            "permissions": {},
-                            "locale": "en-US",
-                            "userAgent": "hivee/0.1.0",
-                        },
+                        "params": connect_params,
                     }
 
                     try:
