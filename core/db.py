@@ -665,10 +665,13 @@ CHAT_PATHS = [
     "/v1/chat/completions",
     "/chat/completions",
     "/api/chat/completions",
+    "/api/v1/chat/completions",
     "/v1/responses",
     "/responses",
+    "/api/responses",
     "/chat",
     "/api/chat",
+    "/api/v1/chat",
 ]
 
 

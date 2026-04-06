@@ -125,7 +125,15 @@ def register_routes(app: FastAPI) -> None:
     
         res = await openclaw_list_agents(row["base_url"], connection_api_key)
         if not res.get("ok"):
-            raise HTTPException(400, res)
+            # Return empty list rather than 400 — connection is valid even if
+            # agent listing fails (e.g. WS needs device identity, REST not exposed).
+            return {
+                "ok": True,
+                "agents": [],
+                "transport": "none",
+                "warning": res.get("error") or "Agent listing unavailable; WS requires device identity and REST agent endpoints are not exposed.",
+                "hint": res.get("hint") or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow HTTP chat.",
+            }
         return res
     
     @app.get("/api/openclaw/{connection_id}/policy", response_model=ConnectionPolicyOut)
