@@ -1568,7 +1568,6 @@ async def openclaw_ws_chat(
     if http_fallback.get("ok"):
         return http_fallback
 
-    print(f"[openclaw_ws_chat] FAILED. Tried URLs: {ws_urls}. Errors: {errors}", flush=True)
     return {
         "ok": False,
         "error": "WS chat failed across all candidate WS paths.",
@@ -1705,7 +1704,18 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                                 connect_terminal_seen = True
                                 reason = msg.get("error") or msg
                                 if _is_ws_device_identity_error(reason):
-                                    print(f"[openclaw_ws_list_agents] device_identity_required for client={ws_client_id}. Full msg: {msg}", flush=True)
+                                    # Device identity is a browser-only mechanism (WebCrypto).
+                                    # Server-side connections cannot satisfy it — skip remaining
+                                    # URLs for this client ID, it won't work anywhere.
+                                    errors.append(
+                                        f"{ws_url} client={ws_client_id}: connect rejected: {detail_to_text(reason)[:420]} "
+                                        "(server-side connections cannot provide browser device identity)"
+                                    )
+                                    try:
+                                        ws_client_ids.remove(ws_client_id)
+                                    except ValueError:
+                                        pass
+                                    break
                                 hinted = []
                                 if _is_ws_client_id_mismatch_error(reason):
                                     hinted = _append_ws_client_id_hints(reason, ws_client_ids)
@@ -1791,12 +1801,15 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
             "warning": "Only models.list is available; using models as chat targets fallback.",
         }
 
-    print(f"[openclaw_ws_list_agents] FAILED. Tried URLs: {ws_urls}. Errors: {errors}", flush=True)
     return {
         "ok": False,
         "error": "WS agent listing failed across all candidate WS paths/methods.",
         "details": errors[-8:],
-        "hint": "If your gateway enforces a fixed connect.params.client.id, set OPENCLAW_WS_CLIENT_IDS to include that id first.",
+        "hint": (
+            "If OpenClaw only allows 'openclaw-control-ui' (which requires browser device identity), "
+            "enable HTTP REST in OpenClaw config (gateway.http.endpoints.chatCompletions.enabled=true) "
+            "or add a server-accessible client ID to OpenClaw and set OPENCLAW_WS_CLIENT_IDS."
+        ),
         "models_detected": saw_models_only,
     }
 async def _ensure_project_info_document(project_id: str, *, force: bool = False) -> Dict[str, Any]:
