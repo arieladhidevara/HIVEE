@@ -1117,6 +1117,7 @@ async def openclaw_chat(
                     saw_405 = True
                 if r.status_code >= 400:
                     last_err = f"{p}: {r.status_code} {r.text[:300]}"
+                    print(f"[openclaw_chat] {p} → {r.status_code}: {r.text[:400]}", flush=True)
                     continue
 
                 ctype = r.headers.get("content-type", "")
