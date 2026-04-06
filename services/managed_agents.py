@@ -1358,6 +1358,7 @@ async def openclaw_ws_chat(
             deadline = time.time() + max(8, min(timeout_sec, 90))
             connect_id = f"connect_{uuid.uuid4().hex[:10]}"
             chat_id = f"chat_{uuid.uuid4().hex[:10]}"
+            _device_id = f"hivee-server-{uuid.uuid4().hex[:16]}"
             connect_params: Dict[str, Any] = {
                 "minProtocol": 1,
                 "maxProtocol": 5,
@@ -1367,7 +1368,7 @@ async def openclaw_ws_chat(
                     "platform": "web",
                     "mode": "webchat",
                 },
-                "auth": {"token": api_key},
+                "auth": {"token": api_key, "deviceId": _device_id},
                 "role": "operator",
                 "scopes": ["operator.read", "operator.write"],
                 "caps": [],
@@ -1376,12 +1377,6 @@ async def openclaw_ws_chat(
                 "locale": "en-US",
                 "userAgent": "hivee/0.1.0",
             }
-            if ws_client_id == "openclaw-control-ui":
-                connect_params["deviceIdentity"] = {
-                    "id": f"hivee-server-{uuid.uuid4().hex[:16]}",
-                    "fingerprint": uuid.uuid4().hex,
-                    "type": "server",
-                }
             connect_payload = {
                 "type": "req",
                 "id": connect_id,
@@ -1671,11 +1666,12 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                     ssl=_url_ssl,
                 ) as ws:
                     connect_id = f"connect_{uuid.uuid4().hex[:10]}"
+                    _device_id = f"hivee-server-{uuid.uuid4().hex[:16]}"
                     connect_params: Dict[str, Any] = {
                         "minProtocol": 1,
                         "maxProtocol": 5,
                         "client": {"id": ws_client_id, "version": "vdev", "platform": "web", "mode": "webchat"},
-                        "auth": {"token": api_key},
+                        "auth": {"token": api_key, "deviceId": _device_id},
                         "role": "operator",
                         "scopes": ["operator.read", "operator.write"],
                         "caps": [],
@@ -1684,12 +1680,6 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                         "locale": "en-US",
                         "userAgent": "hivee/0.1.0",
                     }
-                    if ws_client_id == "openclaw-control-ui":
-                        connect_params["deviceIdentity"] = {
-                            "id": f"hivee-server-{uuid.uuid4().hex[:16]}",
-                            "fingerprint": uuid.uuid4().hex,
-                            "type": "server",
-                        }
                     connect_payload = {
                         "type": "req",
                         "id": connect_id,
@@ -1716,6 +1706,8 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
                             if msg.get("ok") is False or msg.get("error"):
                                 connect_terminal_seen = True
                                 reason = msg.get("error") or msg
+                                if _is_ws_device_identity_error(reason):
+                                    print(f"[openclaw_ws_list_agents] device_identity_required for client={ws_client_id}. Full msg: {msg}", flush=True)
                                 hinted = []
                                 if _is_ws_client_id_mismatch_error(reason):
                                     hinted = _append_ws_client_id_hints(reason, ws_client_ids)
