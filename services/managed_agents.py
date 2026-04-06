@@ -1567,6 +1567,7 @@ async def openclaw_ws_chat(
     if http_fallback.get("ok"):
         return http_fallback
 
+    print(f"[openclaw_ws_chat] FAILED. Tried URLs: {ws_urls}. Errors: {errors}", flush=True)
     return {
         "ok": False,
         "error": "WS chat failed across all candidate WS paths.",
@@ -1786,6 +1787,7 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
             "warning": "Only models.list is available; using models as chat targets fallback.",
         }
 
+    print(f"[openclaw_ws_list_agents] FAILED. Tried URLs: {ws_urls}. Errors: {errors}", flush=True)
     return {
         "ok": False,
         "error": "WS agent listing failed across all candidate WS paths/methods.",
