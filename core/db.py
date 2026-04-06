@@ -662,16 +662,13 @@ AGENTS_PATHS = [
     "/api/v1/models",
 ]
 CHAT_PATHS = [
+    # Standard OpenAI-compatible paths — most OpenClaw gateways expose these.
     "/v1/chat/completions",
+    "/v1/responses",
+    # Common API-prefix variants for reverse-proxy setups.
+    "/api/v1/chat/completions",
     "/chat/completions",
     "/api/chat/completions",
-    "/api/v1/chat/completions",
-    "/v1/responses",
-    "/responses",
-    "/api/responses",
-    "/chat",
-    "/api/chat",
-    "/api/v1/chat",
 ]
 
 

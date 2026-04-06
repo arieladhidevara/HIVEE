@@ -1072,6 +1072,7 @@ async def openclaw_chat(
     async with httpx.AsyncClient(follow_redirects=True) as client:
         last_err = None
         saw_405 = False
+        saw_502: Optional[str] = None  # first path that returned 502
         for p in CHAT_PATHS:
             model_hint = f"openclaw:{agent_id}" if agent_id else "openclaw:default"
             extra_headers: Dict[str, str] = {}
@@ -1118,6 +1119,12 @@ async def openclaw_chat(
                 if r.status_code == 403:
                     last_err = f"{p}: 403 {r.text[:300]}"
                     continue
+                if r.status_code == 502:
+                    # Path exists on the proxy but the upstream LLM/backend is down.
+                    # No point probing remaining paths — they will 404.
+                    saw_502 = saw_502 or p
+                    last_err = f"{p}: 502 {r.text[:300]}"
+                    break
                 if r.status_code == 405:
                     saw_405 = True
                 if r.status_code >= 400:
@@ -1133,6 +1140,19 @@ async def openclaw_chat(
             except Exception as e:
                 last_err = f"{p}: {str(e)}"
 
+    if saw_502:
+        return {
+            "ok": False,
+            "error": (
+                f"OpenClaw chat endpoint ({saw_502}) returned 502 Bad Gateway. "
+                "The OpenClaw gateway proxy is running but its upstream LLM provider is unreachable. "
+                "Check: (1) OpenClaw provider key is valid and has credits, "
+                "(2) the upstream model/provider is reachable from the OpenClaw server, "
+                "(3) OpenClaw service logs for upstream connection errors."
+            ),
+            "hint": "502 means the path exists on the proxy but the backend is down — this is a server-side OpenClaw config issue, not an auth problem.",
+            "path": saw_502,
+        }
     if saw_405:
         return {
             "ok": False,
