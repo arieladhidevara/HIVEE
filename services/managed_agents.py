@@ -789,7 +789,14 @@ async def _request_openclaw_with_auth(
     if res.status_code in (401, 403) or _response_looks_like_login_html(res):
         login = await client.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=timeout)
         if login.status_code < 400:
-            res = await client.request(method=method, url=url, headers=headers, json=json_body, timeout=timeout)
+            # Retry with session cookie only — no Bearer header.
+            # When the Bearer token lacks operator.write scope, the session
+            # cookie (from /login with the gateway token) may grant full access.
+            cookie_headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
+            res = await client.request(method=method, url=url, headers=cookie_headers, json=json_body, timeout=timeout)
+            if res.status_code in (401, 403):
+                # Last resort: retry with Bearer + cookie together
+                res = await client.request(method=method, url=url, headers=headers, json=json_body, timeout=timeout)
     return res
 
 async def openclaw_health(base_url: str, api_key: str) -> Dict[str, Any]:
