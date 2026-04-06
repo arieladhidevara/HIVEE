@@ -786,8 +786,8 @@ async def _request_openclaw_with_auth(
         timeout=timeout,
     )
 
-    if res.status_code == 403:
-        print(f"[openclaw] 403 on {method} {url} — token prefix: {api_key[:6]}... body: {res.text[:400]}")
+    if res.status_code >= 400:
+        print(f"[openclaw] {res.status_code} on {method} {url} — token prefix: {api_key[:6]}... body: {res.text[:400]}", flush=True)
     if res.status_code == 401 or _response_looks_like_login_html(res):
         login = await client.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=timeout)
         if login.status_code < 400:
