@@ -786,24 +786,12 @@ async def _request_openclaw_with_auth(
         timeout=timeout,
     )
 
-    if res.status_code in (401, 403) or _response_looks_like_login_html(res):
+    if res.status_code == 401 or _response_looks_like_login_html(res):
+        # Only retry on 401/HTML (true auth failure), not 403 scope errors.
+        # 403 means the token is valid but lacks operator.write — retrying won't help.
         login = await client.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=timeout)
         if login.status_code < 400:
-            # Retry 1: session cookie only, no Bearer
-            cookie_headers = {k: v for k, v in headers.items() if k.lower() != "authorization"}
-            res = await client.request(method=method, url=url, headers=cookie_headers, json=json_body, timeout=timeout)
-        if res.status_code in (401, 403):
-            # Retry 2: add operator role/scope hint headers
-            hint_headers = {**headers, "X-OpenClaw-Role": "operator", "X-OpenClaw-Scopes": "operator.read operator.write"}
-            res = await client.request(method=method, url=url, headers=hint_headers, json=json_body, timeout=timeout)
-        if res.status_code in (401, 403):
-            # Retry 3: token as query param (some gateways use ?token= for elevated access)
-            from urllib.parse import urlparse, urlencode, urlunparse, parse_qs
-            parsed = urlparse(url)
-            qs = parse_qs(parsed.query)
-            qs["token"] = [api_key]
-            new_url = urlunparse(parsed._replace(query=urlencode(qs, doseq=True)))
-            res = await client.request(method=method, url=new_url, headers=headers, json=json_body, timeout=timeout)
+            res = await client.request(method=method, url=url, headers=headers, json=json_body, timeout=timeout)
     return res
 
 async def openclaw_health(base_url: str, api_key: str) -> Dict[str, Any]:
@@ -1142,7 +1130,6 @@ async def openclaw_chat(
                     saw_405 = True
                 if r.status_code >= 400:
                     last_err = f"{p}: {r.status_code} {r.text[:300]}"
-                    print(f"[openclaw_chat] {p} → {r.status_code}: {r.text[:400]}", flush=True)
                     continue
 
                 ctype = r.headers.get("content-type", "")
