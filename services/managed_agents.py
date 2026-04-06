@@ -1,5 +1,6 @@
-from services.project_utils import *
+import os
 
+from services.project_utils import *
 def _upsert_connection_policy(
     connection_id: str,
     user_id: str,
@@ -896,6 +897,38 @@ def _is_ws_device_identity_error(detail: Any) -> bool:
         return True
     return ("device identity" in low) and ("secure context" in low or "https" in low or "localhost" in low)
 
+
+def _is_ws_client_id_mismatch_error(detail: Any) -> bool:
+    low = detail_to_text(detail).lower()
+    if not low:
+        return False
+    if "/client/id" not in low:
+        return False
+    if "must be equal to constant" in low:
+        return True
+    if "must match a schema in anyof" in low:
+        return True
+    return "invalid connect params" in low
+
+def _candidate_ws_client_ids() -> List[str]:
+    raw = str(os.environ.get("OPENCLAW_WS_CLIENT_IDS") or "").strip()
+    out: List[str] = []
+    if raw:
+        normalized = raw.replace(";", ",")
+        for part in normalized.split(","):
+            cid = part.strip()
+            if cid and cid not in out:
+                out.append(cid)
+    defaults = [
+        "hivee-server-bridge",
+        "openclaw-control-ui",
+        "openclaw-webchat",
+        "openclaw-client",
+    ]
+    for cid in defaults:
+        if cid not in out:
+            out.append(cid)
+    return out
 async def openclaw_chat(
     base_url: str,
     api_key: str,
@@ -1082,6 +1115,7 @@ async def openclaw_ws_chat(
     ws_urls = _candidate_ws_urls(base_url)
     ws_origin = _gateway_origin(base_url)
     errors: List[str] = []
+    ws_client_ids = _candidate_ws_client_ids()
 
     async def _retry_http_on_budget_error(reason: Any, ws_path: str) -> Optional[Dict[str, Any]]:
         if not _is_credit_or_max_token_error(reason):
@@ -1153,183 +1187,213 @@ async def openclaw_ws_chat(
             extra_headers["Cookie"] = cookie
 
     for ws_url in ws_urls:
-        frames: List[Dict[str, Any]] = []
-        text_best = ""
-        delta_parts: List[str] = []
-        runtime_error: Optional[str] = None
-        deadline = time.time() + max(8, min(timeout_sec, 90))
-        connect_id = f"connect_{uuid.uuid4().hex[:10]}"
-        chat_id = f"chat_{uuid.uuid4().hex[:10]}"
-        connect_payload = {
-            "type": "req",
-            "id": connect_id,
-            "method": "connect",
-            "params": {
-                "minProtocol": 3,
-                "maxProtocol": 3,
-                # Match OpenClaw webchat client schema expected by gateway
-                "client": {
-                    "id": "hivee-server-bridge",
-                    "version": "vdev",
-                    "platform": "web",
-                    "mode": "webchat",
+        for ws_client_id in ws_client_ids:
+            frames: List[Dict[str, Any]] = []
+            text_best = ""
+            delta_parts: List[str] = []
+            runtime_error: Optional[str] = None
+            deadline = time.time() + max(8, min(timeout_sec, 90))
+            connect_id = f"connect_{uuid.uuid4().hex[:10]}"
+            chat_id = f"chat_{uuid.uuid4().hex[:10]}"
+            connect_payload = {
+                "type": "req",
+                "id": connect_id,
+                "method": "connect",
+                "params": {
+                    "minProtocol": 3,
+                    "maxProtocol": 3,
+                    "client": {
+                        "id": ws_client_id,
+                        "version": "vdev",
+                        "platform": "web",
+                        "mode": "webchat",
+                    },
+                    "auth": {"token": api_key},
+                    "role": "operator",
+                    "scopes": ["operator.read", "operator.write"],
+                    "caps": [],
+                    "commands": [],
+                    "permissions": {},
+                    "locale": "en-US",
+                    "userAgent": "hivee/0.1.0",
                 },
-                "auth": {"token": api_key},
-                "role": "operator",
-                "scopes": ["operator.read", "operator.write"],
-                "caps": [],
-                "commands": [],
-                "permissions": {},
-                "locale": "en-US",
-                "userAgent": "hivee/0.1.0",
-            },
-        }
-        routed_session_key = _derive_ws_session_key(session_key=session_key, agent_id=agent_id)
-        chat_params: Dict[str, Any] = {
-            "sessionKey": routed_session_key,
-            "message": message,
-            "idempotencyKey": uuid.uuid4().hex,
-            "timeoutMs": 120000,
-        }
-        # Keep WS payload strict to protocol schema; route by session key.
-        chat_payload = {
-            "type": "req",
-            "id": chat_id,
-            "method": "chat.send",
-            "params": chat_params,
-        }
+            }
+            routed_session_key = _derive_ws_session_key(session_key=session_key, agent_id=agent_id)
+            chat_params: Dict[str, Any] = {
+                "sessionKey": routed_session_key,
+                "message": message,
+                "idempotencyKey": uuid.uuid4().hex,
+                "timeoutMs": 120000,
+            }
+            # Keep WS payload strict to protocol schema; route by session key.
+            chat_payload = {
+                "type": "req",
+                "id": chat_id,
+                "method": "chat.send",
+                "params": chat_params,
+            }
 
-        try:
-            async with websockets.connect(
-                ws_url,
-                open_timeout=12,
-                max_size=4 * 1024 * 1024,
-                origin=ws_origin,
-                extra_headers=extra_headers,
-            ) as ws:
-                # Some deployments emit connect.challenge first; capture if present.
-                try:
-                    peek = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                    msg = await _to_json(peek)
-                    if msg:
-                        frames.append(msg)
-                except asyncio.TimeoutError:
-                    pass
+            try:
+                async with websockets.connect(
+                    ws_url,
+                    open_timeout=12,
+                    max_size=4 * 1024 * 1024,
+                    origin=ws_origin,
+                    extra_headers=extra_headers,
+                ) as ws:
+                    # Some deployments emit connect.challenge first; capture if present.
+                    try:
+                        peek = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                        msg = await _to_json(peek)
+                        if msg:
+                            frames.append(msg)
+                    except asyncio.TimeoutError:
+                        pass
 
-                await ws.send(json.dumps(connect_payload))
-                connected = False
-                while time.time() < deadline:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
-                    payload = await _to_json(raw)
-                    if not payload:
-                        continue
-                    frames.append(payload)
-                    if payload.get("type") == "res" and payload.get("id") == connect_id:
-                        if payload.get("ok") is False or payload.get("error"):
-                            connect_reason = payload.get("error") or payload
-                            retry = await _retry_http_on_ws_connect_requirement(connect_reason, ws_url)
-                            if retry:
+                    await ws.send(json.dumps(connect_payload))
+                    connected = False
+                    connect_terminal_seen = False
+                    while time.time() < deadline:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
+                        payload = await _to_json(raw)
+                        if not payload:
+                            continue
+                        frames.append(payload)
+                        if payload.get("type") == "res" and payload.get("id") == connect_id:
+                            if payload.get("ok") is False or payload.get("error"):
+                                connect_terminal_seen = True
+                                connect_reason = payload.get("error") or payload
+                                if _is_ws_client_id_mismatch_error(connect_reason):
+                                    errors.append(f"{ws_url} client={ws_client_id}: connect rejected: {detail_to_text(connect_reason)[:420]}")
+                                    break
+                                retry = await _retry_http_on_ws_connect_requirement(connect_reason, ws_url)
+                                if retry and retry.get("ok"):
+                                    retry["client_id"] = ws_client_id
+                                    return retry
+                                if retry:
+                                    errors.append(
+                                        f"{ws_url} client={ws_client_id}: {detail_to_text(retry.get('error') or retry.get('details'))[:420]}"
+                                    )
+                                    break
+                                return {
+                                    "ok": False,
+                                    "path": ws_url,
+                                    "error": f"WS connect rejected: {connect_reason}",
+                                    "client_id": ws_client_id,
+                                }
+                            connected = True
+                            break
+                        if payload.get("type") == "err" and payload.get("id") == connect_id:
+                            connect_terminal_seen = True
+                            if _is_ws_client_id_mismatch_error(payload):
+                                errors.append(f"{ws_url} client={ws_client_id}: connect error: {detail_to_text(payload)[:420]}")
+                                break
+                            retry = await _retry_http_on_ws_connect_requirement(payload, ws_url)
+                            if retry and retry.get("ok"):
+                                retry["client_id"] = ws_client_id
                                 return retry
+                            if retry:
+                                errors.append(
+                                    f"{ws_url} client={ws_client_id}: {detail_to_text(retry.get('error') or retry.get('details'))[:420]}"
+                                )
+                                break
                             return {
                                 "ok": False,
                                 "path": ws_url,
-                                "error": f"WS connect rejected: {connect_reason}",
+                                "error": f"WS connect error: {payload}",
+                                "client_id": ws_client_id,
                             }
-                        connected = True
-                        break
-                    if payload.get("type") == "err" and payload.get("id") == connect_id:
-                        retry = await _retry_http_on_ws_connect_requirement(payload, ws_url)
-                        if retry:
-                            return retry
-                        return {"ok": False, "path": ws_url, "error": f"WS connect error: {payload}"}
-                if not connected:
-                    errors.append(f"{ws_url}: no connect ack")
-                    continue
-
-                await ws.send(json.dumps(chat_payload))
-                accepted = False
-                first_text_at: Optional[float] = None
-                idle_grace_sec = 2.0
-                while time.time() < deadline:
-                    wait_for = min(2.0, max(0.1, deadline - time.time()))
-                    try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=wait_for)
-                    except asyncio.TimeoutError:
-                        if first_text_at and (time.time() - first_text_at) >= idle_grace_sec:
-                            break
+                    if not connected:
+                        if not connect_terminal_seen:
+                            errors.append(f"{ws_url} client={ws_client_id}: no connect ack")
                         continue
-                    payload = await _to_json(raw)
-                    if not payload:
-                        continue
-                    frames.append(payload)
 
-                    if payload.get("type") == "res" and payload.get("id") == chat_id:
-                        if payload.get("ok") is False or payload.get("error"):
-                            retry = await _retry_http_on_budget_error(payload.get("error") or payload, ws_url)
+                    await ws.send(json.dumps(chat_payload))
+                    accepted = False
+                    first_text_at: Optional[float] = None
+                    idle_grace_sec = 2.0
+                    while time.time() < deadline:
+                        wait_for = min(2.0, max(0.1, deadline - time.time()))
+                        try:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=wait_for)
+                        except asyncio.TimeoutError:
+                            if first_text_at and (time.time() - first_text_at) >= idle_grace_sec:
+                                break
+                            continue
+                        payload = await _to_json(raw)
+                        if not payload:
+                            continue
+                        frames.append(payload)
+
+                        if payload.get("type") == "res" and payload.get("id") == chat_id:
+                            if payload.get("ok") is False or payload.get("error"):
+                                retry = await _retry_http_on_budget_error(payload.get("error") or payload, ws_url)
+                                if retry:
+                                    return retry
+                                return {"ok": False, "path": ws_url, "error": f"chat.send rejected: {payload.get('error') or payload}"}
+                            accepted = True
+                        if payload.get("type") == "err" and payload.get("id") == chat_id:
+                            retry = await _retry_http_on_budget_error(payload, ws_url)
                             if retry:
                                 return retry
-                            return {"ok": False, "path": ws_url, "error": f"chat.send rejected: {payload.get('error') or payload}"}
-                        accepted = True
-                    if payload.get("type") == "err" and payload.get("id") == chat_id:
-                        retry = await _retry_http_on_budget_error(payload, ws_url)
+                            return {"ok": False, "path": ws_url, "error": f"chat.send error: {payload}"}
+
+                        # Detect runtime failures emitted as events so UI gets a concise error.
+                        if payload.get("type") == "event":
+                            ev = payload.get("event")
+                            evp = payload.get("payload")
+                            if ev == "chat" and isinstance(evp, dict) and evp.get("state") == "error":
+                                runtime_error = str(evp.get("errorMessage") or evp.get("error") or "Chat failed")
+                            elif ev == "agent" and isinstance(evp, dict):
+                                data = evp.get("data")
+                                if isinstance(data, dict) and data.get("phase") == "error":
+                                    runtime_error = str(data.get("error") or runtime_error or "Agent failed")
+
+                        picks: List[str] = []
+                        _collect_text_fields(payload, picks)
+                        for p in picks:
+                            candidate = p.strip()
+                            if not candidate:
+                                continue
+                            looks_like_sentence = (" " in candidate) or ("\n" in candidate) or len(candidate) >= 24
+                            if looks_like_sentence:
+                                if (
+                                    not text_best
+                                    or candidate.startswith(text_best)
+                                    or len(candidate) > (len(text_best) + 6)
+                                ):
+                                    text_best = candidate
+                                    first_text_at = time.time()
+                                    continue
+                            if not delta_parts or delta_parts[-1] != candidate:
+                                delta_parts.append(candidate)
+                                first_text_at = time.time()
+
+                    text = text_best or _join_delta_chunks(delta_parts) or None
+                    if runtime_error:
+                        retry = await _retry_http_on_budget_error(runtime_error, ws_url)
                         if retry:
                             return retry
-                        return {"ok": False, "path": ws_url, "error": f"chat.send error: {payload}"}
-
-                    # Detect runtime failures emitted as events so UI gets a concise error.
-                    if payload.get("type") == "event":
-                        ev = payload.get("event")
-                        evp = payload.get("payload")
-                        if ev == "chat" and isinstance(evp, dict) and evp.get("state") == "error":
-                            runtime_error = str(evp.get("errorMessage") or evp.get("error") or "Chat failed")
-                        elif ev == "agent" and isinstance(evp, dict):
-                            data = evp.get("data")
-                            if isinstance(data, dict) and data.get("phase") == "error":
-                                runtime_error = str(data.get("error") or runtime_error or "Agent failed")
-
-                    picks: List[str] = []
-                    _collect_text_fields(payload, picks)
-                    for p in picks:
-                        candidate = p.strip()
-                        if not candidate:
-                            continue
-                        looks_like_sentence = (" " in candidate) or ("\n" in candidate) or len(candidate) >= 24
-                        if looks_like_sentence:
-                            if (
-                                not text_best
-                                or candidate.startswith(text_best)
-                                or len(candidate) > (len(text_best) + 6)
-                            ):
-                                text_best = candidate
-                                first_text_at = time.time()
-                                continue
-                        if not delta_parts or delta_parts[-1] != candidate:
-                            delta_parts.append(candidate)
-                            first_text_at = time.time()
-
-                text = text_best or _join_delta_chunks(delta_parts) or None
-                if runtime_error:
-                    retry = await _retry_http_on_budget_error(runtime_error, ws_url)
-                    if retry:
-                        return retry
+                        return {
+                            "ok": False,
+                            "path": ws_url,
+                            "error": runtime_error[:1500],
+                            "accepted": accepted,
+                            "frames": frames[-8:],
+                            "client_id": ws_client_id,
+                        }
                     return {
-                        "ok": False,
+                        "ok": True,
+                        "transport": "ws",
                         "path": ws_url,
-                        "error": runtime_error[:1500],
                         "accepted": accepted,
-                        "frames": frames[-8:],
+                        "text": text,
+                        "frames": frames[-12:],
+                        "client_id": ws_client_id,
                     }
-                return {
-                    "ok": True,
-                    "transport": "ws",
-                    "path": ws_url,
-                    "accepted": accepted,
-                    "text": text,
-                    "frames": frames[-12:],
-                }
-        except Exception as e:
-            errors.append(f"{ws_url}: {str(e)}")
-            continue
+            except Exception as e:
+                errors.append(f"{ws_url} client={ws_client_id}: {str(e)}")
+                continue
 
     if errors and _is_credit_or_max_token_error(errors[-1]):
         retry = await _retry_http_on_budget_error(errors[-1], ws_urls[-1] if ws_urls else "ws")
@@ -1340,9 +1404,8 @@ async def openclaw_ws_chat(
         "ok": False,
         "error": "WS chat failed across all candidate WS paths.",
         "details": errors[-5:],
-        "hint": "OpenClaw may require device identity/pairing or a specific WS path behind the provider proxy.",
+        "hint": "OpenClaw may require a specific connect.params.client.id. Set OPENCLAW_WS_CLIENT_IDS (comma-separated) to include the gateway-required id.",
     }
-
 async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int = 12) -> Dict[str, Any]:
     try:
         import websockets
@@ -1376,7 +1439,7 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
     ws_urls = _candidate_ws_urls(base_url)
     ws_origin = _gateway_origin(base_url)
     errors: List[str] = []
-
+    ws_client_ids = _candidate_ws_client_ids()
 
     async with httpx.AsyncClient(follow_redirects=True) as http:
         try:
@@ -1402,93 +1465,107 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
     models_source_method = ""
 
     for ws_url in ws_urls:
-        try:
-            async with websockets.connect(
-                ws_url,
-                open_timeout=12,
-                max_size=4 * 1024 * 1024,
-                origin=ws_origin,
-                extra_headers=extra_headers,
-            ) as ws:
-                connect_id = f"connect_{uuid.uuid4().hex[:10]}"
-                connect_payload = {
-                    "type": "req",
-                    "id": connect_id,
-                    "method": "connect",
-                    "params": {
-                        "minProtocol": 3,
-                        "maxProtocol": 3,
-                        "client": {"id": "hivee-server-bridge", "version": "vdev", "platform": "web", "mode": "webchat"},
-                        "auth": {"token": api_key},
-                        "role": "operator",
-                        "scopes": ["operator.read", "operator.write"],
-                        "caps": [],
-                        "commands": [],
-                        "permissions": {},
-                        "locale": "en-US",
-                        "userAgent": "hivee/0.1.0",
-                    },
-                }
+        for ws_client_id in ws_client_ids:
+            try:
+                async with websockets.connect(
+                    ws_url,
+                    open_timeout=12,
+                    max_size=4 * 1024 * 1024,
+                    origin=ws_origin,
+                    extra_headers=extra_headers,
+                ) as ws:
+                    connect_id = f"connect_{uuid.uuid4().hex[:10]}"
+                    connect_payload = {
+                        "type": "req",
+                        "id": connect_id,
+                        "method": "connect",
+                        "params": {
+                            "minProtocol": 3,
+                            "maxProtocol": 3,
+                            "client": {"id": ws_client_id, "version": "vdev", "platform": "web", "mode": "webchat"},
+                            "auth": {"token": api_key},
+                            "role": "operator",
+                            "scopes": ["operator.read", "operator.write"],
+                            "caps": [],
+                            "commands": [],
+                            "permissions": {},
+                            "locale": "en-US",
+                            "userAgent": "hivee/0.1.0",
+                        },
+                    }
 
-                try:
-                    peek = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                    _ = await _to_json(peek)
-                except asyncio.TimeoutError:
-                    pass
+                    try:
+                        peek = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                        _ = await _to_json(peek)
+                    except asyncio.TimeoutError:
+                        pass
 
-                await ws.send(json.dumps(connect_payload))
-                deadline = time.time() + max(6, min(timeout_sec, 30))
-                connected = False
-                while time.time() < deadline:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
-                    msg = await _to_json(raw)
-                    if not msg:
-                        continue
-                    if msg.get("type") == "res" and msg.get("id") == connect_id:
-                        if msg.get("ok") is False or msg.get("error"):
-                            errors.append(f"{ws_url}: connect rejected: {msg.get('error') or msg}")
-                            break
-                        connected = True
-                        break
-                    if msg.get("type") == "err" and msg.get("id") == connect_id:
-                        errors.append(f"{ws_url}: connect error: {msg}")
-                        break
-                if not connected:
-                    continue
-
-                for method, params, is_agent_method in ws_methods:
-                    req_id = f"req_{uuid.uuid4().hex[:10]}"
-                    await ws.send(json.dumps({"type": "req", "id": req_id, "method": method, "params": params}))
-                    m_deadline = time.time() + max(4, min(timeout_sec, 20))
-                    while time.time() < m_deadline:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, m_deadline - time.time()))
+                    await ws.send(json.dumps(connect_payload))
+                    deadline = time.time() + max(6, min(timeout_sec, 30))
+                    connected = False
+                    connect_terminal_seen = False
+                    while time.time() < deadline:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, deadline - time.time()))
                         msg = await _to_json(raw)
                         if not msg:
                             continue
-                        if msg.get("type") == "res" and msg.get("id") == req_id:
+                        if msg.get("type") == "res" and msg.get("id") == connect_id:
                             if msg.get("ok") is False or msg.get("error"):
-                                errors.append(f"{ws_url} {method}: rejected: {msg.get('error') or msg}")
+                                connect_terminal_seen = True
+                                reason = msg.get("error") or msg
+                                errors.append(f"{ws_url} client={ws_client_id}: connect rejected: {detail_to_text(reason)[:420]}")
                                 break
-                            result = msg.get("result")
-                            if result is None:
-                                result = msg.get("payload")
-                            raw_agents = _extract_from_ws_result(result)
-                            norm = _normalize_agents(raw_agents)
-                            if not is_agent_method:
-                                if norm:
-                                    saw_models_only = True
-                                    if not models_as_agents:
-                                        models_as_agents = norm
-                                        models_source_path = ws_url
-                                        models_source_method = method
-                                break
-                            return {"ok": True, "transport": "ws", "path": ws_url, "method": method, "agents": norm}
-                        if msg.get("type") == "err" and msg.get("id") == req_id:
-                            errors.append(f"{ws_url} {method}: error: {msg}")
+                            connected = True
                             break
-        except Exception as e:
-            errors.append(f"{ws_url}: {str(e)}")
-            continue
+                        if msg.get("type") == "err" and msg.get("id") == connect_id:
+                            connect_terminal_seen = True
+                            errors.append(f"{ws_url} client={ws_client_id}: connect error: {detail_to_text(msg)[:420]}")
+                            break
+                    if not connected:
+                        if not connect_terminal_seen:
+                            errors.append(f"{ws_url} client={ws_client_id}: no connect ack")
+                        continue
+
+                    for method, params, is_agent_method in ws_methods:
+                        req_id = f"req_{uuid.uuid4().hex[:10]}"
+                        await ws.send(json.dumps({"type": "req", "id": req_id, "method": method, "params": params}))
+                        m_deadline = time.time() + max(4, min(timeout_sec, 20))
+                        while time.time() < m_deadline:
+                            raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, m_deadline - time.time()))
+                            msg = await _to_json(raw)
+                            if not msg:
+                                continue
+                            if msg.get("type") == "res" and msg.get("id") == req_id:
+                                if msg.get("ok") is False or msg.get("error"):
+                                    errors.append(f"{ws_url} client={ws_client_id} {method}: rejected: {msg.get('error') or msg}")
+                                    break
+                                result = msg.get("result")
+                                if result is None:
+                                    result = msg.get("payload")
+                                raw_agents = _extract_from_ws_result(result)
+                                norm = _normalize_agents(raw_agents)
+                                if not is_agent_method:
+                                    if norm:
+                                        saw_models_only = True
+                                        if not models_as_agents:
+                                            models_as_agents = norm
+                                            models_source_path = ws_url
+                                            models_source_method = method
+                                    break
+                                return {
+                                    "ok": True,
+                                    "transport": "ws",
+                                    "path": ws_url,
+                                    "method": method,
+                                    "agents": norm,
+                                    "client_id": ws_client_id,
+                                }
+                            if msg.get("type") == "err" and msg.get("id") == req_id:
+                                errors.append(f"{ws_url} client={ws_client_id} {method}: error: {msg}")
+                                break
+            except Exception as e:
+                errors.append(f"{ws_url} client={ws_client_id}: {str(e)}")
+                continue
 
     if models_as_agents:
         return {
@@ -1504,10 +1581,9 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
         "ok": False,
         "error": "WS agent listing failed across all candidate WS paths/methods.",
         "details": errors[-8:],
-        "hint": "If only models.list is available, this gateway may expose model registry but not sub-agent registry on current credentials/path.",
+        "hint": "If your gateway enforces a fixed connect.params.client.id, set OPENCLAW_WS_CLIENT_IDS to include that id first.",
         "models_detected": saw_models_only,
     }
-
 async def _ensure_project_info_document(project_id: str, *, force: bool = False) -> Dict[str, Any]:
     conn = db()
     row = conn.execute(
