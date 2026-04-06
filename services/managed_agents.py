@@ -786,9 +786,9 @@ async def _request_openclaw_with_auth(
         timeout=timeout,
     )
 
+    if res.status_code == 403:
+        print(f"[openclaw] 403 on {method} {url} — token prefix: {api_key[:6]}... body: {res.text[:400]}")
     if res.status_code == 401 or _response_looks_like_login_html(res):
-        # Only retry on 401/HTML (true auth failure), not 403 scope errors.
-        # 403 means the token is valid but lacks operator.write — retrying won't help.
         login = await client.post(base_url.rstrip("/") + "/login", data={"token": api_key}, timeout=timeout)
         if login.status_code < 400:
             res = await client.request(method=method, url=url, headers=headers, json=json_body, timeout=timeout)
@@ -1073,7 +1073,7 @@ async def openclaw_chat(
         last_err = None
         saw_405 = False
         for p in CHAT_PATHS:
-            model_hint = f"openclaw:{agent_id}" if agent_id else "openclaw"
+            model_hint = f"openclaw/{agent_id}" if agent_id else "openclaw/default"
             extra_headers: Dict[str, str] = {}
             if agent_id:
                 extra_headers["x-openclaw-agent-id"] = agent_id
@@ -1115,17 +1115,9 @@ async def openclaw_chat(
                     return {"ok": False, "error": "OpenClaw returned login page. Gateway token is invalid or missing.", "path": p}
                 if r.status_code == 401:
                     return {"ok": False, "error": "Unauthorized (401). Token/API key invalid.", "path": p}
-                if r.status_code == 403 and "operator.write" in r.text:
-                    return {
-                        "ok": False,
-                        "error": (
-                            "Forbidden (403): missing scope operator.write. "
-                            "Your OpenClaw token lacks HTTP write permission. "
-                            "In OpenClaw settings, generate a token with operator.write scope "
-                            "or enable it for your existing gateway token."
-                        ),
-                        "path": p,
-                    }
+                if r.status_code == 403:
+                    last_err = f"{p}: 403 {r.text[:300]}"
+                    continue
                 if r.status_code == 405:
                     saw_405 = True
                 if r.status_code >= 400:
@@ -1147,10 +1139,18 @@ async def openclaw_chat(
             "error": "Chat endpoint returned 405 Method Not Allowed. On OpenClaw, enable gateway.http.endpoints.chatCompletions.enabled=true (or use WS gateway protocol).",
             "hint": "OpenClaw docs: OpenAI Chat Completions endpoint is disabled by default.",
         }
+    hint = "Your OpenClaw may use different chat path(s). Update CHAT_PATHS in main.py."
+    if last_err and "403" in str(last_err):
+        hint = (
+            "Got 403 on all chat paths. In gateway.auth.mode='token', a valid bearer token should "
+            "automatically receive full operator scopes. Possible causes: (1) endpoint not enabled "
+            "(set gateway.http.endpoints.chatCompletions.enabled=true), (2) token is incorrect or "
+            "doesn't match gateway.auth.token, (3) gateway.auth.mode is not set to 'token'."
+        )
     return {
         "ok": False,
         "error": f"Could not call chat endpoint on common paths. Last error: {last_err}",
-        "hint": "Your OpenClaw may use different chat path(s). Update CHAT_PATHS in main.py.",
+        "hint": hint,
     }
 
 def _as_ws_base(base_url: str) -> str:
