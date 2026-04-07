@@ -8966,6 +8966,16 @@ function bindActions() {
       startOAuth(provider).catch((e) => showUiError("auth_msg", e));
     });
   }
+  $("btn_copy_setup_prompt")?.addEventListener("click", () => {
+    const url = `${window.location.origin}/new-user/NEW-ACCOUNT.MD`;
+    const prompt = `Read this link: ${url}, and do as the doc said`;
+    navigator.clipboard.writeText(prompt).then(() => {
+      const btn = $("btn_copy_setup_prompt");
+      const orig = btn.textContent;
+      btn.textContent = "Copied!";
+      setTimeout(() => { btn.textContent = orig; }, 1800);
+    }).catch(() => {});
+  });
   $("form_connect").addEventListener("submit", (ev) => connectOpenClaw(ev).catch((e) => showUiError("setup_msg", e)));
   $("btn_setup_previous")?.addEventListener("click", () => {
     setMessage("setup_msg", "");
