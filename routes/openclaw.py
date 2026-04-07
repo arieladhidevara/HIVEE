@@ -46,15 +46,17 @@ def register_routes(app: FastAPI) -> None:
         )
         provision = None
         if bootstrap_ok:
-            provision = _provision_managed_agents_for_connection(
-                user_id=user_id,
-                env_id=env_id,
-                connection_id=conn_id,
-                base_url=payload.base_url.rstrip("/"),
-                raw_agents=bootstrap.get("agents") or [],
-                fallback_agent_id=bootstrap.get("main_agent_id"),
-                fallback_agent_name=bootstrap.get("main_agent_name"),
-            )
+            probe_transport = str((bootstrap.get("agent_probe") or {}).get("transport") or "")
+            if "model" not in probe_transport:
+                provision = _provision_managed_agents_for_connection(
+                    user_id=user_id,
+                    env_id=env_id,
+                    connection_id=conn_id,
+                    base_url=payload.base_url.rstrip("/"),
+                    raw_agents=bootstrap.get("agents") or [],
+                    fallback_agent_id=bootstrap.get("main_agent_id"),
+                    fallback_agent_name=bootstrap.get("main_agent_name"),
+                )
 
         if bootstrap_ok:
             connection_state = "healthy_connection"
@@ -129,15 +131,17 @@ def register_routes(app: FastAPI) -> None:
         )
         if not bootstrap.get("ok"):
             raise HTTPException(400, bootstrap)
-        bootstrap["agent_provision"] = _provision_managed_agents_for_connection(
-            user_id=user_id,
-            env_id=str(row["env_id"] or "").strip() or None,
-            connection_id=connection_id,
-            base_url=str(row["base_url"]),
-            raw_agents=bootstrap.get("agents") or [],
-            fallback_agent_id=bootstrap.get("main_agent_id"),
-            fallback_agent_name=bootstrap.get("main_agent_name"),
-        )
+        probe_transport = str((bootstrap.get("agent_probe") or {}).get("transport") or "")
+        if "model" not in probe_transport:
+            bootstrap["agent_provision"] = _provision_managed_agents_for_connection(
+                user_id=user_id,
+                env_id=str(row["env_id"] or "").strip() or None,
+                connection_id=connection_id,
+                base_url=str(row["base_url"]),
+                raw_agents=bootstrap.get("agents") or [],
+                fallback_agent_id=bootstrap.get("main_agent_id"),
+                fallback_agent_name=bootstrap.get("main_agent_name"),
+            )
         return bootstrap
     
     @app.get("/api/openclaw/connections", response_model=List[ConnectionOut])

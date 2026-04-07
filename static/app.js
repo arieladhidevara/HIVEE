@@ -4842,7 +4842,7 @@ async function loadChatAgents() {
     listErr = detailToText(e?.message || e);
   }
 
-  if (mainAgent && !workspaceAgents.some((a) => String(a.id || "") === String(mainAgent.id || ""))) {
+  if (mainAgent && !modelFallbackWarning && !workspaceAgents.some((a) => String(a.id || "") === String(mainAgent.id || ""))) {
     workspaceAgents.unshift(mainAgent);
   }
 
