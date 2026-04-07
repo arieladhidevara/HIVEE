@@ -4818,31 +4818,27 @@ async function loadChatAgents() {
 
   let workspaceAgents = [];
   let listErr = "";
-  let modelFallbackWarning = "";
+  let isModelFallback = false;
   try {
     const listed = await api(`/api/openclaw/${encodeURIComponent(activeConnectionId)}/agents`);
     const transport = String(listed?.transport || "");
-    const isModelFallback = transport.includes("model");
-    if (isModelFallback) {
-      modelFallbackWarning = listed?.warning || "Only /models endpoint available — no real agents found. Enable agent listing in OpenClaw to use @mentions.";
-    } else {
-      const rawAgents = Array.isArray(listed?.agents) ? listed.agents : [];
-      workspaceAgents = rawAgents
-        .map((item) => {
-          const source = (item && typeof item === "object") ? item : {};
-          const raw = (source.raw && typeof source.raw === "object") ? source.raw : source;
-          const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
-          const name = String(source.name || source.title || raw.name || id).trim() || id;
-          if (!id) return null;
-          return { id, name, role: "workspace", is_primary: false };
-        })
-        .filter(Boolean);
-    }
+    isModelFallback = transport.includes("model");
+    const rawAgents = Array.isArray(listed?.agents) ? listed.agents : [];
+    workspaceAgents = rawAgents
+      .map((item) => {
+        const source = (item && typeof item === "object") ? item : {};
+        const raw = (source.raw && typeof source.raw === "object") ? source.raw : source;
+        const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
+        const name = String(source.name || source.title || raw.name || id).trim() || id;
+        if (!id) return null;
+        return { id, name: isModelFallback ? `${name} (model)` : name, role: isModelFallback ? "model" : "workspace", is_primary: false };
+      })
+      .filter(Boolean);
   } catch (e) {
     listErr = detailToText(e?.message || e);
   }
 
-  if (mainAgent && !modelFallbackWarning && !workspaceAgents.some((a) => String(a.id || "") === String(mainAgent.id || ""))) {
+  if (mainAgent && !isModelFallback && !workspaceAgents.some((a) => String(a.id || "") === String(mainAgent.id || ""))) {
     workspaceAgents.unshift(mainAgent);
   }
 
@@ -4863,8 +4859,6 @@ async function loadChatAgents() {
     applyConnectionStatus();
     if (listErr) {
       setMessage("chat_hint", `Agent list endpoint unavailable. You can still chat using default route. Detail: ${listErr}`, "");
-    } else if (modelFallbackWarning) {
-      setMessage("chat_hint", modelFallbackWarning, "");
     } else {
       setMessage("chat_hint", "No explicit agent list available. You can still chat without @mention.", "");
     }
@@ -4875,7 +4869,9 @@ async function loadChatAgents() {
   renderChatAgents(chatAgents);
   connectionHealthy = true;
   applyConnectionStatus();
-  setMessage("chat_hint", `Workspace context: ${workspaceAgents.length} loaded agent(s) ready for chat.`, "ok");
+  setMessage("chat_hint", isModelFallback
+    ? `${workspaceAgents.length} model(s) available as chat targets (no real agents found — enable agent listing in OpenClaw).`
+    : `Workspace context: ${workspaceAgents.length} loaded agent(s) ready for chat.`, "ok");
 }
 
 function parseMention(rawMessage) {
