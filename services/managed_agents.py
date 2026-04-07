@@ -708,7 +708,7 @@ def _extract_agents_list(data: Any) -> Optional[List[Any]]:
     if not isinstance(data, dict):
         return None
 
-    for key in ["agents", "subagents", "list", "data", "items", "results", "models"]:
+    for key in ["agents", "nodes", "subagents", "list", "data", "items", "results", "models"]:
         value = data.get(key)
         if isinstance(value, list):
             return value
@@ -879,6 +879,7 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
 
                 agents = _extract_agents_list(data) or []
                 norm = _normalize_agents(agents)
+                print(f"[openclaw] 200 on GET {base_url}{p} — keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__} agents_found={len(norm)}", flush=True)
                 if norm:
                     _merge_unique_agents(rest_agents, norm, seen_ids=rest_seen_ids)
                     if "/model" not in p.lower():
