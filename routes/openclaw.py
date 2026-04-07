@@ -156,7 +156,7 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         row = conn.execute(
-            "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
+            "SELECT base_url, api_key, api_key_secret_id, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
         connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
@@ -167,6 +167,7 @@ def register_routes(app: FastAPI) -> None:
         ).fetchall()
         conn.close()
         saved_agents = [{"id": r["agent_id"], "name": r["agent_name"], "source": "saved"} for r in saved_rows]
+        saved_ids = {r["agent_id"] for r in saved_rows}
         if not row:
             raise HTTPException(404, "Connection not found")
 
@@ -185,6 +186,24 @@ def register_routes(app: FastAPI) -> None:
                 "warning": res.get("error") or "Agent listing unavailable; WS requires device identity and REST agent endpoints are not exposed.",
                 "hint": res.get("hint") or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow HTTP agent listing.",
             }
+
+        # Provision any newly discovered real agents into the DB so they appear in managed agents view.
+        # Skip model-fallback results (transport=rest-models-fallback / ws-models-fallback) since those
+        # are model names, not actual manageable agents.
+        transport = str(res.get("transport") or "")
+        if "model" not in transport:
+            live_agents = [a for a in (res.get("agents") or []) if isinstance(a, dict)]
+            new_agents = [a for a in live_agents if str(a.get("id") or "").strip() not in saved_ids]
+            if new_agents:
+                env_id = str(row["env_id"] or "").strip() or None
+                _provision_managed_agents_for_connection(
+                    user_id=user_id,
+                    env_id=env_id,
+                    connection_id=connection_id,
+                    base_url=row["base_url"],
+                    raw_agents=new_agents,
+                )
+
         return res
     
     @app.get("/api/openclaw/{connection_id}/policy", response_model=ConnectionPolicyOut)

@@ -840,8 +840,10 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
         last_err: Optional[str] = None
         rest_agents: List[Dict[str, Any]] = []
         rest_seen_ids: set[str] = set()
+        rest_model_agents: List[Dict[str, Any]] = []
+        rest_model_seen_ids: set[str] = set()
         rest_ok_paths: List[str] = []
-        saw_non_model_agent_payload = False
+        rest_model_source_path: str = ""
 
         for p in AGENTS_PATHS:
             try:
@@ -881,16 +883,19 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
                 norm = _normalize_agents(agents)
                 print(f"[openclaw] 200 on GET {base_url}{p} — keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__} agents_found={len(norm)}", flush=True)
                 if norm:
-                    _merge_unique_agents(rest_agents, norm, seen_ids=rest_seen_ids)
-                    if "/model" not in p.lower():
-                        saw_non_model_agent_payload = True
+                    if "/model" in p.lower():
+                        # Model listing paths — keep separate; only use as fallback if no real agents found.
+                        _merge_unique_agents(rest_model_agents, norm, seen_ids=rest_model_seen_ids)
+                        if not rest_model_source_path:
+                            rest_model_source_path = p
+                    else:
+                        _merge_unique_agents(rest_agents, norm, seen_ids=rest_seen_ids)
                 rest_ok_paths.append(p)
             except Exception as e:
                 last_err = str(e)
 
         ws_res: Dict[str, Any] = {}
-        should_probe_ws = (not rest_agents) or (not saw_non_model_agent_payload)
-        if should_probe_ws:
+        if not rest_agents:
             ws_res = await openclaw_ws_list_agents(base_url, api_key)
             if ws_res.get("ok"):
                 ws_agents = [dict(a) for a in (ws_res.get("agents") or []) if isinstance(a, dict)]
@@ -919,6 +924,17 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
             ws_res = await openclaw_ws_list_agents(base_url, api_key)
             if ws_res.get("ok"):
                 return ws_res
+
+        # No real agents found — fall back to model names if available.
+        if rest_model_agents:
+            rest_model_agents.sort(key=lambda a: (str(a.get("name") or "").lower(), str(a.get("id") or "").lower()))
+            return {
+                "ok": True,
+                "transport": "rest-models-fallback",
+                "path": rest_model_source_path or AGENTS_PATHS[0],
+                "agents": rest_model_agents,
+                "warning": "Only /models endpoint available; using model names as chat targets.",
+            }
 
         return {
             "ok": False,
