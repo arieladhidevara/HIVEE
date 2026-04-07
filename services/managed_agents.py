@@ -1698,6 +1698,7 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
             extra_headers["Cookie"] = cookie
 
     ws_methods: List[Tuple[str, Dict[str, Any], bool]] = [
+        ("node.list", {}, True),
         ("agents.list", {}, True),
         ("config.get", {"path": "agents.list"}, True),
         ("config.get", {"path": "agents"}, True),

@@ -656,6 +656,8 @@ AGENTS_PATHS = [
     "/api/agents",
     "/v1/agents",
     "/api/v1/agents",
+    "/nodes",
+    "/api/nodes",
     "/models",
     "/api/models",
     "/v1/models",
