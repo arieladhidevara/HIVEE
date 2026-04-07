@@ -51,6 +51,20 @@ async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: 
     main_agent_name: Optional[str] = None
     discovered_agents: List[Dict[str, Any]] = []
     probe = await openclaw_list_agents(base_url, api_key)
+    if not probe.get("ok") and probe.get("error_code") == "missing_operator_write":
+        # Token is valid (health likely works) but lacks operator.write — surface this
+        # as a specific error code so callers can set connection_state accurately.
+        health_check = await openclaw_health(base_url, api_key)
+        return {
+            "ok": False,
+            "error_code": "missing_operator_write",
+            "error": probe.get("error"),
+            "hint": probe.get("hint"),
+            "health_ok": health_check.get("ok"),
+            "main_agent_id": None,
+            "main_agent_name": None,
+            "agents": [],
+        }
     if not probe.get("ok"):
         fallback_health = await openclaw_health(base_url, api_key)
         fallback_agents: List[Dict[str, Any]] = []
@@ -837,7 +851,16 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
                 if r.status_code == 401:
                     return {"ok": False, "error": "Unauthorized (401). Token/API key invalid.", "path": p}
                 if r.status_code == 403:
-                    return {"ok": False, "error": "Forbidden (403). Token/API key invalid or lacks permission.", "path": p}
+                    body = r.text[:600]
+                    if _is_missing_operator_write_error(body):
+                        return {
+                            "ok": False,
+                            "error": "Token is valid but missing operator.write scope. Agent listing and chat require an operator token.",
+                            "error_code": "missing_operator_write",
+                            "hint": "In OpenClaw: ensure your gateway token has operator.write scope (gateway.auth.mode=token, operator role).",
+                            "path": p,
+                        }
+                    return {"ok": False, "error": f"Forbidden (403). Token lacks required permissions. {body}", "path": p}
                 if r.status_code >= 400:
                     last_err = f"{r.status_code}: {r.text[:500]}"
                     continue
@@ -953,6 +976,10 @@ def _is_credit_or_max_token_error(detail: Any) -> bool:
     ]
     return any(m in low for m in markers)
 
+
+def _is_missing_operator_write_error(text: str) -> bool:
+    low = text.lower()
+    return "missing scope" in low and "operator.write" in low
 
 def _is_ws_device_identity_error(detail: Any) -> bool:
     low = detail_to_text(detail).lower()
@@ -1117,7 +1144,17 @@ async def openclaw_chat(
                 if r.status_code == 401:
                     return {"ok": False, "error": "Unauthorized (401). Token/API key invalid.", "path": p}
                 if r.status_code == 403:
-                    last_err = f"{p}: 403 {r.text[:300]}"
+                    body = r.text[:600]
+                    if _is_missing_operator_write_error(body):
+                        # Token-level scope failure — no point trying other paths.
+                        return {
+                            "ok": False,
+                            "error": "Token is valid but missing operator.write scope. Chat requires an operator token.",
+                            "error_code": "missing_operator_write",
+                            "hint": "Provide an OpenClaw token with operator.write scope.",
+                            "path": p,
+                        }
+                    last_err = f"{p}: 403 {body}"
                     continue
                 if r.status_code == 502:
                     # Path exists on the proxy but the upstream LLM/backend is down.

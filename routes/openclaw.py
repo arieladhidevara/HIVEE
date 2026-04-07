@@ -26,12 +26,19 @@ def register_routes(app: FastAPI) -> None:
 
         bootstrap = await _bootstrap_connection_workspace(user_id, payload.base_url.rstrip("/"), payload.api_key)
         bootstrap_ok = bool(bootstrap.get("ok"))
+        bootstrap_error_code = bootstrap.get("error_code") or ""
+        if bootstrap_ok:
+            bs_status = "ok"
+        elif bootstrap_error_code == "missing_operator_write":
+            bs_status = "token_missing_operator_write"
+        else:
+            bs_status = "failed"
         _upsert_connection_policy(
             conn_id,
             user_id,
             main_agent_id=bootstrap.get("main_agent_id"),
             main_agent_name=bootstrap.get("main_agent_name"),
-            bootstrap_status="ok" if bootstrap_ok else "failed",
+            bootstrap_status=bs_status,
             bootstrap_error=None if bootstrap_ok else detail_to_text(bootstrap.get("error") or bootstrap.get("ws_result")),
             workspace_tree=bootstrap.get("workspace_tree"),
             workspace_root=str(bootstrap.get("workspace_root") or HIVEE_ROOT),
@@ -49,24 +56,42 @@ def register_routes(app: FastAPI) -> None:
                 fallback_agent_name=bootstrap.get("main_agent_name"),
             )
 
+        if bootstrap_ok:
+            connection_state = "healthy_connection"
+        elif bootstrap_error_code == "missing_operator_write":
+            connection_state = "token_missing_operator_write"
+        else:
+            connection_state = "bootstrap_failed"
+
         response: Dict[str, Any] = {
             "ok": True,
             "connection": {"id": conn_id, "base_url": payload.base_url.rstrip("/"), "name": payload.name},
             "health": health,
             "bootstrap": bootstrap,
-            "bootstrap_status": "ok" if bootstrap_ok else "failed",
+            "bootstrap_status": bs_status,
+            "connection_state": connection_state,
             "agent_provision": provision,
         }
         if not bootstrap_ok:
-            response["warning"] = (
-                "Connected, but bootstrap failed. Fix OpenClaw WS/HTTP config and retry bootstrap "
-                f"via POST /api/openclaw/{conn_id}/bootstrap."
-            )
-            response["hint"] = (
-                bootstrap.get("hint")
-                or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow "
-                   "HTTP agent listing, or ensure the WS gateway is accessible without device-identity pairing."
-            )
+            if bootstrap_error_code == "missing_operator_write":
+                response["warning"] = (
+                    "Connection saved and health OK, but token is missing operator.write scope. "
+                    "Chat and agent listing will not work until an operator token is provided."
+                )
+                response["hint"] = (
+                    bootstrap.get("hint")
+                    or "In OpenClaw: set gateway.auth.mode=token and use a token with operator.write scope."
+                )
+            else:
+                response["warning"] = (
+                    "Connected, but bootstrap failed. Fix OpenClaw WS/HTTP config and retry bootstrap "
+                    f"via POST /api/openclaw/{conn_id}/bootstrap."
+                )
+                response["hint"] = (
+                    bootstrap.get("hint")
+                    or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow "
+                       "HTTP agent listing, or ensure the WS gateway is accessible without device-identity pairing."
+                )
         return response
     
     @app.post("/api/openclaw/{connection_id}/bootstrap")
@@ -83,13 +108,21 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(404, "Connection not found")
     
         bootstrap = await _bootstrap_connection_workspace(user_id, row["base_url"], connection_api_key)
+        _bs_ok = bool(bootstrap.get("ok"))
+        _bs_err_code = bootstrap.get("error_code") or ""
+        if _bs_ok:
+            _bs_status = "ok"
+        elif _bs_err_code == "missing_operator_write":
+            _bs_status = "token_missing_operator_write"
+        else:
+            _bs_status = "failed"
         _upsert_connection_policy(
             connection_id,
             user_id,
             main_agent_id=bootstrap.get("main_agent_id"),
             main_agent_name=bootstrap.get("main_agent_name"),
-            bootstrap_status="ok" if bootstrap.get("ok") else "failed",
-            bootstrap_error=None if bootstrap.get("ok") else detail_to_text(bootstrap.get("ws_result")),
+            bootstrap_status=_bs_status,
+            bootstrap_error=None if _bs_ok else detail_to_text(bootstrap.get("error") or bootstrap.get("ws_result")),
             workspace_tree=bootstrap.get("workspace_tree"),
             workspace_root=str(bootstrap.get("workspace_root") or HIVEE_ROOT),
             templates_root=str(bootstrap.get("templates_root") or HIVEE_TEMPLATES_ROOT),
@@ -127,20 +160,30 @@ def register_routes(app: FastAPI) -> None:
             (connection_id, user_id),
         ).fetchone()
         connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
+        # Load previously provisioned agents from DB as fallback for when live discovery fails.
+        saved_rows = conn.execute(
+            "SELECT agent_id, agent_name FROM managed_agents WHERE user_id = ? AND connection_id = ? AND status = ? ORDER BY agent_name ASC",
+            (user_id, connection_id, "active"),
+        ).fetchall()
         conn.close()
+        saved_agents = [{"id": r["agent_id"], "name": r["agent_name"], "source": "saved"} for r in saved_rows]
         if not row:
             raise HTTPException(404, "Connection not found")
-    
+
         res = await openclaw_list_agents(row["base_url"], connection_api_key)
         if not res.get("ok"):
-            # Return empty list rather than 400 — connection is valid even if
-            # agent listing fails (e.g. WS needs device identity, REST not exposed).
+            error_code = res.get("error_code") or ""
             return {
                 "ok": True,
-                "agents": [],
+                "agents": saved_agents,
+                "agents_source": "saved" if saved_agents else "none",
                 "transport": "none",
+                "connection_state": (
+                    "token_missing_operator_write" if error_code == "missing_operator_write"
+                    else "agent_discovery_failed"
+                ),
                 "warning": res.get("error") or "Agent listing unavailable; WS requires device identity and REST agent endpoints are not exposed.",
-                "hint": res.get("hint") or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow HTTP chat.",
+                "hint": res.get("hint") or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow HTTP agent listing.",
             }
         return res
     
