@@ -810,29 +810,123 @@ async def _request_openclaw_with_auth(
 
 async def openclaw_health(base_url: str, api_key: str) -> Dict[str, Any]:
     async with httpx.AsyncClient(follow_redirects=True) as client:
+        last_status: Optional[int] = None
+        last_err: str = ""
+
+        # 1) Prefer explicit health/status routes.
         for p in HEALTH_PATHS:
-            r = await _request_openclaw_with_auth(client, "GET", base_url, p, api_key, timeout=10)
-            if r.status_code >= 400:
+            try:
+                r = await _request_openclaw_with_auth(client, "GET", base_url, p, api_key, timeout=10)
+            except Exception as e:
+                last_err = f"{p}: {str(e)}"
                 continue
+
+            last_status = r.status_code
+            if _response_looks_like_login_html(r):
+                return {
+                    "ok": False,
+                    "error": "OpenClaw returned login page. Use the correct OpenClaw gateway token in api_key.",
+                    "path": p,
+                    "status": r.status_code,
+                }
+            if r.status_code == 401:
+                return {
+                    "ok": False,
+                    "error": "Unauthorized (401). Token/API key invalid.",
+                    "path": p,
+                    "status": r.status_code,
+                }
+            if r.status_code >= 400:
+                last_err = f"{p}: {r.status_code} {r.text[:300]}"
+                continue
+
             ct = r.headers.get("content-type", "")
             if "application/json" in ct:
                 payload = r.json()
             else:
                 payload = {"raw": r.text[:2000]}
-            status = r.status_code
-            ok = True
-            if ok:
-                if _is_openclaw_login_html(payload):
-                    return {
-                        "ok": False,
-                        "error": "OpenClaw returned login page. Use the correct OpenClaw gateway token in api_key.",
-                        "path": p,
-                        "status": status,
-                    }
-                return {"ok": True, "path": p, "status": status, "payload": payload}
+            if _is_openclaw_login_html(payload):
+                return {
+                    "ok": False,
+                    "error": "OpenClaw returned login page. Use the correct OpenClaw gateway token in api_key.",
+                    "path": p,
+                    "status": r.status_code,
+                }
+            return {
+                "ok": True,
+                "path": p,
+                "status": r.status_code,
+                "payload": payload,
+                "probe": "health",
+            }
+
+        # 2) Some OpenClaw deployments don't expose /health publicly; allow read-only fallback probes.
+        fallback_paths = [
+            "/v1/models",
+            "/models",
+            "/api/models",
+            "/v1/agents",
+            "/agents",
+            "/api/agents",
+        ]
+        for p in fallback_paths:
+            try:
+                r = await _request_openclaw_with_auth(client, "GET", base_url, p, api_key, timeout=10)
+            except Exception as e:
+                last_err = f"{p}: {str(e)}"
+                continue
+
+            last_status = r.status_code
+            if _response_looks_like_login_html(r):
+                return {
+                    "ok": False,
+                    "error": "OpenClaw returned login page. Use the correct OpenClaw gateway token in api_key.",
+                    "path": p,
+                    "status": r.status_code,
+                }
+            if r.status_code == 401:
+                return {
+                    "ok": False,
+                    "error": "Unauthorized (401). Token/API key invalid.",
+                    "path": p,
+                    "status": r.status_code,
+                }
+            if r.status_code >= 400:
+                last_err = f"{p}: {r.status_code} {r.text[:300]}"
+                continue
+
+            data, parse_err = _safe_json_response(r)
+            payload: Any = data if data is not None else {"raw": (r.text or "")[:2000]}
+            if _is_openclaw_login_html(payload if isinstance(payload, dict) else {"raw": str(payload)[:2000]}):
+                return {
+                    "ok": False,
+                    "error": "OpenClaw returned login page. Use the correct OpenClaw gateway token in api_key.",
+                    "path": p,
+                    "status": r.status_code,
+                }
+            out: Dict[str, Any] = {
+                "ok": True,
+                "path": p,
+                "status": r.status_code,
+                "payload": payload,
+                "probe": "fallback",
+            }
+            if parse_err:
+                out["warning"] = f"Fallback endpoint returned non-JSON payload: {parse_err}"
+            return out
+
         return {
             "ok": False,
-            "error": "Could not reach health endpoint on common paths. Check base_url/port/firewall/path prefix. If OpenClaw is local, expose it via SSH/public tunnel first.",
+            "error": (
+                "Could not verify OpenClaw health/reachability on common paths. "
+                "Gateway may be restarting/crashing, or reverse proxy path is incomplete."
+            ),
+            "last_status": last_status,
+            "last_error": last_err[:600],
+            "hint": (
+                "If OpenClaw logs show ECONNREFUSED to 127.0.0.1:18789, fix upstream service/config first. "
+                "Then ensure at least one of: /health, /status, /v1/models is reachable."
+            ),
         }
 
 async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
