@@ -441,8 +441,27 @@ def register_routes(app: FastAPI) -> None:
             if main_agent_id:
                 allowed_workspace_ids.add(main_agent_id)
             if requested_workspace_agent_id not in allowed_workspace_ids:
-                conn.close()
-                raise HTTPException(403, "Workspace chat can only target agents available on this connection")
+                live = await openclaw_list_agents(row["base_url"], connection_api_key)
+                live_agents = live.get("agents") or []
+                live_ids = {
+                    str(a.get("id") or "").strip()
+                    for a in live_agents
+                    if isinstance(a, dict) and str(a.get("id") or "").strip()
+                }
+
+                if requested_workspace_agent_id in live_ids:
+                    env_id = str(row["env_id"] or "").strip() or None
+                    _provision_managed_agents_for_connection(
+                        user_id=user_id,
+                        env_id=env_id,
+                        connection_id=connection_id,
+                        base_url=row["base_url"],
+                        raw_agents=live_agents,
+                    )
+                    allowed_workspace_ids.update(live_ids)
+                else:
+                    conn.close()
+                    raise HTTPException(403, "Workspace chat can only target agents available on this connection")
         project_root = str(project_scope["project_root"]) if (project_scope and project_scope["project_root"]) else None
         project_instruction = None
         write_allow_paths = None

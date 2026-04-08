@@ -473,6 +473,19 @@ def register_routes(app: FastAPI) -> None:
             session_key=f"project-setup:{session_key}",
             timeout_sec=max(10, min(payload.timeout_sec, 45 if payload.optimize_tokens else 90)),
         )
+
+        if not res.get("ok"):
+            res = await openclaw_chat(
+                base_url=row["base_url"],
+                api_key=connection_api_key,
+                message=instruction,
+                agent_id=effective_agent_id,
+            )
+
+        if not res.get("ok"):
+            raise HTTPException(400, res)
+
+        print("NEW PROJECT WS DEBUG =", res, flush=True)
         if not res.get("ok"):
             raise HTTPException(400, res)
         res["resolved_agent_id"] = effective_agent_id
