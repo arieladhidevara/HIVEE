@@ -195,29 +195,30 @@
           <div class="setup-head">
             <img src="/static/logo.png" alt="Hivee logo" class="setup-logo"/>
             <div>
-              <h2>Agent Setup</h2>
-              <p class="helper">Step 2: Connect your OpenClaw agent to continue.</p>
+              <h2>Connection Setup</h2>
+              <p class="helper">Create a Hivee Connection, then install Hivee Hub on your runtime host.</p>
             </div>
           </div>
 
           <div class="setup-copy-prompt-row">
-            <p class="helper">Copy this link and paste it to your agent to make sure the configuration is correct.</p>
+            <p class="helper">Use this as your first-time setup path for Hivee Hub + runtime discovery.</p>
             <button id="btn_copy_setup_prompt" type="button" class="secondary">Copy prompt</button>
           </div>
 
           <form id="form_connect" class="stack">
-            <label>Connection Name (optional)</label>
-            <input id="oc_name" placeholder="Ariel VPS">
-            <label>Base URL</label>
-            <input id="oc_base" placeholder="http://187.xx.xx.xx:47054" required>
-            <label>API Key / Bearer Token</label>
-            <input id="oc_key" placeholder="Paste gateway token" required>
+              <label>Connection Label</label>
+              <input id="oc_name" placeholder="My Runtime Host" required>
+              <label>Machine Name (optional)</label>
+              <input id="oc_base" placeholder="ubuntu-devbox">
+              <label>Runtime Hint (optional)</label>
+              <input id="oc_key" placeholder="openclaw">
             <div class="setup-nav-row">
-              <button id="btn_setup_previous" class="secondary" type="button">Previous</button>
+              <button id="btn_setup_previous" class="secondary" type="button">Continue Home</button>
               <button id="btn_connect" type="submit">Join</button>
             </div>
           </form>
           <p id="setup_msg" class="helper"></p>
+          <textarea id="setup_install_instructions" class="hidden" readonly></textarea>
         </div>
       </div>
     </section>
@@ -241,6 +242,7 @@
               <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
               <span>New Project</span>
             </button>
+            <button id="btn_join_project" type="button" class="secondary">Join Project</button>
           </div>
 
           <div class="nav-section">
@@ -637,11 +639,11 @@
 
               <div id="settings_config_pane" class="settings-tab-pane">
                 <div class="config-grid">
-                  <label>OpenClaw Connection</label>
+                  <label>Connection</label>
                   <select id="home_connections"></select>
                   <div class="action-row">
                     <button id="btn_refresh_home" class="secondary" type="button">Refresh</button>
-                    <button id="btn_open_connect" class="secondary" type="button">Add OpenClaw</button>
+                    <button id="btn_open_connect" class="secondary" type="button">Add Connection</button>
                   </div>
                   <div class="config-card">
                     <div class="config-row"><span>Name</span><strong id="config_conn_name">-</strong></div>
@@ -723,7 +725,6 @@
             <div class="chat-context-row">
               <label for="chat_context_mode">Context</label>
               <select id="chat_context_mode">
-                <option value="workspace">Workspace</option>
                 <option value="project">Project</option>
               </select>
             </div>

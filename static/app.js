@@ -82,7 +82,7 @@ let chatAliasMap = new Map();
 let chatById = new Map();
 let chatAutocompleteItems = [];
 let chatAutocompleteIndex = 0;
-let chatContextMode = "workspace";
+let chatContextMode = "project";
 const DEFAULT_OWNER_FILES_PATH = "";
 const SESSION_TOKEN_KEY = "hivee_session_token_v2";
 const CLAIM_ENV_PARAM = "claim_env_id";
@@ -305,7 +305,7 @@ function clearAuthSession() {
   if (priorityFilter) priorityFilter.value = "";
   const assigneeFilter = $("task_filter_assignee");
   if (assigneeFilter) assigneeFilter.value = "";
-  chatContextMode = "workspace";
+  chatContextMode = "project";
 }
 
 function setMessage(id, text, tone = "") {
@@ -1026,8 +1026,8 @@ function renderProjectInviteUI() {
       const opt = document.createElement("option");
       opt.value = "";
       opt.textContent = hasSession
-        ? "No OpenClaw connection found for this account"
-        : "Login first to load your OpenClaw connections";
+        ? "No connection found for this account"
+        : "Login first to load your connections";
       connectionSelect.appendChild(opt);
     } else {
       for (const item of rows) {
@@ -1035,9 +1035,9 @@ function renderProjectInviteUI() {
         if (!id) continue;
         const opt = document.createElement("option");
         opt.value = id;
-        const name = String(item?.name || "").trim();
-        const base = String(item?.base_url || "").trim();
-        opt.textContent = name ? `${name} (${id})` : `${id}${base ? ` - ${base}` : ""}`;
+        const name = String(item?.label || item?.name || "").trim();
+        const runtime = String(item?.runtime_type || "openclaw").trim();
+        opt.textContent = name ? `${name} (${runtime})` : `${id} (${runtime})`;
         connectionSelect.appendChild(opt);
       }
       if (previous && rows.some((x) => String(x?.id || "") === previous)) {
@@ -1081,8 +1081,9 @@ async function loadProjectInviteConnections() {
     return [];
   }
   try {
-    const rows = await api("/api/openclaw/connections");
-    projectInviteContext.connections = Array.isArray(rows) ? rows : [];
+    const payload = await api("/api/connections");
+    const rows = Array.isArray(payload?.connections) ? payload.connections : [];
+    projectInviteContext.connections = rows;
   } catch {
     projectInviteContext.connections = [];
   }
@@ -2786,9 +2787,19 @@ function renderConfigConnectionDetails() {
   const conn = connectionsCache.find((x) => x.id === activeConnectionId) || null;
   const nameEl = $("config_conn_name");
   const urlEl = $("config_conn_url");
-  if (nameEl) nameEl.textContent = conn?.name || "OpenClaw";
-  if (urlEl) urlEl.textContent = conn?.base_url || "-";
-  setMessage("config_msg", conn ? "Connection loaded." : "No connection selected.");
+  if (nameEl) nameEl.textContent = conn?.label || conn?.name || "Connection";
+  if (urlEl) {
+    const machine = String(conn?.machine_name || "").trim();
+    const runtime = String(conn?.runtime_type || "openclaw").trim();
+    const hint = machine ? `${runtime} @ ${machine}` : runtime;
+    urlEl.textContent = hint || "-";
+  }
+  if (conn) {
+    const status = String(conn?.hub_status || "pending_install").trim();
+    setMessage("config_msg", `Connection loaded (${status}).`, status === "online" ? "ok" : "");
+  } else {
+    setMessage("config_msg", "No connection selected.");
+  }
   applyConnectionStatus();
 }
 
@@ -2920,9 +2931,19 @@ async function loadConnectionPolicy(connectionId) {
     applyWorkspacePolicy(null);
     return null;
   }
-  const policy = await api(`/api/openclaw/${connectionId}/policy`);
-  applyWorkspacePolicy(policy);
-  return policy;
+  const info = await api(`/api/connections/${encodeURIComponent(connectionId)}`);
+  const conn = info?.connection || {};
+  applyWorkspacePolicy({
+    workspace_root: workspacePolicy?.workspace_root || "HIVEE",
+    templates_root: workspacePolicy?.templates_root || "HIVEE/TEMPLATES",
+    main_agent_id: "",
+    main_agent_name: String(conn?.label || "connection"),
+    bootstrap_status: String(conn?.hub_status || "pending_install"),
+    workspace_tree: workspaceTreeText || "",
+  });
+  connectionHealthy = String(conn?.hub_status || "").toLowerCase() === "online";
+  applyConnectionStatus();
+  return conn;
 }
 
 async function ensureWorkspaceForActiveConnection({ silent = false } = {}) {
@@ -2931,11 +2952,19 @@ async function ensureWorkspaceForActiveConnection({ silent = false } = {}) {
     return null;
   }
 
-  if (!silent) setMessage("config_msg", "Ensuring HIVEE workspace...", "");
-  const bootstrap = await api(`/api/openclaw/${activeConnectionId}/bootstrap`, "POST");
-  const policy = await loadConnectionPolicy(activeConnectionId).catch(() => null);
-  if (!silent) setMessage("config_msg", "HIVEE workspace ready.", "ok");
-  return { bootstrap, policy };
+  if (!silent) setMessage("config_msg", "Checking connection status...", "");
+  const conn = await loadConnectionPolicy(activeConnectionId).catch(() => null);
+  const healthy = String(conn?.hub_status || "").toLowerCase() === "online";
+  connectionHealthy = healthy;
+  applyConnectionStatus();
+  if (!silent) {
+    if (healthy) {
+      setMessage("config_msg", "Hivee Hub is online for this connection.", "ok");
+    } else {
+      setMessage("config_msg", "Connection saved. Install Hivee Hub and wait for heartbeat.", "");
+    }
+  }
+  return { connection: conn };
 }
 
 async function loadWorkspaceTree() {
@@ -2969,7 +2998,10 @@ function renderConnections(connections) {
     for (const c of connectionsCache) {
       const opt = document.createElement("option");
       opt.value = c.id;
-      opt.textContent = `${c.name || "OpenClaw"} - ${c.base_url}`;
+      const label = String(c?.label || c?.name || "Connection").trim();
+      const runtime = String(c?.runtime_type || "openclaw").trim();
+      const hubStatus = String(c?.hub_status || "pending_install").trim();
+      opt.textContent = `${label} - ${runtime} (${hubStatus})`;
       sel.appendChild(opt);
     }
   }
@@ -2993,6 +3025,8 @@ function renderConnections(connections) {
     activeConnectionId = connectionsCache[0].id;
   }
   if (sel) sel.value = activeConnectionId;
+  const activeConn = connectionsCache.find((c) => c.id === activeConnectionId) || null;
+  connectionHealthy = String(activeConn?.hub_status || "").toLowerCase() === "online";
   renderConfigConnectionDetails();
 }
 
@@ -3167,7 +3201,7 @@ function showEmptyProject() {
   if (priorityFilter) priorityFilter.value = "";
   const assigneeFilter = $("task_filter_assignee");
   if (assigneeFilter) assigneeFilter.value = "";
-  chatContextMode = "workspace";
+  chatContextMode = "project";
   projectTreeText = "";
   projectFilesCurrentPath = "";
   workspaceFilesCurrentPath = "";
@@ -3743,13 +3777,11 @@ function clearChatIfFresh() {
 }
 
 function normalizeChatContextMode(mode) {
-  return String(mode || "").trim().toLowerCase() === "project" ? "project" : "workspace";
+  return "project";
 }
 
 function activeChatContextMode() {
-  const requested = normalizeChatContextMode(chatContextMode);
-  if (requested === "project" && selectedProjectId) return "project";
-  return "workspace";
+  return "project";
 }
 
 function workspaceMainChatAgent() {
@@ -3768,54 +3800,45 @@ function syncChatContextControls() {
   const select = $("chat_context_mode");
   const note = $("chat_context_note");
   const hasProject = Boolean(selectedProjectId);
-  const effectiveMode = activeChatContextMode();
-  chatContextMode = effectiveMode;
+  chatContextMode = "project";
 
   if (select) {
-    const projectOption = select.querySelector('option[value="project"]');
-    if (projectOption) projectOption.disabled = !hasProject;
-    if (select.value !== effectiveMode) select.value = effectiveMode;
+    select.value = "project";
+    select.disabled = true;
   }
 
   if (note) {
-    note.textContent = effectiveMode === "project"
-      ? "Project context active: invited project agents available."
-      : "Workspace context active: loaded OpenClaw agents are available.";
+    note.textContent = hasProject
+      ? "Project context active: chat is scoped to this project's channels."
+      : "Select a project first. Chat is only available inside project space.";
   }
 
   const input = $("chat_input");
   if (input) {
-    input.placeholder = effectiveMode === "project"
+    input.placeholder = hasProject
       ? "Type message... example: @dailybot make recap"
-      : "Type workspace message... example: @agent review my workspace status";
+      : "Select a project to start channel chat...";
   }
 }
 
 function setChatContextMode(mode, { silent = false } = {}) {
-  chatContextMode = normalizeChatContextMode(mode);
+  chatContextMode = "project";
   syncChatContextControls();
   updateChatProjectName();
   loadChatAgents().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   if (!silent) {
-    setMessage(
-      "chat_hint",
-      activeChatContextMode() === "project"
-        ? "Project context active."
-        : "Workspace context active.",
-      "ok"
-    );
+    setMessage("chat_hint", "Project context active.", "ok");
   }
 }
 
 function updateChatProjectName() {
   const el = $("chat_project_name");
   if (!el) return;
-  const modeLabel = activeChatContextMode() === "project" ? "Project" : "Workspace";
   if (!selectedProjectData) {
-    el.textContent = `Project: none | Context: ${modeLabel}`;
+    el.textContent = "Project: none | Context: project";
     return;
   }
-  el.textContent = `Project: ${selectedProjectData.title} | Context: ${modeLabel}`;
+  el.textContent = `Project: ${selectedProjectData.title} | Context: project`;
 }
 
 function planStatusLabel(status) {
@@ -4786,94 +4809,30 @@ function renderChatAgents(agents) {
 
 async function loadChatAgents() {
   syncChatContextControls();
-  const contextMode = activeChatContextMode();
 
-  if (contextMode === "project") {
-    const scoped = (selectedAssignedAgents || []).map((a) => ({ id: a.id, name: a.name, role: a.role || "", is_primary: Boolean(a.is_primary) }));
-    chatAgents = scoped;
-    renderChatAgents(scoped);
-    connectionHealthy = Boolean(activeConnectionId);
-    applyConnectionStatus();
-    if (scoped.length) {
-      setMessage("chat_hint", `Project context: ${scoped.length} invited agents available for mention.`, "ok");
-    } else {
-      setMessage("chat_hint", "Project context active, but no invited agents yet. Open Manage Agents to assign one.", "error");
-    }
-    return;
-  }
-
-  if (!activeConnectionId) {
-    chatAgents = [];
-    connectionHealthy = false;
-    renderChatAgents([]);
-    applyConnectionStatus();
-    return;
-  }
-
-  let mainAgent = workspaceMainChatAgent();
-  if (!mainAgent) {
-    await loadConnectionPolicy(activeConnectionId).catch(() => null);
-    mainAgent = workspaceMainChatAgent();
-  }
-
-  let workspaceAgents = [];
-  let listErr = "";
-  let isModelFallback = false;
-  try {
-    const listed = await api(`/api/openclaw/${encodeURIComponent(activeConnectionId)}/agents`);
-    const transport = String(listed?.transport || "");
-    isModelFallback = transport.includes("model");
-    const rawAgents = Array.isArray(listed?.agents) ? listed.agents : [];
-    workspaceAgents = rawAgents
-      .map((item) => {
-        const source = (item && typeof item === "object") ? item : {};
-        const raw = (source.raw && typeof source.raw === "object") ? source.raw : source;
-        const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
-        const name = String(source.name || source.title || raw.name || id).trim() || id;
-        if (!id) return null;
-        return { id, name: isModelFallback ? `${name} (model)` : name, role: isModelFallback ? "model" : "workspace", is_primary: false };
-      })
-      .filter(Boolean);
-  } catch (e) {
-    listErr = detailToText(e?.message || e);
-  }
-
-  if (mainAgent && !isModelFallback && !workspaceAgents.some((a) => String(a.id || "") === String(mainAgent.id || ""))) {
-    workspaceAgents.unshift(mainAgent);
-  }
-
-  if (mainAgent) {
-    workspaceAgents.sort((a, b) => {
-      const aMain = String(a?.id || "") === String(mainAgent.id || "");
-      const bMain = String(b?.id || "") === String(mainAgent.id || "");
-      if (aMain && !bMain) return -1;
-      if (!aMain && bMain) return 1;
-      return String(a?.name || a?.id || "").localeCompare(String(b?.name || b?.id || ""));
-    });
-  }
-
-  if (!workspaceAgents.length) {
+  if (!selectedProjectId) {
     chatAgents = [];
     renderChatAgents([]);
     connectionHealthy = Boolean(activeConnectionId);
     applyConnectionStatus();
-    if (listErr) {
-      setMessage("chat_hint", `Agent list endpoint unavailable. You can still chat using default route. Detail: ${listErr}`, "");
-    } else {
-      setMessage("chat_hint", "No explicit agent list available. You can still chat without @mention.", "");
-    }
+    setMessage("chat_hint", "Select a project to chat.", "error");
     return;
   }
 
-  chatAgents = workspaceAgents;
+  const scoped = (selectedAssignedAgents || [])
+    .map((a) => ({ id: a.id, name: a.name, role: a.role || "", is_primary: Boolean(a.is_primary) }))
+    .filter((a) => String(a.id || "").trim());
+
+  chatAgents = scoped;
   renderChatAgents(chatAgents);
-  connectionHealthy = true;
+  connectionHealthy = Boolean(activeConnectionId);
   applyConnectionStatus();
-  setMessage("chat_hint", isModelFallback
-    ? `${workspaceAgents.length} model(s) available as chat targets (no real agents found — enable agent listing in OpenClaw).`
-    : `Workspace context: ${workspaceAgents.length} loaded agent(s) ready for chat.`, "ok");
+  if (scoped.length) {
+    setMessage("chat_hint", `Project context: ${scoped.length} invited agents available for mention.`, "ok");
+  } else {
+    setMessage("chat_hint", "Project context active, but no invited agents yet. Open Manage Agents to assign one.", "error");
+  }
 }
-
 function parseMention(rawMessage) {
   const mentionMatches = [...rawMessage.matchAll(/@([a-zA-Z0-9._-]+)/g)];
   let matchedAgent = null;
@@ -4923,19 +4882,14 @@ async function sendChatPrototype() {
   const input = $("chat_input");
   if (!input) return;
   const raw = input.value.trim();
-  if (!activeConnectionId) throw new Error("OpenClaw connection not selected");
+  if (!selectedProjectId) throw new Error("Select a project first. Chat is project-scoped.");
   if (!raw) throw new Error("Type message first");
 
-  syncChatContextControls();
-  const contextMode = activeChatContextMode();
-  const usingProjectContext = contextMode === "project" && Boolean(selectedProjectId);
-  if (usingProjectContext) {
-    if (!selectedProjectReadiness || selectedProjectReadiness.project_id !== selectedProjectId) {
-      await loadProjectReadiness(selectedProjectId).catch(() => {});
-    }
-    if (!selectedProjectReadiness?.can_chat_project) {
-      throw new Error("Project context is not ready. Open Manage Agents, invite at least one agent, and set a primary agent.");
-    }
+  if (!selectedProjectReadiness || selectedProjectReadiness.project_id !== selectedProjectId) {
+    await loadProjectReadiness(selectedProjectId).catch(() => {});
+  }
+  if (selectedProjectReadiness && !selectedProjectReadiness?.can_chat_project) {
+    throw new Error("Project context is not ready. Attach at least one project agent first.");
   }
 
   const resolved = resolveChatTarget(raw);
@@ -4944,59 +4898,34 @@ async function sendChatPrototype() {
     setMessage("chat_hint", msg, "error");
     throw new Error(msg);
   }
-  if (contextMode === "workspace" && !resolved.agent) {
-    setMessage("chat_hint", "No agent selected. Sending via default OpenClaw route.", "");
-  }
 
-  const targetName = resolved.agent
-    ? `${resolved.agent.name} (${resolved.agent.id})`
-    : (usingProjectContext ? "project auto route" : "default OpenClaw route");
+  const targetName = resolved.agent ? `${resolved.agent.name} (${resolved.agent.id})` : "project auto route";
   appendChatMessage("user", resolved.message, `you -> ${targetName}`);
-
-  const payload = {
-    message: resolved.message,
-    agent_id: resolved.agent ? resolved.agent.id : null,
-    context_mode: usingProjectContext ? "project" : "workspace",
-    session_key: usingProjectContext ? selectedProjectId : "main",
-    timeout_sec: 25,
-  };
 
   input.value = "";
   hideMentionAutocomplete();
   $("btn_chat_send").disabled = true;
 
   try {
-    const res = await api(`/api/openclaw/${activeConnectionId}/ws-chat`, "POST", payload);
-    const shown = res.text || detailToText(res.frames) || "(no text response yet)";
-    const workspaceAgentId = workspaceMainChatAgent()?.id || "";
-    const fallbackAgentId = usingProjectContext ? (selectedPrimaryAgentId || "") : workspaceAgentId;
-    const resolvedAgentId = String(res.resolved_agent_id || resolved.agent?.id || fallbackAgentId).trim();
-    const resolvedAgent = chatById.get(resolvedAgentId);
-    const canInlineReply = !usingProjectContext || !projectStreamConnected;
-    if (canInlineReply) {
-      const role = usingProjectContext ? "agent" : "assistant";
-      const meta = usingProjectContext
-        ? (resolvedAgent ? resolvedAgent.name : (resolvedAgentId || "agent"))
-        : `${res.transport || "ws"} via ${res.path || "gateway"}`;
-      appendChatMessage(role, shown, meta, { agentId: resolvedAgentId });
-    }
-    const savedFiles = Array.isArray(res?.saved_files) ? res.saved_files : [];
-    if (usingProjectContext && savedFiles.length) {
-      const sample = savedFiles
-        .slice(0, 3)
-        .map((item) => String(item?.path || "").trim())
-        .filter(Boolean)
-        .join(", ");
-      const suffix = sample ? `: ${sample}` : "";
-      setMessage("chat_hint", `Message delivered. ${savedFiles.length} file(s) saved${suffix}`, "ok");
+    const payload = {
+      body: resolved.message,
+      task_id: null,
+      target_managed_agent_id: null,
+      metadata: {
+        ui_context: "project_chat_panel",
+        mention_agent_id: resolved.agent ? resolved.agent.id : null,
+      },
+    };
+    const res = await api(`/api/projects/${encodeURIComponent(selectedProjectId)}/messages?channel=main`, "POST", payload);
+    await loadProjectChannelMessages({ silent: true });
+    if (res?.dispatched) {
+      setMessage("chat_hint", "Message delivered to project runtime lane.", "ok");
     } else {
-      setMessage("chat_hint", "Message delivered.", "ok");
+      setMessage("chat_hint", detailToText(res?.dispatch_error || "Message recorded; runtime dispatch pending."), "");
     }
-    addEvent("chat.reply", { path: res.path, text: shown, context_mode: payload.context_mode });
-    if (usingProjectContext) {
-      await refreshSelectedProjectData().catch(() => {});
-      await loadProjectFiles(projectFilesCurrentPath || "").catch(() => {});
-    }
+    addEvent("chat.reply", { context_mode: "project", dispatched: Boolean(res?.dispatched) });
+    await refreshSelectedProjectData().catch(() => {});
+    await loadProjectFiles(projectFilesCurrentPath || "").catch(() => {});
   } catch (e) {
     const msg = detailToText(e?.message || e);
     appendChatMessage("system", msg, "delivery error");
@@ -5004,6 +4933,35 @@ async function sendChatPrototype() {
     throw e;
   } finally {
     $("btn_chat_send").disabled = false;
+  }
+}
+
+async function loadProjectChannelMessages({ silent = false } = {}) {
+  if (!selectedProjectId) {
+    const box = $("chat_messages");
+    if (box) box.innerHTML = "";
+    return;
+  }
+  const data = await api(`/api/projects/${encodeURIComponent(selectedProjectId)}/messages?channel=main&limit=80`);
+  const items = Array.isArray(data?.messages) ? data.messages : [];
+  const box = $("chat_messages");
+  if (box) box.innerHTML = "";
+  for (const msg of items) {
+    const sender = String(msg?.sender_type || "system").toLowerCase();
+    const body = String(msg?.body || "").trim();
+    if (!body) continue;
+    const metadata = msg?.metadata && typeof msg.metadata === "object" ? msg.metadata : {};
+    if (sender === "user") {
+      appendChatMessage("user", body, "you");
+    } else if (sender === "agent") {
+      const meta = String(metadata?.runtime_agent_id || metadata?.managed_agent_id || "agent").trim() || "agent";
+      appendChatMessage("agent", body, meta, { agentId: meta });
+    } else {
+      appendChatMessage("system", body, "system");
+    }
+  }
+  if (!silent) {
+    setMessage("chat_hint", `${items.length} channel messages loaded.`, "ok");
   }
 }
 
@@ -6857,7 +6815,7 @@ function renderSummaryAgents() {
   }
 
   if (!summaryAgents.length) {
-    msg.textContent = "No managed agents found yet. Bootstrap OpenClaw first.";
+    msg.textContent = "No managed agents found yet. Install Hivee Hub and wait for discovery.";
     return;
   }
 
@@ -7309,6 +7267,7 @@ async function selectProject(projectId) {
   ]);
   await loadLatestLiveArtifact({ render: activeProjectPane === "live" }).catch(() => {});
   await loadChatAgents().catch(() => {});
+  await loadProjectChannelMessages({ silent: true }).catch(() => {});
   restartRuntimePoll();
   subscribeEvents().catch((e) => addEvent("error", detailToText(e)));
 
@@ -7317,17 +7276,22 @@ async function selectProject(projectId) {
 }
 
 async function loadAgentsForWizard() {
-  if (!activeConnectionId) throw new Error("Connect OpenClaw first");
-  const res = await api(`/api/openclaw/${activeConnectionId}/agents`);
-  const rawAgents = Array.isArray(res?.agents) ? res.agents : [];
+  if (!activeConnectionId) throw new Error("Create a connection first");
+  let listed = await api(`/api/connections/${encodeURIComponent(activeConnectionId)}/agents`).catch(() => ({ agents: [] }));
+  let rawAgents = Array.isArray(listed?.agents) ? listed.agents : [];
+  if (!rawAgents.length) {
+    await api(`/api/connections/${encodeURIComponent(activeConnectionId)}/agents/refresh`, "POST").catch(() => null);
+    listed = await api(`/api/connections/${encodeURIComponent(activeConnectionId)}/agents`).catch(() => ({ agents: [] }));
+    rawAgents = Array.isArray(listed?.agents) ? listed.agents : [];
+  }
   currentAgents = rawAgents
     .map((item) => {
       const source = item && typeof item === "object" ? item : {};
       const raw = (source.raw && typeof source.raw === "object") ? source.raw : source;
-      const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
-      const name = String(source.name || source.title || raw.name || id).trim() || id;
+      const id = String(source.runtime_agent_id || source.id || source.agent_id || raw.id || raw.agent_id || "").trim();
+      const name = String(source.agent_name || source.name || source.title || raw.name || id).trim() || id;
       if (!id) return null;
-      return { id, name, raw };
+      return { id, name, raw, managed_agent_id: String(source.managed_agent_id || "").trim() || null };
     })
     .filter(Boolean);
   renderWizardOwnerAgents();
@@ -7372,6 +7336,7 @@ function wizardEffectiveProjectAgents() {
   return base.map((a) => ({
     id: String(a?.id || "").trim(),
     name: String(a?.name || a?.agent_name || a?.id || "").trim(),
+    managed_agent_id: String(a?.managed_agent_id || "").trim() || null,
     role: String(a?.role || "").trim(),
     is_primary: Boolean(a?.is_primary),
     source_type: String(a?.source_type || "owner").trim() || "owner",
@@ -7399,7 +7364,24 @@ async function saveOwnerAgentsToProject(ownerAgents, primaryAgentId, successMess
     throw new Error("At least one owner agent is required in project.");
   }
   const payload = buildOwnerAgentsPayload(ownerAgents, primaryAgentId);
-  await api(`/api/projects/${selectedProjectId}/agents`, "POST", payload);
+  try {
+    await api(`/api/projects/${selectedProjectId}/agents`, "POST", payload);
+  } catch (e) {
+    // Fallback path for joined members: attach managed agents individually.
+    let attached = 0;
+    for (const agent of ownerAgents) {
+      const managedAgentId = String(agent?.managed_agent_id || "").trim();
+      if (!managedAgentId) continue;
+      const isPrimary = String(agent?.id || "").trim() === String(primaryAgentId || "").trim();
+      await api(`/api/projects/${selectedProjectId}/agents/attach`, "POST", {
+        managed_agent_id: managedAgentId,
+        role: String(agent?.role || "member").trim() || "member",
+        is_primary: Boolean(isPrimary),
+      });
+      attached += 1;
+    }
+    if (!attached) throw e;
+  }
   await selectProject(selectedProjectId);
   await loadChatAgents().catch(() => {});
   await refreshWizardExternalAccess({ silent: true }).catch(() => {});
@@ -7418,6 +7400,7 @@ async function inviteOwnerAgentToProject(agent) {
   const next = [...existing, {
     id,
     name: String(agent?.name || id).trim() || id,
+    managed_agent_id: String(agent?.managed_agent_id || "").trim() || null,
     role: resolveSuggestedRole(agent) || "",
     is_primary: false,
     source_type: "owner",
@@ -7528,14 +7511,14 @@ function openWizard(newProject = true) {
   if (newProject) {
     $("wizard_title").textContent = "New Project";
     $("wizard_step_mode").classList.remove("hidden");
-    $("wizard_step_chat").classList.remove("hidden");
+    $("wizard_step_chat").classList.add("hidden");
     $("wizard_step_project").classList.add("hidden");
     $("wizard_step_agents").classList.add("hidden");
     $("wizard_footer_actions")?.classList.remove("hidden");
     $("wizard_external_access")?.classList.add("hidden");
     setMessage("wizard_external_msg", "");
     $("form_project").reset();
-    wizardMode = "chat";
+    wizardMode = "manual";
     wizardChatBooted = false;
     wizardChatPending = false;
     wizardSetupSessionKey = `new-project-${Date.now().toString(36)}`;
@@ -7549,10 +7532,9 @@ function openWizard(newProject = true) {
     if (log) log.innerHTML = "";
     const chatInput = $("wizard_chat_input");
     if (chatInput) chatInput.value = "";
-    $("btn_mode_chat")?.classList.add("active");
-    $("btn_mode_manual")?.classList.remove("active");
-    setWizardMode("chat");
-    sendWizardSetupChat({ autoStart: true }).catch((e) => setMessage("wizard_msg", detailToText(e), "error"));
+    $("btn_mode_chat")?.classList.remove("active");
+    $("btn_mode_manual")?.classList.add("active");
+    setWizardMode("manual");
   } else {
     $("wizard_title").textContent = "Manage Agents";
     $("wizard_step_mode").classList.add("hidden");
@@ -7623,7 +7605,7 @@ function setWizardMode(mode) {
 }
 
 async function sendWizardSetupChat({ autoStart = false } = {}) {
-  if (!activeConnectionId) throw new Error("OpenClaw connection not selected");
+  if (!activeConnectionId) throw new Error("Connection not selected");
   if (wizardChatPending) return;
   const input = $("wizard_chat_input");
   if (!input) return;
@@ -8354,9 +8336,9 @@ async function createProjectFromManual() {
   const title = $("prj_title").value.trim();
   const brief = $("prj_brief").value.trim();
   const goal = $("prj_goal").value.trim();
-  if (!title || !brief || !goal) throw new Error("Fill title, brief, and goal");
+  if (!goal) throw new Error("Goal is required");
   const setupDetails = collectSetupDetailsFromForm();
-  await createProjectRecord({ title, brief, goal, setupDetails, setupChatHistory: "" });
+  await createProjectRecord({ title: title || null, brief: brief || null, goal, setupDetails, setupChatHistory: "" });
 }
 
 async function createProjectFromChatDraft() {
@@ -8394,17 +8376,56 @@ async function createProjectNow() {
   await createProjectFromChatDraft();
 }
 
+async function joinProjectByApiKey() {
+  const raw = window.prompt("Enter project API key");
+  const key = String(raw || "").trim();
+  if (!key) return;
+  const joined = await api("/api/projects/join", "POST", { project_api_key: key });
+  setMessage("chat_hint", `Joined project: ${joined?.title || joined?.id || "project"}`, "ok");
+  await fetchInitial({ preferredProjectId: String(joined?.id || "").trim() || null });
+}
+
 async function connectOpenClaw(ev) {
   ev.preventDefault();
   setMessage("setup_msg", "");
+  const instructionsEl = $("setup_install_instructions");
+  if (instructionsEl) {
+    instructionsEl.value = "";
+    instructionsEl.classList.add("hidden");
+  }
+  const label = $("oc_name")?.value?.trim() || $("oc_base")?.value?.trim() || "My Runtime Connection";
   const payload = {
-    name: $("oc_name").value.trim() || null,
-    base_url: $("oc_base").value.trim(),
-    api_key: $("oc_key").value.trim(),
+    label,
+    runtime_type: "openclaw",
   };
-  await api("/api/openclaw/connect", "POST", payload);
-  setMessage("setup_msg", "Connection saved", "ok");
-  await fetchInitial();
+  const created = await api("/api/connections", "POST", payload);
+  const token = String(created?.install_token || "").trim();
+  const exp = created?.install_token_expires_at ? formatTs(created.install_token_expires_at) : "-";
+  const ins = created?.install_instructions || {};
+  const lines = [
+    `Connection ID: ${created?.connection?.id || "-"}`,
+    `Install token expires: ${exp}`,
+    "",
+    "Concept:",
+    String(ins?.concept || "Install Hivee Hub on the runtime host, then complete hub registration."),
+    "",
+    "Ubuntu/Linux:",
+    String(ins?.ubuntu_linux || ""),
+    "",
+    "macOS:",
+    String(ins?.macos || ""),
+    "",
+    "Windows:",
+    String(ins?.windows || ""),
+    "",
+    "Docker:",
+    String(ins?.docker || ""),
+  ];
+  if (instructionsEl) {
+    instructionsEl.value = lines.join("\n");
+    instructionsEl.classList.remove("hidden");
+  }
+  setMessage("setup_msg", `Connection created. Install token: ${token}`, "ok");
 }
 
 async function login(ev) {
@@ -8855,7 +8876,9 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
       return;
     }
   }
-  const connections = await api("/api/openclaw/connections");
+
+  const connectionRes = await api("/api/connections").catch(() => ({ connections: [] }));
+  const connections = Array.isArray(connectionRes?.connections) ? connectionRes.connections : [];
   if (!connections.length) {
     if (streamAbort) {
       streamAbort.abort();
@@ -8877,7 +8900,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     applyWorkspacePolicy(null);
     renderConnections([]);
     setView("setup");
-    setMessage("setup_msg", "Complete agent setup to continue.", "");
+    setMessage("setup_msg", "Create your first connection to generate Hivee Hub install instructions.", "");
     return;
   }
 
@@ -8891,35 +8914,17 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     if (cid && !connectionCandidates.includes(cid)) connectionCandidates.push(cid);
   }
 
-  let workspaceReady = false;
-  let workspaceErr = "";
+  let selectedConn = null;
   for (const cid of connectionCandidates) {
     activeConnectionId = cid;
     const sel = $("home_connections");
     if (sel) sel.value = cid;
-    renderConfigConnectionDetails();
-    try {
-      await ensureWorkspaceForActiveConnection({ silent: true });
-      workspaceReady = true;
-      break;
-    } catch (e) {
-      workspaceErr = detailToText(e);
-    }
+    selectedConn = connectionsCache.find((c) => String(c?.id || "") === cid) || null;
+    if (selectedConn) break;
   }
 
-  if (!workspaceReady) {
-    connectionHealthy = false;
-    applyWorkspacePolicy(null);
-    setView("setup");
-    setMessage("setup_msg", "OpenClaw connection check failed. Use a valid base URL and API key to continue.", "error");
-    if (workspaceErr) setMessage("config_msg", workspaceErr, "error");
-    return;
-  }
-
-  connectionHealthy = true;
-  applyConnectionStatus();
+  await ensureWorkspaceForActiveConnection({ silent: true }).catch(() => null);
   setView("home");
-  await loadConnectionPolicy(activeConnectionId).catch(() => {});
   await loadWorkspaceTree().catch(() => {});
   await loadWorkspaceFiles(DEFAULT_OWNER_FILES_PATH).catch(() => {});
 
@@ -8984,8 +8989,7 @@ function bindActions() {
   $("form_connect").addEventListener("submit", (ev) => connectOpenClaw(ev).catch((e) => showUiError("setup_msg", e)));
   $("btn_setup_previous")?.addEventListener("click", () => {
     setMessage("setup_msg", "");
-    setView("auth");
-    setAuthMethod("hooman");
+    fetchInitial().catch((e) => setMessage("setup_msg", detailToText(e), "error"));
   });
   $("form_change_password")?.addEventListener("submit", (ev) => changeAccountPassword(ev).catch((e) => showUiError("account_msg", e)));
   $("form_delete_account")?.addEventListener("submit", (ev) => deleteAccount(ev).catch((e) => showUiError("account_msg", e)));
@@ -9008,7 +9012,6 @@ function bindActions() {
     applyConnectionStatus();
     renderConfigConnectionDetails();
     ensureWorkspaceForActiveConnection({ silent: false })
-      .then(() => loadConnectionPolicy(activeConnectionId).catch(() => null))
       .then(() => loadWorkspaceTree().catch(() => null))
       .then(() => loadWorkspaceFiles(DEFAULT_OWNER_FILES_PATH).catch(() => null))
       .catch((e) => setMessage("config_msg", detailToText(e), "error"))
@@ -9019,6 +9022,7 @@ function bindActions() {
 
   $("btn_refresh_home").onclick = () => fetchInitial().catch((e) => setMessage("config_msg", detailToText(e), "error"));
   $("btn_open_connect").onclick = () => setView("setup");
+  $("btn_join_project")?.addEventListener("click", () => joinProjectByApiKey().catch((e) => setMessage("chat_hint", detailToText(e), "error")));
 
   $("btn_new_project").onclick = () => openWizard(true);
   $("btn_close_wizard").onclick = closeWizard;
@@ -9437,4 +9441,7 @@ if (oauthError) {
       setView("auth");
     });
 })();
+
+
+
 

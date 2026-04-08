@@ -580,207 +580,504 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         primary_env = _ensure_primary_environment_for_user(user_id)
         env_id = str(primary_env.get("id") or "").strip() or None
-    
-        conn = db()
-        c = conn.execute(
-            "SELECT id FROM openclaw_connections WHERE id = ? AND user_id = ?",
-            (payload.connection_id, user_id),
-        ).fetchone()
-        if not c:
-            conn.close()
-            raise HTTPException(400, "Invalid connection_id (not found for this user)")
 
-        policy_row = conn.execute(
-            "SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1",
-            (payload.connection_id, user_id),
-        ).fetchone()
-        main_agent_id = str(policy_row["main_agent_id"] or "").strip() if policy_row else ""
-        main_agent_name = str(policy_row["main_agent_name"] or "").strip() if policy_row else ""
-        if not main_agent_id:
-            conn.close()
-            raise HTTPException(
-                400,
-                "Primary owner agent is not configured for this connection. Re-run OpenClaw bootstrap first.",
-            )
-        managed_primary = conn.execute(
-            """
-            SELECT agent_id, agent_name
-            FROM managed_agents
-            WHERE user_id = ? AND connection_id = ? AND agent_id = ?
-            LIMIT 1
-            """,
-            (user_id, payload.connection_id, main_agent_id),
-        ).fetchone()
-        if not managed_primary:
-            conn.close()
-            raise HTTPException(
-                400,
-                "Primary owner agent is missing from managed agents. Reconnect OpenClaw and try again.",
-            )
-        main_agent_name = str(managed_primary["agent_name"] or main_agent_name or main_agent_id).strip() or main_agent_id
+        goal = str(payload.goal or "").replace("\r", "").strip()
+        if not goal:
+            raise HTTPException(400, "goal is required")
 
-        pid = new_id("prj")
-        now = int(time.time())
+        title = str(payload.title or "").strip()[:160]
+        if not title:
+            fallback_title = _sanitize_title_candidate(goal)
+            title = (fallback_title or f"Project {time.strftime('%Y-%m-%d')}")[:160]
+
+        brief = str(payload.brief or "").replace("\r", "").strip()[:5000]
+        if not brief:
+            brief = goal[:5000]
+
         setup_details = _normalize_setup_details(payload.setup_details or {})
         setup_chat_history_text = str(payload.setup_chat_history or "").replace("\r", "").strip()[:120_000]
+
         workspace = _ensure_user_workspace(user_id)
         workspace_root = str(workspace["workspace_root"])
-        project_root = _build_project_root(pid, payload.title, workspace_root=workspace_root)
+        pid = new_id("prj")
+        now = int(time.time())
+        project_root = _build_project_root(pid, title, workspace_root=workspace_root)
         project_dir = Path(project_root)
         if not _path_within(project_dir, Path(workspace_root)):
-            conn.close()
             raise HTTPException(400, "Invalid project root derived from workspace")
+
         _initialize_project_folder(
             project_dir,
-            payload.title,
-            payload.brief,
-            payload.goal,
+            title,
+            brief,
+            goal,
             setup_details=setup_details,
             setup_chat_history_text=setup_chat_history_text,
         )
-    
+
+        conn = db()
+
+        selected_connection_id = str(payload.connection_id or "").strip()
+        runtime_connection_row: Optional[sqlite3.Row] = None
+        if selected_connection_id:
+            runtime_connection_row = conn.execute(
+                """
+                SELECT id, legacy_openclaw_connection_id, hub_status, created_at, updated_at
+                FROM connections
+                WHERE id = ? AND user_id = ?
+                LIMIT 1
+                """,
+                (selected_connection_id, user_id),
+            ).fetchone()
+            if not runtime_connection_row:
+                legacy = conn.execute(
+                    "SELECT id, created_at FROM openclaw_connections WHERE id = ? AND user_id = ? LIMIT 1",
+                    (selected_connection_id, user_id),
+                ).fetchone()
+                if not legacy:
+                    conn.close()
+                    raise HTTPException(400, "Invalid connection_id (not found for this user)")
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO connections (
+                        id, user_id, label, runtime_type, install_token_hash, install_token_expires_at,
+                        hub_status, os_type, machine_name, hub_version, last_heartbeat_at,
+                        legacy_openclaw_connection_id, created_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        selected_connection_id,
+                        user_id,
+                        "OpenClaw Connection",
+                        CONNECTION_RUNTIME_OPENCLAW,
+                        None,
+                        None,
+                        HUB_STATUS_ONLINE,
+                        None,
+                        None,
+                        None,
+                        _to_int(legacy["created_at"]),
+                        selected_connection_id,
+                        _to_int(legacy["created_at"]),
+                        now,
+                    ),
+                )
+                runtime_connection_row = conn.execute(
+                    """
+                    SELECT id, legacy_openclaw_connection_id, hub_status, created_at, updated_at
+                    FROM connections
+                    WHERE id = ? AND user_id = ?
+                    LIMIT 1
+                    """,
+                    (selected_connection_id, user_id),
+                ).fetchone()
+        else:
+            runtime_connection_row = conn.execute(
+                """
+                SELECT id, legacy_openclaw_connection_id, hub_status, created_at, updated_at
+                FROM connections
+                WHERE user_id = ?
+                ORDER BY
+                    CASE WHEN hub_status = ? THEN 0 ELSE 1 END,
+                    updated_at DESC,
+                    created_at DESC
+                LIMIT 1
+                """,
+                (user_id, HUB_STATUS_ONLINE),
+            ).fetchone()
+            if runtime_connection_row:
+                selected_connection_id = str(runtime_connection_row["id"])
+            else:
+                legacy = conn.execute(
+                    "SELECT id, created_at FROM openclaw_connections WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+                    (user_id,),
+                ).fetchone()
+                if legacy:
+                    selected_connection_id = str(legacy["id"])
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO connections (
+                            id, user_id, label, runtime_type, install_token_hash, install_token_expires_at,
+                            hub_status, os_type, machine_name, hub_version, last_heartbeat_at,
+                            legacy_openclaw_connection_id, created_at, updated_at
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            selected_connection_id,
+                            user_id,
+                            "OpenClaw Connection",
+                            CONNECTION_RUNTIME_OPENCLAW,
+                            None,
+                            None,
+                            HUB_STATUS_ONLINE,
+                            None,
+                            None,
+                            None,
+                            _to_int(legacy["created_at"]),
+                            selected_connection_id,
+                            _to_int(legacy["created_at"]),
+                            now,
+                        ),
+                    )
+                    runtime_connection_row = conn.execute(
+                        """
+                        SELECT id, legacy_openclaw_connection_id, hub_status, created_at, updated_at
+                        FROM connections
+                        WHERE id = ? AND user_id = ?
+                        LIMIT 1
+                        """,
+                        (selected_connection_id, user_id),
+                    ).fetchone()
+
+        legacy_openclaw_connection_id = ""
+        if runtime_connection_row:
+            legacy_openclaw_connection_id = str(runtime_connection_row["legacy_openclaw_connection_id"] or "").strip()
+            if not legacy_openclaw_connection_id:
+                legacy_openclaw_connection_id = str(runtime_connection_row["id"] or "").strip()
+
+        project_connection_id = legacy_openclaw_connection_id or selected_connection_id or ""
+
+        project_api_key = f"{PROJECT_API_KEY_PREFIX}_{secrets.token_urlsafe(18)}"
+        project_api_key_hash = _hash_access_token(project_api_key)
+
         conn.execute(
             """
             INSERT INTO projects (
-                id, user_id, env_id, title, brief, goal, setup_json, plan_text, plan_status, plan_updated_at, plan_approved_at,
+                id, user_id, owner_user_id, env_id, title, brief, goal, setup_json,
+                plan_text, plan_status, plan_updated_at, plan_approved_at,
                 execution_status, progress_pct, execution_updated_at,
                 usage_prompt_tokens, usage_completion_tokens, usage_total_tokens, usage_updated_at,
-                connection_id, workspace_root, project_root, scope_requires_owner_approval, created_at
+                connection_id, workspace_root, project_root, scope_requires_owner_approval,
+                project_api_key_hash, status, created_via, created_at, updated_at
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 pid,
                 user_id,
+                user_id,
                 env_id,
-                payload.title,
-                payload.brief,
-                payload.goal,
+                title,
+                brief,
+                goal,
                 json.dumps(setup_details, ensure_ascii=False),
                 "",
                 PLAN_STATUS_PENDING,
-                int(time.time()),
+                now,
                 None,
                 EXEC_STATUS_IDLE,
                 0,
-                int(time.time()),
+                now,
                 0,
                 0,
                 0,
-                int(time.time()),
-                payload.connection_id,
+                now,
+                project_connection_id,
                 workspace_root,
                 project_root,
                 1,
+                project_api_key_hash,
+                "active",
+                PROJECT_CREATED_VIA_NEW,
+                now,
                 now,
             ),
         )
+
         conn.execute(
             """
-            INSERT INTO project_agents (
-                project_id, agent_id, agent_name, is_primary, role,
-                source_type, source_user_id, source_connection_id, joined_via_invite_id, added_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            INSERT OR IGNORE INTO project_memberships (id, project_id, user_id, role, joined_at)
+            VALUES (?,?,?,?,?)
             """,
-            (pid, main_agent_id, main_agent_name, 1, "Primary owner agent", "owner", user_id, payload.connection_id, None, now),
+            (new_id("pm"), pid, user_id, "owner", now),
         )
-        initial_project_agent_token = _new_agent_access_token()
+
+        planning_channel_id: Optional[str] = None
+        for channel_name, channel_desc in DEFAULT_PROJECT_CHANNELS:
+            channel_id = new_id("pch")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO project_channels (id, project_id, name, description, created_at)
+                VALUES (?,?,?,?,?)
+                """,
+                (channel_id, pid, channel_name, channel_desc, now),
+            )
+            actual_channel = conn.execute(
+                """
+                SELECT id, name
+                FROM project_channels
+                WHERE project_id = ? AND name = ?
+                LIMIT 1
+                """,
+                (pid, channel_name),
+            ).fetchone()
+            if actual_channel:
+                if str(actual_channel["name"] or "") == PROJECT_CHANNEL_PLANNING:
+                    planning_channel_id = str(actual_channel["id"])
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO channel_memory (channel_id, summary_md, state_json, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (str(actual_channel["id"]), "", "{}", now),
+                )
+
         conn.execute(
-            "INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, created_at) VALUES (?,?,?,?)",
-            (pid, main_agent_id, _hash_access_token(initial_project_agent_token), now),
+            """
+            INSERT OR REPLACE INTO project_memory (
+                project_id, summary_md, state_json, task_map_json, policy_json, updated_at
+            ) VALUES (?,?,?,?,?,?)
+            """,
+            (
+                pid,
+                f"## Goal\n\n{goal}",
+                json.dumps({"goal": goal, "title": title, "created_via": PROJECT_CREATED_VIA_NEW}, ensure_ascii=False),
+                json.dumps({"items": []}, ensure_ascii=False),
+                json.dumps({"planning_mode": "hub_dispatch"}, ensure_ascii=False),
+                now,
+            ),
         )
+
+        primary_managed_agent = conn.execute(
+            """
+            SELECT ma.id,
+                   ma.connection_id,
+                   COALESCE(NULLIF(ma.runtime_agent_id, ''), ma.agent_id) AS runtime_agent_id,
+                   ma.agent_name,
+                   COALESCE(c.hub_status, '') AS hub_status,
+                   ma.updated_at
+            FROM managed_agents ma
+            LEFT JOIN connections c ON c.id = ma.connection_id
+            WHERE ma.user_id = ? AND ma.status IN ('active', 'online')
+            ORDER BY
+                CASE WHEN COALESCE(c.hub_status, '') = ? THEN 0 ELSE 1 END,
+                CASE WHEN ma.connection_id = ? THEN 0 ELSE 1 END,
+                ma.updated_at DESC
+            LIMIT 1
+            """,
+            (user_id, HUB_STATUS_ONLINE, selected_connection_id),
+        ).fetchone()
+
+        primary_agent_id: Optional[str] = None
+        if primary_managed_agent:
+            primary_agent_membership_id = new_id("pam")
+            primary_agent_id = str(primary_managed_agent["runtime_agent_id"] or "").strip() or None
+            primary_agent_name = str(primary_managed_agent["agent_name"] or primary_agent_id or "agent").strip() or (primary_agent_id or "agent")
+            primary_connection_id = str(primary_managed_agent["connection_id"] or selected_connection_id or "").strip() or None
+
+            conn.execute(
+                """
+                INSERT INTO project_agent_memberships (
+                    id, project_id, managed_agent_id, connection_id, user_id, role,
+                    is_primary, status, joined_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    primary_agent_membership_id,
+                    pid,
+                    str(primary_managed_agent["id"]),
+                    primary_connection_id,
+                    user_id,
+                    "primary_planning_agent",
+                    1,
+                    "active",
+                    now,
+                    now,
+                ),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO project_agents (
+                    project_id, agent_id, agent_name, is_primary, role,
+                    source_type, source_user_id, source_connection_id, joined_via_invite_id, added_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(project_id, agent_id) DO UPDATE SET
+                    agent_name = excluded.agent_name,
+                    is_primary = excluded.is_primary,
+                    role = excluded.role,
+                    source_type = excluded.source_type,
+                    source_user_id = excluded.source_user_id,
+                    source_connection_id = excluded.source_connection_id,
+                    added_at = excluded.added_at
+                """,
+                (
+                    pid,
+                    primary_agent_id,
+                    primary_agent_name,
+                    1,
+                    "Primary planning agent",
+                    "owner",
+                    user_id,
+                    primary_connection_id,
+                    None,
+                    now,
+                ),
+            )
+
+            initial_project_agent_token = _new_agent_access_token()
+            conn.execute(
+                """
+                INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, created_at)
+                VALUES (?,?,?,?)
+                ON CONFLICT(project_id, agent_id) DO UPDATE SET
+                    token_hash = excluded.token_hash,
+                    created_at = excluded.created_at
+                """,
+                (pid, primary_agent_id, _hash_access_token(initial_project_agent_token), now),
+            )
+
         conn.commit()
         conn.close()
-    
+
+        role_agents: List[Dict[str, Any]] = []
+        if primary_agent_id:
+            role_agents = [
+                {
+                    "agent_id": primary_agent_id,
+                    "agent_name": str(primary_managed_agent["agent_name"] or primary_agent_id),
+                    "role": "Primary planning agent",
+                    "is_primary": True,
+                }
+            ]
+
         _write_project_agent_roles_file(
             owner_user_id=user_id,
             project_root=project_root,
-            agents=[
-                {
-                    "agent_id": main_agent_id,
-                    "agent_name": main_agent_name,
-                    "role": "Primary owner agent",
-                    "is_primary": True,
-                }
-            ],
+            agents=role_agents,
         )
         _refresh_project_documents(pid)
 
-        await emit(pid, "project.created", {"title": payload.title})
-        await emit(pid, "project.agents_set", {"count": 1, "primary_agent_id": main_agent_id, "auto_seeded": True})
-        asyncio.create_task(_generate_project_plan(pid, force=True))
-        await emit(pid, "project.plan.regenerate_requested", {"project_id": pid, "source": "project_created"})
-        await emit(pid, "project.scope_initialized", {"project_root": project_root})
+        await emit(pid, "project.created", {"title": title, "created_via": PROJECT_CREATED_VIA_NEW})
+        await emit(pid, "project.channels.seeded", {"channels": [name for name, _ in DEFAULT_PROJECT_CHANNELS]})
+        await emit(pid, "project.api_key.created", {"project_id": pid})
+
+        if planning_channel_id:
+            conn = db()
+            conn.execute(
+                """
+                INSERT INTO project_messages (
+                    id, project_id, channel_id, sender_type, sender_user_id,
+                    sender_agent_membership_id, message_kind, body, task_id, metadata_json, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    new_id("msg"),
+                    pid,
+                    planning_channel_id,
+                    "system",
+                    user_id,
+                    None,
+                    PROJECT_MESSAGE_KIND_EVENT,
+                    "Planning dispatch initialized for this new project.",
+                    None,
+                    json.dumps({"event": "project.planning.dispatch"}, ensure_ascii=False),
+                    now,
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+        planning_dispatched = False
+        if primary_agent_id:
+            can_direct_dispatch = False
+            if project_connection_id:
+                plan_conn = db()
+                legacy_direct_row = plan_conn.execute(
+                    "SELECT id FROM openclaw_connections WHERE id = ? AND user_id = ? LIMIT 1",
+                    (project_connection_id, user_id),
+                ).fetchone()
+                plan_conn.close()
+                can_direct_dispatch = bool(legacy_direct_row)
+
+            if can_direct_dispatch:
+                asyncio.create_task(_generate_project_plan(pid, force=True))
+                await emit(pid, "project.plan.regenerate_requested", {"project_id": pid, "source": "project_created"})
+                planning_dispatched = True
+            else:
+                await emit(
+                    pid,
+                    "project.plan.dispatch.queued",
+                    {
+                        "project_id": pid,
+                        "source": "hivee_hub",
+                        "reason": "Managed agent is attached; waiting for hub-runtime planning dispatch",
+                    },
+                )
+
+        if not planning_dispatched:
+            await emit(
+                pid,
+                "project.plan.pending_agent",
+                {
+                    "project_id": pid,
+                    "reason": (
+                        "No online managed agent attached yet"
+                        if not primary_agent_id
+                        else "Hub dispatch queued; direct cloud runtime adapter unavailable"
+                    ),
+                },
+            )
+
         _append_project_daily_log(
             owner_user_id=user_id,
             project_root=project_root,
             kind="project.created",
-            text=f"Project created: {payload.title}",
-            payload={"brief": payload.brief[:500], "goal": payload.goal[:500]},
+            text=f"Project created: {title}",
+            payload={"goal": goal[:500], "created_via": PROJECT_CREATED_VIA_NEW},
         )
+
         return ProjectOut(
             id=pid,
-            title=payload.title,
-            brief=payload.brief,
-            goal=payload.goal,
-            connection_id=payload.connection_id,
+            title=title,
+            brief=brief,
+            goal=goal,
+            connection_id=project_connection_id,
             created_at=now,
             workspace_root=workspace_root,
             project_root=project_root,
             setup_details=setup_details,
+            status="active",
+            created_via=PROJECT_CREATED_VIA_NEW,
+            owner_user_id=user_id,
+            project_api_key=project_api_key,
             plan_status=PLAN_STATUS_PENDING,
             plan_text="",
-            plan_updated_at=int(time.time()),
+            plan_updated_at=now,
             plan_approved_at=None,
             execution_status=EXEC_STATUS_IDLE,
             progress_pct=0,
-            execution_updated_at=int(time.time()),
+            execution_updated_at=now,
             usage_prompt_tokens=0,
             usage_completion_tokens=0,
             usage_total_tokens=0,
-            usage_updated_at=int(time.time()),
+            usage_updated_at=now,
         )
-    
+
     @app.get("/api/projects", response_model=List[ProjectOut])
     async def list_projects(request: Request):
         user_id = get_session_user(request)
         conn = db()
-        owner_rows = conn.execute(
+        rows = conn.execute(
             """
-            SELECT id, title, brief, goal, connection_id, created_at, workspace_root, project_root, setup_json,
-                   plan_text, plan_status, plan_updated_at, plan_approved_at,
-                   execution_status, progress_pct, execution_updated_at,
-                   usage_prompt_tokens, usage_completion_tokens, usage_total_tokens, usage_updated_at
-            FROM projects
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            """,
-            (user_id,),
-        ).fetchall()
-        member_rows = conn.execute(
-            """
-            SELECT p.id, p.title, p.brief, p.goal, p.connection_id, p.created_at, p.workspace_root, p.project_root, p.setup_json,
+            SELECT p.id, p.title, p.brief, p.goal, p.connection_id, p.created_at,
+                   p.workspace_root, p.project_root, p.setup_json,
                    p.plan_text, p.plan_status, p.plan_updated_at, p.plan_approved_at,
                    p.execution_status, p.progress_pct, p.execution_updated_at,
-                   p.usage_prompt_tokens, p.usage_completion_tokens, p.usage_total_tokens, p.usage_updated_at
-            FROM project_external_agent_memberships pem
-            JOIN projects p ON p.id = pem.project_id
-            WHERE pem.member_user_id = ? AND pem.status = 'active'
+                   p.usage_prompt_tokens, p.usage_completion_tokens, p.usage_total_tokens, p.usage_updated_at,
+                   p.status, p.created_via, p.owner_user_id, p.user_id, p.updated_at
+            FROM projects p
+            WHERE p.id IN (
+                SELECT pm.project_id FROM project_memberships pm WHERE pm.user_id = ?
+                UNION
+                SELECT p2.id FROM projects p2 WHERE p2.user_id = ?
+            )
             ORDER BY p.created_at DESC
             """,
-            (user_id,),
+            (user_id, user_id),
         ).fetchall()
         conn.close()
-
-        merged: Dict[str, sqlite3.Row] = {}
-        for r in owner_rows:
-            merged[str(r["id"])] = r
-        for r in member_rows:
-            pid = str(r["id"])
-            if pid not in merged:
-                merged[pid] = r
-        ordered = sorted(merged.values(), key=lambda r: _to_int(r["created_at"]), reverse=True)
-        return [_project_out_from_row(r) for r in ordered]
+        return [_project_out_from_row(r) for r in rows]
 
     @app.get("/api/projects/{project_id}", response_model=ProjectOut)
     async def get_project(request: Request, project_id: str):
@@ -788,30 +1085,32 @@ def register_routes(app: FastAPI) -> None:
         conn = db()
         row = conn.execute(
             """
-            SELECT id, title, brief, goal, connection_id, created_at, workspace_root, project_root, setup_json,
-                   plan_text, plan_status, plan_updated_at, plan_approved_at,
-                   execution_status, progress_pct, execution_updated_at,
-                   usage_prompt_tokens, usage_completion_tokens, usage_total_tokens, usage_updated_at
-            FROM projects
-            WHERE id = ? AND user_id = ?
+            SELECT p.id, p.title, p.brief, p.goal, p.connection_id, p.created_at,
+                   p.workspace_root, p.project_root, p.setup_json,
+                   p.plan_text, p.plan_status, p.plan_updated_at, p.plan_approved_at,
+                   p.execution_status, p.progress_pct, p.execution_updated_at,
+                   p.usage_prompt_tokens, p.usage_completion_tokens, p.usage_total_tokens, p.usage_updated_at,
+                   p.status, p.created_via, p.owner_user_id, p.user_id, p.updated_at
+            FROM projects p
+            WHERE p.id = ?
+              AND (
+                    p.user_id = ?
+                    OR COALESCE(NULLIF(TRIM(p.owner_user_id), ''), p.user_id) = ?
+                    OR EXISTS (
+                        SELECT 1
+                        FROM project_memberships pm
+                        WHERE pm.project_id = p.id AND pm.user_id = ?
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM project_external_agent_memberships pem
+                        WHERE pem.project_id = p.id AND pem.member_user_id = ? AND pem.status = 'active'
+                    )
+              )
             LIMIT 1
             """,
-            (project_id, user_id),
+            (project_id, user_id, user_id, user_id, user_id),
         ).fetchone()
-        if not row:
-            row = conn.execute(
-                """
-                SELECT p.id, p.title, p.brief, p.goal, p.connection_id, p.created_at, p.workspace_root, p.project_root, p.setup_json,
-                       p.plan_text, p.plan_status, p.plan_updated_at, p.plan_approved_at,
-                       p.execution_status, p.progress_pct, p.execution_updated_at,
-                       p.usage_prompt_tokens, p.usage_completion_tokens, p.usage_total_tokens, p.usage_updated_at
-                FROM project_external_agent_memberships pem
-                JOIN projects p ON p.id = pem.project_id
-                WHERE p.id = ? AND pem.member_user_id = ? AND pem.status = 'active'
-                LIMIT 1
-                """,
-                (project_id, user_id),
-            ).fetchone()
         conn.close()
         if not row:
             raise HTTPException(404, "Project not found")
@@ -1467,16 +1766,27 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         proj = conn.execute(
-            "SELECT id, user_id FROM projects WHERE id = ? LIMIT 1",
+            "SELECT id, user_id, owner_user_id FROM projects WHERE id = ? LIMIT 1",
             (project_id,),
         ).fetchone()
         if not proj:
             conn.close()
             raise HTTPException(404, "Project not found")
-        owner_user_id = str(proj["user_id"] or "").strip()
+        owner_user_id = str(proj["owner_user_id"] or proj["user_id"] or "").strip()
         is_owner = owner_user_id == user_id
+        has_project_membership = False
         member_rows = []
         if not is_owner:
+            membership = conn.execute(
+                """
+                SELECT id
+                FROM project_memberships
+                WHERE project_id = ? AND user_id = ?
+                LIMIT 1
+                """,
+                (project_id, user_id),
+            ).fetchone()
+            has_project_membership = bool(membership)
             member_rows = conn.execute(
                 """
                 SELECT agent_id
@@ -1486,7 +1796,7 @@ def register_routes(app: FastAPI) -> None:
                 """,
                 (project_id, user_id),
             ).fetchall()
-            if not member_rows:
+            if not has_project_membership and not member_rows:
                 conn.close()
                 raise HTTPException(404, "Project not found")
         rows = conn.execute(
@@ -1538,11 +1848,12 @@ def register_routes(app: FastAPI) -> None:
             )
         conn.close()
         primary = next((a for a in agents if a["is_primary"]), None)
+        access_mode = "owner" if is_owner else ("member" if has_project_membership else "external")
         return {
             "ok": True,
             "agents": agents,
             "primary_agent": primary,
-            "access_mode": "owner" if is_owner else "member",
+            "access_mode": access_mode,
         }
 
     @app.get("/api/projects/{project_id}/agent-permissions")
@@ -2950,12 +3261,22 @@ def register_routes(app: FastAPI) -> None:
             membership = conn.execute(
                 """
                 SELECT id
-                FROM project_external_agent_memberships
-                WHERE project_id = ? AND member_user_id = ? AND status = 'active'
+                FROM project_memberships
+                WHERE project_id = ? AND user_id = ?
                 LIMIT 1
                 """,
                 (project_id, user_id),
             ).fetchone()
+            if not membership:
+                membership = conn.execute(
+                    """
+                    SELECT id
+                    FROM project_external_agent_memberships
+                    WHERE project_id = ? AND member_user_id = ? AND status = 'active'
+                    LIMIT 1
+                    """,
+                    (project_id, user_id),
+                ).fetchone()
             if not membership:
                 conn.close()
                 raise HTTPException(404, "Project not found")
@@ -2976,4 +3297,9 @@ def register_routes(app: FastAPI) -> None:
                     yield "event: ping\ndata: {}\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+
+
+
 

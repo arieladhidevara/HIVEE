@@ -27,6 +27,11 @@ AGENTS_ROOT_DIRNAME = "AGENTS"
 AGENT_CARD_FILENAME = "agent-card.json"
 MANAGED_AGENT_CARD_VERSION = "1.0"
 MANAGED_AGENT_MEMORY_SCOPES = ("working", "project", "long_term")
+CONNECTION_RUNTIME_OPENCLAW = "openclaw"
+HUB_STATUS_PENDING_INSTALL = "pending_install"
+HUB_STATUS_ONLINE = "online"
+HUB_STATUS_OFFLINE = "offline"
+HUB_STATUS_ERROR = "error"
 NEW_USER_ASSETS_DIR = Path("assets") / "new_user"
 SERVER_WORKSPACES_DIR = Path("server_workspaces")
 MAX_TEMPLATE_FILE_BYTES = 96_000
@@ -66,6 +71,16 @@ PROJECT_SETUP_FILE = f"{PROJECT_INFO_DIRNAME}/project-setup.md"
 PROJECT_PROTOCOL_FILE = f"{PROJECT_INFO_DIRNAME}/project-protocol.md"
 PROJECT_INVITATIONS_FILE = f"{PROJECT_INFO_DIRNAME}/Project-Invitations.md"
 CHAT_HIVEE_FILE = f"{PROJECT_INFO_DIRNAME}/chat-hivee.md"
+PROJECT_CHANNEL_MAIN = "main"
+PROJECT_CHANNEL_PLANNING = "planning"
+PROJECT_CHANNEL_ARTIFACTS = "artifacts"
+PROJECT_CHANNEL_SYSTEM = "system"
+DEFAULT_PROJECT_CHANNELS: Tuple[Tuple[str, str], ...] = (
+    (PROJECT_CHANNEL_MAIN, "Primary collaboration channel."),
+    (PROJECT_CHANNEL_PLANNING, "Planning and roadmap updates."),
+    (PROJECT_CHANNEL_ARTIFACTS, "Deliverables, outputs, and links."),
+    (PROJECT_CHANNEL_SYSTEM, "System notices and lifecycle events."),
+)
 PROJECT_META_DIRNAME = "Project Meta"
 PROJECT_CARD_FILE = f"{PROJECT_META_DIRNAME}/project-card.json"
 PROJECT_MEMORY_FILE = f"{PROJECT_META_DIRNAME}/project-memory.json"
@@ -119,6 +134,12 @@ PASSWORD_HASH_ITERATIONS = 260_000
 PROJECT_EXTERNAL_INVITE_TTL_SEC = 60 * 60 * 24 * 7
 PROJECT_EXTERNAL_INVITE_MIN_TTL_SEC = 60 * 15
 PROJECT_EXTERNAL_INVITE_MAX_TTL_SEC = 60 * 60 * 24 * 30
+PROJECT_CREATED_VIA_NEW = "new"
+PROJECT_CREATED_VIA_JOINED = "joined"
+PROJECT_MESSAGE_KIND_CHAT = "chat"
+PROJECT_MESSAGE_KIND_EVENT = "event"
+PROJECT_INSTALL_TOKEN_DEFAULT_TTL_SEC = 60 * 60 * 24 * 7
+PROJECT_API_KEY_PREFIX = "hivee_prj"
 TASK_STATUS_TODO = "todo"
 TASK_STATUS_IN_PROGRESS = "in_progress"
 TASK_STATUS_BLOCKED = "blocked"
@@ -185,3 +206,4 @@ After collecting answers, summarize and ask for confirmation before starting the
 
 
 __all__ = [name for name in globals() if not name.startswith('__')]
+

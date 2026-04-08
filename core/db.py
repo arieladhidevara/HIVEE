@@ -564,6 +564,153 @@ def init_db() -> None:
     )
     cur.execute("CREATE INDEX IF NOT EXISTS idx_oauth_identities_user_id ON oauth_identities(user_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_oauth_states_expires_at ON oauth_states(expires_at)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS connections (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            runtime_type TEXT NOT NULL DEFAULT 'openclaw',
+            install_token_hash TEXT,
+            install_token_expires_at INTEGER,
+            hub_status TEXT NOT NULL DEFAULT 'pending_install',
+            os_type TEXT,
+            machine_name TEXT,
+            last_heartbeat_at INTEGER,
+            hub_version TEXT,
+            legacy_openclaw_connection_id TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connections_user ON connections(user_id, updated_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connections_runtime ON connections(user_id, runtime_type, hub_status)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_memberships (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            joined_at INTEGER NOT NULL,
+            UNIQUE(project_id, user_id),
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_memberships_user ON project_memberships(user_id, joined_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_agent_memberships (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            managed_agent_id TEXT,
+            connection_id TEXT,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            joined_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(project_id, managed_agent_id),
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(managed_agent_id) REFERENCES managed_agents(id),
+            FOREIGN KEY(connection_id) REFERENCES connections(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_agent_memberships_project ON project_agent_memberships(project_id, status, updated_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_agent_memberships_user ON project_agent_memberships(user_id, updated_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_channels (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            created_at INTEGER NOT NULL,
+            UNIQUE(project_id, name),
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_channels_project ON project_channels(project_id, created_at ASC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_messages (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            channel_id TEXT NOT NULL,
+            sender_type TEXT NOT NULL,
+            sender_user_id TEXT,
+            sender_agent_membership_id TEXT,
+            message_kind TEXT NOT NULL DEFAULT 'chat',
+            body TEXT NOT NULL,
+            task_id TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(channel_id) REFERENCES project_channels(id),
+            FOREIGN KEY(sender_agent_membership_id) REFERENCES project_agent_memberships(id),
+            FOREIGN KEY(task_id) REFERENCES project_tasks(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_messages_channel ON project_messages(channel_id, created_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_messages_project ON project_messages(project_id, created_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_memory (
+            project_id TEXT PRIMARY KEY,
+            summary_md TEXT NOT NULL DEFAULT '',
+            state_json TEXT NOT NULL DEFAULT '{}',
+            task_map_json TEXT NOT NULL DEFAULT '{}',
+            policy_json TEXT NOT NULL DEFAULT '{}',
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS channel_memory (
+            channel_id TEXT PRIMARY KEY,
+            summary_md TEXT NOT NULL DEFAULT '',
+            state_json TEXT NOT NULL DEFAULT '{}',
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(channel_id) REFERENCES project_channels(id)
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS runtime_sessions (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            channel_id TEXT,
+            task_id TEXT,
+            managed_agent_id TEXT,
+            connection_id TEXT,
+            runtime_session_key TEXT NOT NULL,
+            summary_md TEXT NOT NULL DEFAULT '',
+            last_message_id TEXT,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(runtime_session_key),
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(channel_id) REFERENCES project_channels(id),
+            FOREIGN KEY(task_id) REFERENCES project_tasks(id),
+            FOREIGN KEY(managed_agent_id) REFERENCES managed_agents(id),
+            FOREIGN KEY(connection_id) REFERENCES connections(id),
+            FOREIGN KEY(last_message_id) REFERENCES project_messages(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_runtime_sessions_project ON runtime_sessions(project_id, updated_at DESC)")
+
     cols = [r[1] for r in cur.execute("PRAGMA table_info(project_agents)").fetchall()]
     if "is_primary" not in cols:
         cur.execute("ALTER TABLE project_agents ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0")
@@ -631,6 +778,218 @@ def init_db() -> None:
     policy_cols = [r[1] for r in cur.execute("PRAGMA table_info(connection_policies)").fetchall()]
     if "workspace_tree" not in policy_cols:
         cur.execute("ALTER TABLE connection_policies ADD COLUMN workspace_tree TEXT")
+    connections_cols = [r[1] for r in cur.execute("PRAGMA table_info(connections)").fetchall()]
+    if "legacy_openclaw_connection_id" not in connections_cols:
+        cur.execute("ALTER TABLE connections ADD COLUMN legacy_openclaw_connection_id TEXT")
+
+    if "owner_user_id" not in project_cols:
+        cur.execute("ALTER TABLE projects ADD COLUMN owner_user_id TEXT")
+    if "project_api_key_hash" not in project_cols:
+        cur.execute("ALTER TABLE projects ADD COLUMN project_api_key_hash TEXT")
+    if "created_via" not in project_cols:
+        cur.execute("ALTER TABLE projects ADD COLUMN created_via TEXT NOT NULL DEFAULT 'new'")
+    if "status" not in project_cols:
+        cur.execute("ALTER TABLE projects ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    if "updated_at" not in project_cols:
+        cur.execute("ALTER TABLE projects ADD COLUMN updated_at INTEGER")
+
+    managed_cols = [r[1] for r in cur.execute("PRAGMA table_info(managed_agents)").fetchall()]
+    if "runtime_agent_id" not in managed_cols:
+        cur.execute("ALTER TABLE managed_agents ADD COLUMN runtime_agent_id TEXT")
+    if "agent_card_version" not in managed_cols:
+        cur.execute("ALTER TABLE managed_agents ADD COLUMN agent_card_version TEXT")
+    if "agent_card_json" not in managed_cols:
+        cur.execute("ALTER TABLE managed_agents ADD COLUMN agent_card_json TEXT")
+    if "discovered_at" not in managed_cols:
+        cur.execute("ALTER TABLE managed_agents ADD COLUMN discovered_at INTEGER")
+
+    task_cols = [r[1] for r in cur.execute("PRAGMA table_info(project_tasks)").fetchall()]
+    if "assignee_agent_membership_id" not in task_cols:
+        cur.execute("ALTER TABLE project_tasks ADD COLUMN assignee_agent_membership_id TEXT")
+
+    now_ts = int(time.time())
+    cur.execute(
+        """
+        UPDATE projects
+        SET owner_user_id = user_id
+        WHERE owner_user_id IS NULL OR TRIM(owner_user_id) = ''
+        """
+    )
+    cur.execute(
+        """
+        UPDATE projects
+        SET updated_at = COALESCE(updated_at, created_at, ?)
+        WHERE updated_at IS NULL
+        """,
+        (now_ts,),
+    )
+    cur.execute(
+        """
+        UPDATE projects
+        SET created_via = ?
+        WHERE created_via IS NULL OR TRIM(created_via) = '' OR created_via NOT IN (?, ?)
+        """,
+        (PROJECT_CREATED_VIA_NEW, PROJECT_CREATED_VIA_NEW, PROJECT_CREATED_VIA_JOINED),
+    )
+    cur.execute(
+        """
+        UPDATE projects
+        SET status = 'active'
+        WHERE status IS NULL OR TRIM(status) = ''
+        """
+    )
+
+    cur.execute(
+        """
+        UPDATE managed_agents
+        SET runtime_agent_id = COALESCE(NULLIF(runtime_agent_id, ''), agent_id)
+        WHERE runtime_agent_id IS NULL OR TRIM(runtime_agent_id) = ''
+        """
+    )
+    cur.execute(
+        """
+        UPDATE managed_agents
+        SET agent_card_version = COALESCE(NULLIF(agent_card_version, ''), card_version, '1.0')
+        WHERE agent_card_version IS NULL OR TRIM(agent_card_version) = ''
+        """
+    )
+    cur.execute(
+        """
+        UPDATE managed_agents
+        SET agent_card_json = COALESCE(NULLIF(agent_card_json, ''), card_json, '{}')
+        WHERE agent_card_json IS NULL OR TRIM(agent_card_json) = ''
+        """
+    )
+    cur.execute(
+        """
+        UPDATE managed_agents
+        SET discovered_at = COALESCE(discovered_at, provisioned_at, updated_at, ?)
+        WHERE discovered_at IS NULL
+        """,
+        (now_ts,),
+    )
+
+    cur.execute(
+        """
+        INSERT INTO connections (
+            id, user_id, label, runtime_type, install_token_hash, install_token_expires_at,
+            hub_status, os_type, machine_name, last_heartbeat_at, hub_version,
+            legacy_openclaw_connection_id, created_at, updated_at
+        )
+        SELECT oc.id,
+               oc.user_id,
+               COALESCE(NULLIF(TRIM(oc.name), ''), 'OpenClaw Connection'),
+               ?,
+               NULL,
+               NULL,
+               ?,
+               NULL,
+               NULL,
+               oc.created_at,
+               NULL,
+               oc.id,
+               oc.created_at,
+               oc.created_at
+        FROM openclaw_connections oc
+        WHERE NOT EXISTS (SELECT 1 FROM connections c WHERE c.id = oc.id)
+        """,
+        (CONNECTION_RUNTIME_OPENCLAW, HUB_STATUS_ONLINE),
+    )
+
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO project_memberships (id, project_id, user_id, role, joined_at)
+        SELECT 'pm_' || lower(hex(randomblob(10))),
+               p.id,
+               COALESCE(NULLIF(TRIM(p.owner_user_id), ''), p.user_id),
+               'owner',
+               COALESCE(p.created_at, ?)
+        FROM projects p
+        WHERE COALESCE(NULLIF(TRIM(p.owner_user_id), ''), p.user_id) IS NOT NULL
+          AND TRIM(COALESCE(NULLIF(TRIM(p.owner_user_id), ''), p.user_id)) <> ''
+        """,
+        (now_ts,),
+    )
+
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO project_memberships (id, project_id, user_id, role, joined_at)
+        SELECT 'pm_' || lower(hex(randomblob(10))),
+               pem.project_id,
+               pem.member_user_id,
+               'member',
+               COALESCE(pem.created_at, pem.updated_at, ?)
+        FROM project_external_agent_memberships pem
+        WHERE pem.status = 'active'
+        """,
+        (now_ts,),
+    )
+
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO project_agent_memberships (
+            id, project_id, managed_agent_id, connection_id, user_id, role,
+            is_primary, status, joined_at, updated_at
+        )
+        SELECT 'pam_' || lower(hex(randomblob(10))),
+               pa.project_id,
+               ma.id,
+               COALESCE(NULLIF(pa.source_connection_id, ''), NULLIF(p.connection_id, ''), ma.connection_id),
+               COALESCE(NULLIF(pa.source_user_id, ''), NULLIF(p.owner_user_id, ''), p.user_id),
+               COALESCE(NULLIF(pa.role, ''), CASE WHEN COALESCE(pa.is_primary, 0) = 1 THEN 'primary' ELSE 'member' END),
+               COALESCE(pa.is_primary, 0),
+               'active',
+               COALESCE(pa.added_at, p.created_at, ?),
+               COALESCE(pa.added_at, p.created_at, ?)
+        FROM project_agents pa
+        JOIN projects p ON p.id = pa.project_id
+        LEFT JOIN managed_agents ma
+          ON ma.user_id = COALESCE(NULLIF(pa.source_user_id, ''), NULLIF(p.owner_user_id, ''), p.user_id)
+         AND ma.connection_id = COALESCE(NULLIF(pa.source_connection_id, ''), NULLIF(p.connection_id, ''), ma.connection_id)
+         AND (ma.runtime_agent_id = pa.agent_id OR ma.agent_id = pa.agent_id)
+        """,
+        (now_ts, now_ts),
+    )
+
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO project_memory (project_id, summary_md, state_json, task_map_json, policy_json, updated_at)
+        SELECT p.id,
+               '## Goal\n\n' || COALESCE(p.goal, ''),
+               '{}',
+               '{}',
+               '{}',
+               COALESCE(p.updated_at, p.created_at, ?)
+        FROM projects p
+        """,
+        (now_ts,),
+    )
+
+    project_ids = [str(r[0]) for r in cur.execute("SELECT id FROM projects").fetchall()]
+    for project_id in project_ids:
+        for channel_name, channel_desc in DEFAULT_PROJECT_CHANNELS:
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO project_channels (id, project_id, name, description, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    f"pch_{secrets.token_urlsafe(8)}",
+                    project_id,
+                    channel_name,
+                    channel_desc,
+                    now_ts,
+                ),
+            )
+
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO channel_memory (channel_id, summary_md, state_json, updated_at)
+        SELECT pc.id, '', '{}', COALESCE(pc.created_at, ?)
+        FROM project_channels pc
+        """,
+        (now_ts,),
+    )
     conn.commit()
     conn.close()
 

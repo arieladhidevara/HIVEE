@@ -57,6 +57,11 @@ def _project_out_from_row(row: sqlite3.Row) -> ProjectOut:
     payload = dict(row)
     setup_raw = payload.pop("setup_json", None)
     payload["setup_details"] = _normalize_setup_details(_parse_setup_json(setup_raw))
+    payload["status"] = str(payload.get("status") or "active")
+    payload["created_via"] = str(payload.get("created_via") or PROJECT_CREATED_VIA_NEW)
+    payload["owner_user_id"] = str(payload.get("owner_user_id") or payload.get("user_id") or "").strip() or None
+    payload["project_api_key"] = None
+    payload["connection_id"] = str(payload.get("connection_id") or "")
     payload["plan_status"] = str(payload.get("plan_status") or PLAN_STATUS_PENDING)
     payload["plan_text"] = str(payload.get("plan_text") or "")
     payload["plan_updated_at"] = payload.get("plan_updated_at")
@@ -298,17 +303,22 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
         if not str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip():
             raise
         session_user = None
+
     a2a_access = _resolve_optional_a2a_agent_session(request, required_scope="env.read")
     conn = db()
     project = conn.execute(
-        "SELECT id, user_id, project_root, workspace_root FROM projects WHERE id = ?",
+        """
+        SELECT id, user_id, owner_user_id, project_root, workspace_root
+        FROM projects
+        WHERE id = ?
+        """,
         (project_id,),
     ).fetchone()
     if not project:
         conn.close()
         raise HTTPException(404, "Project not found")
 
-    project_owner_user_id = str(project["user_id"] or "").strip()
+    project_owner_user_id = str(project["owner_user_id"] or project["user_id"] or "").strip()
 
     if session_user and project_owner_user_id == session_user:
         conn.close()
@@ -331,20 +341,65 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
         }
 
     if session_user:
+        pm_row = conn.execute(
+            """
+            SELECT role
+            FROM project_memberships
+            WHERE project_id = ? AND user_id = ?
+            LIMIT 1
+            """,
+            (project_id, session_user),
+        ).fetchone()
+        if pm_row and str(pm_row["role"] or "").strip().lower() == "owner":
+            conn.close()
+            return {
+                "mode": "owner",
+                "project": dict(project),
+                "user_id": session_user,
+                "agent_id": None,
+                "source_type": "owner",
+                "permissions": {
+                    "can_chat_project": True,
+                    "can_read_files": True,
+                    "can_write_files": True,
+                    "write_paths": _normalize_permission_write_paths(
+                        [USER_OUTPUTS_DIRNAME, PROJECT_INFO_DIRNAME, "agents", "logs"],
+                        fallback=None,
+                    ),
+                    "has_custom": False,
+                },
+            }
+
         member_rows = conn.execute(
             """
-            SELECT pem.id AS membership_id,
-                   pem.agent_id,
-                   pem.member_connection_id,
-                   COALESCE(pa.source_type, 'external') AS source_type
-            FROM project_external_agent_memberships pem
-            JOIN project_agents pa
-                ON pa.project_id = pem.project_id AND pa.agent_id = pem.agent_id
-            WHERE pem.project_id = ? AND pem.member_user_id = ? AND pem.status = 'active'
-            ORDER BY pem.updated_at DESC, pem.created_at DESC
+            SELECT pam.id AS membership_id,
+                   pam.connection_id AS member_connection_id,
+                   COALESCE(ma.runtime_agent_id, ma.agent_id, '') AS agent_id,
+                   'external' AS source_type
+            FROM project_agent_memberships pam
+            LEFT JOIN managed_agents ma ON ma.id = pam.managed_agent_id
+            WHERE pam.project_id = ? AND pam.user_id = ? AND pam.status = 'active'
+            ORDER BY pam.is_primary DESC, pam.updated_at DESC, pam.joined_at DESC
             """,
             (project_id, session_user),
         ).fetchall()
+
+        if not member_rows:
+            member_rows = conn.execute(
+                """
+                SELECT pem.id AS membership_id,
+                       pem.agent_id,
+                       pem.member_connection_id,
+                       COALESCE(pa.source_type, 'external') AS source_type
+                FROM project_external_agent_memberships pem
+                JOIN project_agents pa
+                    ON pa.project_id = pem.project_id AND pa.agent_id = pem.agent_id
+                WHERE pem.project_id = ? AND pem.member_user_id = ? AND pem.status = 'active'
+                ORDER BY pem.updated_at DESC, pem.created_at DESC
+                """,
+                (project_id, session_user),
+            ).fetchall()
+
         if member_rows:
             requested_member_agent_id = (request.headers.get("X-Project-Agent-Id") or "").strip()
             selected: Optional[sqlite3.Row] = None
@@ -383,6 +438,10 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
                 "auth_mode": "user_session",
                 "permissions": perms,
             }
+
+        if pm_row:
+            conn.close()
+            raise HTTPException(403, "Project member must attach at least one managed agent before accessing project workspace")
 
     if a2a_access:
         a2a_env_id = str(a2a_access.get("env_id") or "").strip()
@@ -430,6 +489,7 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
                 "a2a_session_id": str(a2a_access.get("session_id") or "").strip() or None,
                 "permissions": perms,
             }
+
     agent_id = (request.headers.get("X-Project-Agent-Id") or "").strip()
     agent_token = (request.headers.get("X-Project-Agent-Token") or "").strip()
     if agent_id and agent_token:
@@ -464,12 +524,11 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
 
     conn.close()
     if session_user or a2a_access:
-        raise HTTPException(403, "Only project owner or invited agent can access this folder")
+        raise HTTPException(403, "Only project owner or invited project member agent can access this folder")
     raise HTTPException(
         401,
         "Missing authorization. Use owner session, project agent headers, or A2A agent session headers.",
     )
-
 
 def _clean_relative_project_path(raw_path: Optional[str]) -> str:
     raw = str(raw_path or "").strip().replace("\\", "/")

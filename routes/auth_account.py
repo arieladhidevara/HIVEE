@@ -155,11 +155,15 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(404, "User not found")
         project_count_row = conn.execute(
-            "SELECT COUNT(1) AS c FROM projects WHERE user_id = ?",
+            """
+            SELECT COUNT(DISTINCT pm.project_id) AS c
+            FROM project_memberships pm
+            WHERE pm.user_id = ?
+            """,
             (user_id,),
         ).fetchone()
         connection_count_row = conn.execute(
-            "SELECT COUNT(1) AS c FROM openclaw_connections WHERE user_id = ?",
+            "SELECT COUNT(1) AS c FROM connections WHERE user_id = ?",
             (user_id,),
         ).fetchone()
         conn.close()

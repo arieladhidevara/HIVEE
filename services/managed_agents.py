@@ -433,16 +433,30 @@ def _provision_managed_agents_for_connection(
                 conn.execute(
                     """
                     UPDATE managed_agents
-                    SET env_id = ?, agent_name = ?, status = ?, card_version = ?, card_json = ?, root_path = ?, updated_at = ?
+                    SET env_id = ?,
+                        runtime_agent_id = ?,
+                        agent_name = ?,
+                        status = ?,
+                        card_version = ?,
+                        card_json = ?,
+                        agent_card_version = ?,
+                        agent_card_json = ?,
+                        root_path = ?,
+                        discovered_at = COALESCE(discovered_at, ?),
+                        updated_at = ?
                     WHERE user_id = ? AND connection_id = ? AND agent_id = ?
                     """,
                     (
                         env_id,
+                        agent_id,
                         agent_name,
                         "active",
                         MANAGED_AGENT_CARD_VERSION,
                         card_json,
+                        MANAGED_AGENT_CARD_VERSION,
+                        card_json,
                         root_path,
+                        now,
                         now,
                         user_id,
                         connection_id,
@@ -456,9 +470,10 @@ def _provision_managed_agents_for_connection(
                 conn.execute(
                     """
                     INSERT INTO managed_agents (
-                        id, user_id, env_id, connection_id, agent_id, agent_name, status,
-                        card_version, card_json, root_path, provisioned_at, updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                        id, user_id, env_id, connection_id, agent_id, runtime_agent_id, agent_name, status,
+                        card_version, card_json, agent_card_version, agent_card_json,
+                        root_path, provisioned_at, discovered_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         new_id("mga"),
@@ -466,11 +481,15 @@ def _provision_managed_agents_for_connection(
                         env_id,
                         connection_id,
                         agent_id,
+                        agent_id,
                         agent_name,
                         "active",
                         MANAGED_AGENT_CARD_VERSION,
                         card_json,
+                        MANAGED_AGENT_CARD_VERSION,
+                        card_json,
                         root_path,
+                        now,
                         now,
                         now,
                     ),

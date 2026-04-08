@@ -249,46 +249,11 @@ def register_routes(app: FastAPI) -> None:
 
     @app.post("/api/openclaw/{connection_id}/chat")
     async def chat_openclaw(request: Request, connection_id: str, payload: OpenClawChatIn):
-        user_id = get_session_user(request)
-        conn = db()
-        row = conn.execute(
-            "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
-            (connection_id, user_id),
-        ).fetchone()
-        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
-        policy = conn.execute(
-            "SELECT main_agent_id, workspace_root FROM connection_policies WHERE connection_id = ? AND user_id = ?",
-            (connection_id, user_id),
-        ).fetchone()
-        conn.close()
-        if not row:
-            raise HTTPException(404, "Connection not found")
-    
-        workspace_root = str(policy["workspace_root"]) if (policy and policy["workspace_root"]) else HIVEE_ROOT
-        main_agent_id = str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else ""
-        main_agent_id = main_agent_id.strip() or None
-        if payload.agent_id:
-            if not main_agent_id:
-                raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
-            if payload.agent_id != main_agent_id:
-                raise HTTPException(403, "Workspace chat can only target your main user agent")
-        effective_agent_id = main_agent_id
-        if not effective_agent_id:
-            raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
-        scoped_message = _compose_guardrailed_message(payload.message.strip(), workspace_root=workspace_root)
-        res = await openclaw_chat(
-            row["base_url"],
-            connection_api_key,
-            scoped_message,
-            effective_agent_id,
-            max_output_tokens=SAFE_PROVIDER_MAX_OUTPUT_TOKENS,
+        raise HTTPException(
+            410,
+            "Workspace-level chat is deprecated. Use project-scoped channel chat via /api/projects/{project_id}/messages.",
         )
-        if not res.get("ok"):
-            raise HTTPException(400, res)
-        res["resolved_agent_id"] = effective_agent_id
-        res["workspace_root"] = workspace_root
-        return res
-    
+
     @app.post("/api/openclaw/{connection_id}/ws-chat")
     async def chat_openclaw_ws(request: Request, connection_id: str, payload: OpenClawWsChatIn):
         session_user: Optional[str] = None
@@ -322,6 +287,12 @@ def register_routes(app: FastAPI) -> None:
         if context_mode == "project" and not session_key.startswith("prj_"):
             conn.close()
             raise HTTPException(400, "Project context requires a project session_key.")
+        if not wants_project_context:
+            conn.close()
+            raise HTTPException(
+                410,
+                "Workspace-level chat is deprecated. Use project-scoped channel chat via /api/projects/{project_id}/messages.",
+            )
         if a2a_access and not wants_project_context:
             conn.close()
             raise HTTPException(403, "A2A agent session can only use project context chat")
@@ -939,3 +910,5 @@ def register_routes(app: FastAPI) -> None:
                 "write_paths": selected_agent_permissions.get("write_paths") or [],
             }
         return res
+
+

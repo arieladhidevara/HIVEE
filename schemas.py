@@ -65,11 +65,66 @@ class ConnectionPolicyOut(BaseModel):
     bootstrap_error: Optional[str] = None
     workspace_tree: Optional[str] = None
 
+
+class ConnectionCreateIn(BaseModel):
+    label: str = Field(..., min_length=1, max_length=160)
+    runtime_type: str = Field(CONNECTION_RUNTIME_OPENCLAW, description="Runtime adapter key, openclaw first")
+    token_ttl_sec: int = PROJECT_INSTALL_TOKEN_DEFAULT_TTL_SEC
+
+class HubInstallCompleteIn(BaseModel):
+    install_token: str = Field(..., min_length=8)
+    machine_name: Optional[str] = None
+    os_type: Optional[str] = None
+    hub_version: Optional[str] = None
+
+class HubHeartbeatIn(BaseModel):
+    connection_id: str = Field(..., min_length=1)
+    install_token: str = Field(..., min_length=8)
+    hub_status: Optional[str] = None
+    machine_name: Optional[str] = None
+    os_type: Optional[str] = None
+    hub_version: Optional[str] = None
+
+class HubDiscoveredAgentIn(BaseModel):
+    runtime_agent_id: str = Field(..., min_length=1)
+    agent_name: Optional[str] = None
+    status: str = "online"
+    agent_card_json: Optional[Dict[str, Any]] = None
+
+class HubAgentsDiscoveredIn(BaseModel):
+    connection_id: str = Field(..., min_length=1)
+    install_token: str = Field(..., min_length=8)
+    agents: List[HubDiscoveredAgentIn] = Field(default_factory=list)
+
+class HubAgentCardIn(BaseModel):
+    connection_id: str = Field(..., min_length=1)
+    install_token: str = Field(..., min_length=8)
+    agent_card_json: Dict[str, Any] = Field(default_factory=dict)
+    agent_card_version: Optional[str] = None
+
+class ProjectJoinByKeyIn(BaseModel):
+    project_api_key: str = Field(..., min_length=8)
+
+class ProjectAttachManagedAgentIn(BaseModel):
+    managed_agent_id: str = Field(..., min_length=1)
+    role: str = "member"
+    is_primary: bool = False
+
+class ProjectChannelMessageCreateIn(BaseModel):
+    body: str = Field(..., min_length=1)
+    task_id: Optional[str] = None
+    target_managed_agent_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class ProjectChannelCreateIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    description: str = ""
+
 class ProjectCreateIn(BaseModel):
-    title: str
-    brief: str
-    goal: str
-    connection_id: str
+    title: Optional[str] = None
+    brief: Optional[str] = None
+    goal: str = Field(..., min_length=1)
+    connection_id: Optional[str] = None
     setup_details: Optional[Dict[str, Any]] = None
     setup_chat_history: Optional[str] = None
 
@@ -83,6 +138,10 @@ class ProjectOut(BaseModel):
     workspace_root: Optional[str] = None
     project_root: Optional[str] = None
     setup_details: Optional[Dict[str, Any]] = None
+    status: str = "active"
+    created_via: str = PROJECT_CREATED_VIA_NEW
+    owner_user_id: Optional[str] = None
+    project_api_key: Optional[str] = None
     plan_status: str = PLAN_STATUS_PENDING
     plan_text: Optional[str] = None
     plan_updated_at: Optional[int] = None
