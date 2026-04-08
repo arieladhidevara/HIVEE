@@ -1117,6 +1117,7 @@ async def openclaw_chat(
         last_err = None
         saw_405 = False
         saw_502: Optional[str] = None  # first path that returned 502
+        saw_404_paths: List[str] = []
         for p in CHAT_PATHS:
             model_hint = f"openclaw:{agent_id}" if agent_id else "openclaw:default"
             extra_headers: Dict[str, str] = {}
@@ -1181,6 +1182,8 @@ async def openclaw_chat(
                     break
                 if r.status_code == 405:
                     saw_405 = True
+                if r.status_code == 404:
+                    saw_404_paths.append(p)
                 if r.status_code >= 400:
                     last_err = f"{p}: {r.status_code} {r.text[:300]}"
                     continue
@@ -1213,7 +1216,18 @@ async def openclaw_chat(
             "error": "Chat endpoint returned 405 Method Not Allowed. On OpenClaw, enable gateway.http.endpoints.chatCompletions.enabled=true (or use WS gateway protocol).",
             "hint": "OpenClaw docs: OpenAI Chat Completions endpoint is disabled by default.",
         }
-    hint = "Your OpenClaw may use different chat path(s). Update CHAT_PATHS in main.py."
+    if saw_404_paths and len(saw_404_paths) == len(CHAT_PATHS):
+        return {
+            "ok": False,
+            "error": "OpenClaw chat endpoint is not exposed on this base_url (all candidate POST paths returned 404 Not Found).",
+            "error_code": "chat_endpoint_not_exposed",
+            "tried_paths": saw_404_paths,
+            "hint": (
+                "Enable OpenClaw HTTP chat routes (for example gateway.http.endpoints.chatCompletions.enabled=true) "
+                "and ensure your reverse proxy forwards POST /v1/chat/completions or /v1/responses."
+            ),
+        }
+    hint = "Your OpenClaw may use different chat path(s). Update CHAT_PATHS in core/db.py."
     if last_err and "403" in str(last_err):
         hint = (
             "Got 403 on all chat paths. In gateway.auth.mode='token', a valid bearer token should "
