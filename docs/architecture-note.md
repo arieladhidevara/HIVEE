@@ -1,4 +1,4 @@
-﻿# Hivee Architecture Note (OpenClaw-First, Hub-Mediated)
+# Hivee Architecture Note (OpenClaw-First, Hub-Mediated)
 
 Date: 2026-04-08
 
@@ -49,10 +49,29 @@ When routing to an agent, runtime prompt hydration includes:
 - recent channel messages
 - task context (if provided)
 
-Current implementation keeps OpenClaw as first adapter and includes a compatibility path where Cloud can call a legacy mapped OpenClaw connection.
+Current implementation keeps OpenClaw as first adapter and now prioritizes Hub runtime queue dispatch (`runtime_dispatch_jobs`) for normal project chat lanes, with legacy direct OpenClaw as compatibility fallback only.
+
+## Project Setup Assistant
+- `/api/projects/setup-chat` and `/api/projects/setup-draft` resolve by `connections` first.
+- If a direct legacy OpenClaw transport is not available for that connection, backend returns local fallback setup guidance/draft so project creation flow remains usable.
+- UI New Project wizard now supports two entry modes:
+  - create new project (goal-first)
+  - join existing project via API key
 
 ## TODO Hooks for Standalone Hub
 - `routes/connections.py`: install instruction generation has TODO for signed installer manifests.
-- `routes/project_collab.py`: runtime dispatch block has TODO to move dispatch to hub transport queue/webhook.
+- `routes/project_collab.py`: runtime dispatch hydration/context builder is the seam for future richer task-aware/context-window optimization.
 
 These are the intended seam points for a future standalone Hivee Hub daemon/binary.
+
+
+## Hub Package in Repo
+
+A first installable Hub package exists and is intended to be published from `https://github.com/arieladhidevara/HIVEE-HUB.git` (CLI + Dockerfile).
+This gives a runnable bridge for Ubuntu/Docker while keeping the daemon extensible for future runtime adapters.
+## Hub Runtime Queue (v1)
+Cloud now exposes Hub runtime dispatch queue endpoints:
+- `POST /api/hub/runtime/jobs/claim`
+- `POST /api/hub/runtime/jobs/{job_id}/complete`
+
+Project channel messages are queued to Hub when the selected connection is Hub-managed (has install token).

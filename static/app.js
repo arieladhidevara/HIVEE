@@ -13,7 +13,7 @@ let expandedTaskRowIds = new Set(); // task rows showing edit controls
 let dagDragState = null;  // { fromId, line } during connection drag
 let dagPan = { x: 0, y: 0 }; // persists across dag re-renders
 let dagZoom = 1;
-let pmapNodePositions = {}; // nodeId → {x,y}, user-dragged positions for project map
+let pmapNodePositions = {}; // nodeId Ã¢â€ â€™ {x,y}, user-dragged positions for project map
 let streamAbort = null;
 
 let connectionsCache = [];
@@ -35,6 +35,7 @@ let workspacePolicy = {
 let workspaceTreeText = "";
 let projectTreeText = "";
 let wizardMode = "chat";
+let wizardEntryMode = "create";
 let wizardChatBooted = false;
 let wizardSetupSessionKey = "";
 let wizardChatPending = false;
@@ -152,6 +153,8 @@ let projectDeepLinkContext = {
 let summaryAgents = [];
 let summaryAgentsLoading = false;
 let summaryAgentsError = "";
+let agentsInstallInstructionsByConnection = new Map();
+let agentsDiscoveredByConnection = new Map();
 let oauthProvidersState = new Map();
 let agentColorAssignments = {};
 const agentMascotUriCache = new Map();
@@ -306,6 +309,9 @@ function clearAuthSession() {
   const assigneeFilter = $("task_filter_assignee");
   if (assigneeFilter) assigneeFilter.value = "";
   chatContextMode = "project";
+  wizardEntryMode = "create";
+  agentsInstallInstructionsByConnection = new Map();
+  agentsDiscoveredByConnection = new Map();
 }
 
 function setMessage(id, text, tone = "") {
@@ -375,7 +381,7 @@ function clearProjectInviteContext({ clearUrl = false } = {}) {
 
 function normalizeProjectPaneForLink(pane) {
   const raw = String(pane || "").trim().toLowerCase();
-  // Support legacy param values from old URLs → map to new keys
+  // Support legacy param values from old URLs Ã¢â€ â€™ map to new keys
   if (raw === "info") return "overview";
   if (raw === "folder") return "files";
   if (raw === "usage") return "costs";
@@ -1128,12 +1134,11 @@ function closeProjectInviteAgentModal({ reset = true } = {}) {
 async function loadProjectInviteManagedAgents(connectionId) {
   const cid = String(connectionId || "").trim();
   if (!cid) return [];
-  const q = `?connection_id=${encodeURIComponent(cid)}`;
-  const res = await api(`/api/a2a/agents${q}`);
+  const res = await api(`/api/connections/${encodeURIComponent(cid)}/agents`);
   const rows = Array.isArray(res?.agents) ? res.agents : [];
   projectInviteManagedAgents = rows
     .map((item) => {
-      const id = String(item?.agent_id || item?.id || "").trim();
+      const id = String(item?.runtime_agent_id || item?.agent_id || item?.id || "").trim();
       const name = String(item?.agent_name || item?.name || id).trim() || id;
       const status = String(item?.status || "").trim();
       const connId = String(item?.connection_id || cid).trim() || cid;
@@ -1289,7 +1294,7 @@ async function openProjectInviteAgentModal() {
   if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
 
   const connectionId = String($("invite_connection_id")?.value || "").trim();
-  if (!connectionId) throw new Error("Choose one of your OpenClaw connections first.");
+  if (!connectionId) throw new Error("Choose one of your connections first.");
 
   const info = projectInviteContext.info || {};
   const requiresCode = Boolean(info?.requires_invite_code);
@@ -1351,7 +1356,7 @@ async function acceptProjectInviteFromUI({ connectionId: overrideConnectionId = 
   if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
 
   const connectionId = String(overrideConnectionId || $("invite_connection_id")?.value || "").trim();
-  if (!connectionId) throw new Error("Choose one of your OpenClaw connections first.");
+  if (!connectionId) throw new Error("Choose one of your connections first.");
 
   const info = projectInviteContext.info || {};
   const requiresCode = Boolean(info?.requires_invite_code);
@@ -1787,7 +1792,7 @@ function renderProjectTaskList() {
 
   list.innerHTML = "";
   if (!rows.length) {
-    list.innerHTML = '<p class="helper">No tasks yet — click + New Task to get started.</p>';
+    list.innerHTML = '<p class="helper">No tasks yet Ã¢â‚¬â€ click + New Task to get started.</p>';
     return;
   }
 
@@ -1804,7 +1809,7 @@ function renderProjectTaskList() {
     const dot = document.createElement("button");
     dot.type = "button";
     dot.className = `task-srow-dot status-${statusValue}`;
-    dot.title = `${taskStatusLabel(statusValue)} — click to cycle`;
+    dot.title = `${taskStatusLabel(statusValue)} Ã¢â‚¬â€ click to cycle`;
     dot.addEventListener("click", (e) => {
       e.stopPropagation();
       const order = ["todo", "in_progress", "blocked", "review", "done"];
@@ -1825,12 +1830,12 @@ function renderProjectTaskList() {
 
     const agentBadge = document.createElement("span");
     agentBadge.className = "task-srow-agent";
-    agentBadge.textContent = assignee ? `@${agentShortName(assignee) || assignee.slice(0, 10)}` : "—";
+    agentBadge.textContent = assignee ? `@${agentShortName(assignee) || assignee.slice(0, 10)}` : "Ã¢â‚¬â€";
 
     const openBtn = document.createElement("button");
     openBtn.type = "button";
     openBtn.className = "task-srow-toggle";
-    openBtn.textContent = "→";
+    openBtn.textContent = "Ã¢â€ â€™";
     openBtn.title = "Open task";
     openBtn.addEventListener("click", (e) => { e.stopPropagation(); openTaskDetailModal(taskId); });
 
@@ -2091,7 +2096,7 @@ function renderProjectTaskList() {
   }   // end for loop
 }
 
-// ── New Task Modal ──────────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ New Task Modal Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 function hydrateNewTaskAssigneeSelect() {
   const sel = $("ntask_assignee");
@@ -2100,7 +2105,7 @@ function hydrateNewTaskAssigneeSelect() {
   sel.innerHTML = "";
   const none = document.createElement("option");
   none.value = "";
-  none.textContent = "— Unassigned —";
+  none.textContent = "Ã¢â‚¬â€ Unassigned Ã¢â‚¬â€";
   sel.appendChild(none);
   for (const agent of Array.isArray(currentAgents) ? currentAgents : []) {
     const id = String(agent?.id || "").trim();
@@ -2162,7 +2167,7 @@ async function submitNewTaskModal() {
   if (desc) payload.description = desc;
 
   if (submitBtn) submitBtn.disabled = true;
-  if (msgEl) { msgEl.textContent = "Creating…"; msgEl.className = ""; }
+  if (msgEl) { msgEl.textContent = "CreatingÃ¢â‚¬Â¦"; msgEl.className = ""; }
 
   try {
     await api(`/api/projects/${encodeURIComponent(selectedProjectId)}/tasks`, "POST", payload);
@@ -2183,7 +2188,7 @@ async function addTaskDependencyApi(toId, fromId) {
   renderProjectTaskList();
 }
 
-// ── Task Detail Modal ───────────────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬ Task Detail Modal Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 let tdmCurrentTaskId = null;
 
@@ -2279,10 +2284,10 @@ function openTaskDetailModal(taskId) {
     descEl.className = "tdm-desc" + (openDeps > 0 ? " blocked-desc" : "");
     descEl.textContent = openDeps > 0
       ? `Blocked by ${openDeps} open ${openDeps === 1 ? "dependency" : "dependencies"}. ` + (String(task.description || "").trim())
-      : (String(task.description || "").trim() || "(No description — main agent will define details during execution.)");
+      : (String(task.description || "").trim() || "(No description Ã¢â‚¬â€ main agent will define details during execution.)");
   }
 
-  // Issues — derived from task state
+  // Issues Ã¢â‚¬â€ derived from task state
   const issuesEl = $("tdm_issues");
   if (issuesEl) {
     issuesEl.innerHTML = "";
@@ -2307,7 +2312,7 @@ function openTaskDetailModal(taskId) {
         const commentInput = document.createElement("input");
         commentInput.type = "text";
         commentInput.className = "tdm-issue-comment";
-        commentInput.placeholder = "Add comment or skip…";
+        commentInput.placeholder = "Add comment or skipÃ¢â‚¬Â¦";
         commentInput.maxLength = 400;
         row.appendChild(label);
         row.appendChild(commentInput);
@@ -2322,7 +2327,7 @@ function openTaskDetailModal(taskId) {
     commentsList.innerHTML = "";
     const cs = taskCommentsState(tid);
     if (cs.loading) {
-      commentsList.innerHTML = '<p class="helper">Loading…</p>';
+      commentsList.innerHTML = '<p class="helper">LoadingÃ¢â‚¬Â¦</p>';
     } else if (!cs.items.length) {
       commentsList.innerHTML = '<p class="tdm-empty">No comments yet.</p>';
     } else {
@@ -2401,7 +2406,7 @@ function openTaskDetailModal(taskId) {
   if (assigneeSel) {
     assigneeSel.innerHTML = "";
     const noneOpt = document.createElement("option");
-    noneOpt.value = ""; noneOpt.textContent = "— Unassigned —";
+    noneOpt.value = ""; noneOpt.textContent = "Ã¢â‚¬â€ Unassigned Ã¢â‚¬â€";
     assigneeSel.appendChild(noneOpt);
     for (const ag of agents) {
       const opt = document.createElement("option");
@@ -2499,7 +2504,7 @@ function renderProjectActivityFeed() {
 
   const tail = document.createElement("div");
   tail.className = "timeline-tail";
-  tail.textContent = projectActivityLoadingMore ? "Loading more..." : (projectActivityHasMore ? "Scroll down to load more" : "—");
+  tail.textContent = projectActivityLoadingMore ? "Loading more..." : (projectActivityHasMore ? "Scroll down to load more" : "Ã¢â‚¬â€");
   feed.appendChild(tail);
 
   box.appendChild(feed);
@@ -2992,6 +2997,17 @@ async function loadProjectWorkspaceTree(projectId) {
 
 function renderConnections(connections) {
   connectionsCache = connections || [];
+  const validConnectionIds = new Set(
+    connectionsCache
+      .map((c) => String(c?.id || "").trim())
+      .filter(Boolean),
+  );
+  for (const key of Array.from(agentsInstallInstructionsByConnection.keys())) {
+    if (!validConnectionIds.has(key)) agentsInstallInstructionsByConnection.delete(key);
+  }
+  for (const key of Array.from(agentsDiscoveredByConnection.keys())) {
+    if (!validConnectionIds.has(key)) agentsDiscoveredByConnection.delete(key);
+  }
   const sel = $("home_connections");
   if (sel) {
     sel.innerHTML = "";
@@ -3011,6 +3027,7 @@ function renderConnections(connections) {
     preferredConnectionId = null;
     connectionHealthy = false;
     renderConfigConnectionDetails();
+    renderAgentsConnectionPanel();
     return;
   }
 
@@ -3028,6 +3045,7 @@ function renderConnections(connections) {
   const activeConn = connectionsCache.find((c) => c.id === activeConnectionId) || null;
   connectionHealthy = String(activeConn?.hub_status || "").toLowerCase() === "online";
   renderConfigConnectionDetails();
+  renderAgentsConnectionPanel();
 }
 
 function projectNeedsApproval(project) {
@@ -3319,7 +3337,7 @@ function syncProjectHeadbar() {
 
     const createdAt = selectedProjectData.created_at ? formatTs(selectedProjectData.created_at) : "-";
     const stage = projectStageLabel(selectedProjectReadiness?.stage || "draft");
-    subline.textContent = `${String(selectedProjectData.title || "").trim()} â€” Stage ${stage} â€” ${createdAt}`;
+    subline.textContent = `${String(selectedProjectData.title || "").trim()} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Stage ${stage} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ${createdAt}`;
     const readinessCanRun = Boolean(selectedProjectReadiness?.can_run);
     const exec = String(selectedProjectData.execution_status || "idle").trim().toLowerCase();
     const statusAllowsRun = exec === "idle" || exec === "stopped";
@@ -3384,7 +3402,7 @@ function addLiveUpdate(kind, payload) {
   row.appendChild(textEl);
   box.appendChild(row);
   box.scrollTop = box.scrollHeight;
-  // Keep list manageable — remove oldest entries beyond 60
+  // Keep list manageable Ã¢â‚¬â€ remove oldest entries beyond 60
   while (box.children.length > 60) box.removeChild(box.firstChild);
 }
 
@@ -5327,7 +5345,7 @@ function renderProjectUsage() {
       ${agentRows ? `<div style="margin-top:10px;font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:6px">By Agent</div>${agentRows}` : ""}
     </div>
     <div class="usage-footnote">
-      Project: ${selectedProjectData.title} · Primary: ${primary ? primary.name : "Not set"} · Updated: ${selectedProjectData.usage_updated_at ? relativeTs(selectedProjectData.usage_updated_at) : "—"}.
+      Project: ${selectedProjectData.title} Ã‚Â· Primary: ${primary ? primary.name : "Not set"} Ã‚Â· Updated: ${selectedProjectData.usage_updated_at ? relativeTs(selectedProjectData.usage_updated_at) : "Ã¢â‚¬â€"}.
       Cost is an estimate and may differ from provider billing.
     </div>
   `;
@@ -5432,7 +5450,9 @@ function _formatSummaryCapabilityLabel(raw) {
 function _extractSummaryAgentCapabilities(card) {
   const tags = [];
   const seen = new Set();
-  const capObj = card && typeof card.capabilities === "object" ? card.capabilities : {};
+  const capObj = card && typeof card.capabilities === "object" && !Array.isArray(card.capabilities)
+    ? card.capabilities
+    : {};
   for (const [key, value] of Object.entries(capObj)) {
     const enabled = value === true || (typeof value === "number" && value > 0) || (value && typeof value === "object");
     if (!enabled) continue;
@@ -5441,6 +5461,16 @@ function _extractSummaryAgentCapabilities(card) {
     if (!label || seen.has(low)) continue;
     seen.add(low);
     tags.push(label);
+  }
+
+  const capList = Array.isArray(card?.capabilities) ? card.capabilities : [];
+  for (const cap of capList) {
+    const label = _formatSummaryCapabilityLabel(cap);
+    const low = String(label || "").toLowerCase();
+    if (!label || seen.has(low)) continue;
+    seen.add(low);
+    tags.push(label);
+    if (tags.length >= 8) break;
   }
 
   const skills = Array.isArray(card?.skills) ? card.skills : [];
@@ -5622,7 +5652,7 @@ function renderDashboard() {
     const completed = projects.filter((p) => String(p.execution_status || "").toLowerCase() === "completed").length;
     const total = projects.length;
     const rate = total > 0 ? Math.round((completed / total) * 100) : 0;
-    successPctEl.textContent = total > 0 ? `${rate}%` : "—";
+    successPctEl.textContent = total > 0 ? `${rate}%` : "Ã¢â‚¬â€";
     successFillEl.style.width = `${rate}%`;
     successFillEl.style.background = rate >= 70 ? "var(--cyan)" : rate >= 40 ? "var(--yellow)" : "var(--orange)";
     if (successSubEl) successSubEl.textContent = `${completed} of ${total} projects completed`;
@@ -5683,7 +5713,7 @@ function renderAgentLiveCards() {
     const roleEl = document.createElement("div");
     roleEl.className = "alc-task";
     if (live?.taskTitle && agentStatusLabel) {
-      const statusIcon = agentStatusLabel === "failed" ? "✕" : agentStatusLabel === "reported" ? "✓" : "→";
+      const statusIcon = agentStatusLabel === "failed" ? "Ã¢Å“â€¢" : agentStatusLabel === "reported" ? "Ã¢Å“â€œ" : "Ã¢â€ â€™";
       roleEl.textContent = `${statusIcon} ${live.taskTitle}`;
     } else {
       roleEl.textContent = String(agent.role || agent.specialization || "").trim() || (agent.is_primary ? "Primary Agent" : "Supporting Agent");
@@ -5744,7 +5774,7 @@ function renderTaskDag() {
     canvas.style.width = "100%";
     canvas.style.height = "120px";
     svgEl.innerHTML = "";
-    nodesEl.innerHTML = '<p class="helper" style="padding:20px;position:absolute;left:0;top:0">No tasks yet — double-click to add one.</p>';
+    nodesEl.innerHTML = '<p class="helper" style="padding:20px;position:absolute;left:0;top:0">No tasks yet Ã¢â‚¬â€ double-click to add one.</p>';
     return;
   }
 
@@ -5761,7 +5791,7 @@ function renderTaskDag() {
   }
   const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b);
 
-  // Sort within each level: in_progress → blocked → todo → review → done
+  // Sort within each level: in_progress Ã¢â€ â€™ blocked Ã¢â€ â€™ todo Ã¢â€ â€™ review Ã¢â€ â€™ done
   const statusOrder = { in_progress: 0, blocked: 1, todo: 2, review: 3, done: 4 };
   const taskById = new Map(tasks.map((t) => [String(t.id), t]));
   for (const lvl of sortedLevels) {
@@ -5773,7 +5803,7 @@ function renderTaskDag() {
   }
 
   // --- Compute node positions ---
-  const nodePos = new Map(); // id → { x, y }
+  const nodePos = new Map(); // id Ã¢â€ â€™ { x, y }
   let canvasW = 0, canvasH = 0;
   for (const lvl of sortedLevels) {
     const ids = byLevel.get(lvl);
@@ -5835,7 +5865,7 @@ function renderTaskDag() {
       <button class="tdag-node-port" data-task-id="${esc(tid)}" title="Drag to connect" type="button" aria-label="Connect"></button>
     `;
 
-    // Click node → expand in list below
+    // Click node Ã¢â€ â€™ expand in list below
     node.addEventListener("click", (e) => {
       if (e.target.closest(".tdag-node-port")) return;
       expandedTaskRowIds.add(tid);
@@ -5934,7 +5964,7 @@ function renderTaskDag() {
   window.addEventListener("mouseup",   onDagMouseUp);
 }
 
-// Stub kept for any legacy callers — now a no-op
+// Stub kept for any legacy callers Ã¢â‚¬â€ now a no-op
 function renderTaskMap() {}
 
 function toggleTaskMapView() {}
@@ -5959,7 +5989,7 @@ function renderProgressMap() {
   nodesEl.innerHTML = "";
   svgEl.innerHTML = "";
 
-  // ── Data ──────────────────────────────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Data Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const tasks   = Array.isArray(projectTasks) ? projectTasks : [];
   const agents  = Array.isArray(selectedAssignedAgents) ? selectedAssignedAgents : [];
   const proj    = selectedProjectData;
@@ -5971,7 +6001,7 @@ function renderProgressMap() {
   const agentsWithTasks = new Set(tasks.map((t) => String(t.assignee_agent_id || "")).filter(Boolean));
   const relevantAgentIds = [...new Set([primaryId, ...agentsWithTasks].filter(Boolean))];
 
-  // ── Node list (type: agent | task) ────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Node list (type: agent | task) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const nodes = [];
   for (const aid of relevantAgentIds) {
     const agent = agentById.get(aid);
@@ -5985,7 +6015,7 @@ function renderProgressMap() {
       agentId: String(task.assignee_agent_id || ""), taskId: tid, w: 158, h: 54 });
   }
 
-  // ── Edge list ─────────────────────────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Edge list Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const edges = [];
   for (const task of tasks) {
     const aid = String(task.assignee_agent_id || "").trim();
@@ -5999,7 +6029,7 @@ function renderProgressMap() {
     }
   }
 
-  // ── Topological level assignment ──────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Topological level assignment Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
   const outAdj  = new Map(nodes.map((n) => [n.id, []]));
   const inDeg   = new Map(nodes.map((n) => [n.id, 0]));
@@ -6039,7 +6069,7 @@ function renderProgressMap() {
     });
   }
 
-  // ── Auto-layout positions ─────────────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Auto-layout positions Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const COL_GAP = 80, ROW_GAP = 12, PAD = 20;
   const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b);
   const autoPos = new Map();
@@ -6064,7 +6094,7 @@ function renderProgressMap() {
     pos.set(n.id, saved ? { ...saved } : (autoPos.get(n.id) || { x: PAD, y: PAD }));
   }
 
-  // ── SVG defs ──────────────────────────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ SVG defs Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   svgEl.innerHTML = `<defs>
     <marker id="pm-arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
       <path d="M0,0 L7,3.5 L0,7 Z" fill="rgba(148,163,184,0.4)"/></marker>
@@ -6072,8 +6102,8 @@ function renderProgressMap() {
       <path d="M0,0 L7,3.5 L0,7 Z" fill="rgba(99,202,255,0.55)"/></marker>
   </defs>`;
 
-  // ── Draw edges ────────────────────────────────────────────────────────────
-  const edgeEls = new Map(); // "from|to" → SVGPathElement
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Draw edges Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+  const edgeEls = new Map(); // "from|to" Ã¢â€ â€™ SVGPathElement
   function bezierD(fid, tid) {
     const fp = pos.get(fid), tp = pos.get(tid), fn = nodeMap.get(fid), tn = nodeMap.get(tid);
     if (!fp || !tp || !fn || !tn) return null;
@@ -6092,7 +6122,7 @@ function renderProgressMap() {
     edgeEls.set(`${e.from}|${e.to}`, path);
   }
 
-  // ── Draw nodes ────────────────────────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Draw nodes Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   const nodeEls = new Map();
   const STATUS_COLOR = { todo: "var(--muted)", in_progress: "var(--cyan)", blocked: "var(--red)", review: "var(--purple)", done: "var(--green)" };
   for (const n of nodes) {
@@ -6109,13 +6139,13 @@ function renderProgressMap() {
       const sc = STATUS_COLOR[n.status] || "var(--muted)";
       const agColor = n.agentId ? (colorHexForAgent(n.agentId) || "var(--muted)") : "var(--muted)";
       el.style.setProperty("--pmap-accent", sc);
-      el.innerHTML = `<div class="pmap-mnode-bar" style="background:${sc}"></div><div class="pmap-mnode-body"><div class="pmap-mnode-label">${esc(n.label)}</div><div class="pmap-mnode-sub" style="color:${agColor}">@${esc(agentShortName(n.agentId) || n.agentId.slice(0,8) || "—")} · ${esc(n.sub)}</div></div>`;
+      el.innerHTML = `<div class="pmap-mnode-bar" style="background:${sc}"></div><div class="pmap-mnode-body"><div class="pmap-mnode-label">${esc(n.label)}</div><div class="pmap-mnode-sub" style="color:${agColor}">@${esc(agentShortName(n.agentId) || n.agentId.slice(0,8) || "Ã¢â‚¬â€")} Ã‚Â· ${esc(n.sub)}</div></div>`;
     }
     nodesEl.appendChild(el);
     nodeEls.set(n.id, el);
   }
 
-  // ── Live edge updater ─────────────────────────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Live edge updater Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   function refreshEdges(nodeId) {
     for (const e of edges) {
       if (e.from !== nodeId && e.to !== nodeId) continue;
@@ -6124,7 +6154,7 @@ function renderProgressMap() {
     }
   }
 
-  // ── Interaction: pan / zoom / node-drag ───────────────────────────────────
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Interaction: pan / zoom / node-drag Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   let pmapPan = { x: 0, y: 0 }, pmapZoom = 1;
   let panActive = false, panLast = { x: 0, y: 0 };
   let nodeDrag = null; // { nodeId, sx, sy, ox, oy }
@@ -6201,7 +6231,7 @@ function renderProgressMap() {
 }
 
 function _pmapOldUnused() {
-  // ── Original task-only map body below — kept for reference only ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Original task-only map body below Ã¢â‚¬â€ kept for reference only Ã¢â€â‚¬Ã¢â€â‚¬
 
   const tasks = Array.isArray(projectTasks) ? projectTasks : [];
   const proj = selectedProjectData;
@@ -6214,8 +6244,8 @@ function _pmapOldUnused() {
   const CANVAS_PAD = 24;
 
   // Build dependency graph
-  const childrenOf = new Map(); // taskId → [childId]
-  const parentsOf  = new Map(); // taskId → [parentId]
+  const childrenOf = new Map(); // taskId Ã¢â€ â€™ [childId]
+  const parentsOf  = new Map(); // taskId Ã¢â€ â€™ [parentId]
   for (const t of tasks) { childrenOf.set(String(t.id), []); parentsOf.set(String(t.id), []); }
   for (const t of tasks) {
     const deps = Array.isArray(t.dependencies) ? t.dependencies : Array.isArray(t.depends_on) ? t.depends_on : [];
@@ -6226,7 +6256,7 @@ function _pmapOldUnused() {
     }
   }
 
-  // Assign levels — BFS from roots (tasks with no parents)
+  // Assign levels Ã¢â‚¬â€ BFS from roots (tasks with no parents)
   // Level 0 = direct children of project root
   // If no dependency data, group by status order
   const hasDeps = tasks.some((t) => (t.dependencies || t.depends_on || []).length > 0);
@@ -6253,7 +6283,7 @@ function _pmapOldUnused() {
     const orphans = tasks.filter((t) => !visited.has(String(t.id)));
     if (orphans.length) levels.push(orphans);
   } else {
-    // Group by status: in_progress → todo → review → blocked → done
+    // Group by status: in_progress Ã¢â€ â€™ todo Ã¢â€ â€™ review Ã¢â€ â€™ blocked Ã¢â€ â€™ done
     const order = ["in_progress", "todo", "review", "blocked", "done"];
     for (const s of order) {
       const group = tasks.filter((t) => normalizeTaskStatus(t?.status) === s);
@@ -6273,7 +6303,7 @@ function _pmapOldUnused() {
   svgEl.setAttribute("width",  canvasW);
   svgEl.setAttribute("height", canvasH);
 
-  // ── Root node (project) ──
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Root node (project) Ã¢â€â‚¬Ã¢â€â‚¬
   const rootX = Math.round(canvasW / 2 - ROOT_W / 2);
   const rootY = CANVAS_PAD;
   const statusColor = { running:"var(--cyan)", planning:"var(--yellow)", paused:"var(--orange)", failed:"var(--red)", completed:"var(--cyan)", idle:"var(--muted)" };
@@ -6288,8 +6318,8 @@ function _pmapOldUnused() {
   `;
   nodesEl.appendChild(rootEl);
 
-  // ── Task nodes + SVG edges ──
-  const nodePos = new Map(); // taskId → {cx, cy} for edge drawing
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Task nodes + SVG edges Ã¢â€â‚¬Ã¢â€â‚¬
+  const nodePos = new Map(); // taskId Ã¢â€ â€™ {cx, cy} for edge drawing
   const rootCx = rootX + ROOT_W / 2;
   const rootBottomY = rootY + ROOT_H;
   let svgPaths = "";
@@ -6362,8 +6392,8 @@ function _pmapOldUnused() {
 
   svgEl.innerHTML = svgPaths;
 
-  // ── Interactions ──
-  // Task node click → switch to tasks pane + highlight
+  // Ã¢â€â‚¬Ã¢â€â‚¬ Interactions Ã¢â€â‚¬Ã¢â€â‚¬
+  // Task node click Ã¢â€ â€™ switch to tasks pane + highlight
   for (const nodeEl of nodesEl.querySelectorAll(".pmap-node")) {
     nodeEl.addEventListener("click", (e) => {
       if (e.target.closest(".pmap-issue-dot")) return; // handled by issue dot
@@ -6376,7 +6406,7 @@ function _pmapOldUnused() {
     });
   }
 
-  // Issue dot click → switch to issues pane + highlight
+  // Issue dot click Ã¢â€ â€™ switch to issues pane + highlight
   for (const dotEl of nodesEl.querySelectorAll(".pmap-issue-dot")) {
     dotEl.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -6518,7 +6548,7 @@ function renderTeamTree() {
       ${liveHtml}
     `;
 
-    // Click → open agent detail modal
+    // Click Ã¢â€ â€™ open agent detail modal
     const agentForModal = summaryAgents.find((a) => a.agent_id === agent.id) || {
       agent_id: agent.id,
       agent_name: agent.name || agent.id,
@@ -6596,7 +6626,7 @@ function renderInbox() {
     `).join("");
   }
 
-  // Per-project tab — group by project
+  // Per-project tab Ã¢â‚¬â€ group by project
   const byProject = {};
   for (const item of allEvents) {
     const pid = item.project.id;
@@ -6883,7 +6913,7 @@ function renderSummaryAgents() {
     tokenBar.innerHTML = `
       <span class="satb-label">Tokens</span>
       <div class="satb-track"><div class="satb-fill" style="width:${tokenPct}%"></div></div>
-      <span class="satb-val">${agentTokens > 999 ? `${(agentTokens / 1000).toFixed(1)}k` : agentTokens > 0 ? agentTokens : "—"}</span>
+      <span class="satb-val">${agentTokens > 999 ? `${(agentTokens / 1000).toFixed(1)}k` : agentTokens > 0 ? agentTokens : "Ã¢â‚¬â€"}</span>
     `;
 
     // Live activity line
@@ -6917,6 +6947,256 @@ function renderSummaryAgents() {
   }
 }
 
+function currentAgentsPanelConnectionId() {
+  if (activeConnectionId && connectionsCache.some((c) => String(c?.id || "").trim() === String(activeConnectionId || "").trim())) {
+    return String(activeConnectionId || "").trim();
+  }
+  const fallback = String(connectionsCache?.[0]?.id || "").trim();
+  if (fallback) {
+    activeConnectionId = fallback;
+    return fallback;
+  }
+  return "";
+}
+
+function renderAgentsConnectionsOptions() {
+  const select = $("agents_connections_select");
+  if (!select) return;
+  select.innerHTML = "";
+
+  if (!connectionsCache.length) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "No connections yet";
+    select.appendChild(opt);
+    select.value = "";
+    return;
+  }
+
+  const selectedId = currentAgentsPanelConnectionId();
+  for (const connection of connectionsCache) {
+    const connectionId = String(connection?.id || "").trim();
+    if (!connectionId) continue;
+    const opt = document.createElement("option");
+    opt.value = connectionId;
+    const label = String(connection?.label || "Connection").trim() || "Connection";
+    const runtime = String(connection?.runtime_type || "openclaw").trim() || "openclaw";
+    const hubStatus = String(connection?.hub_status || "pending_install").trim() || "pending_install";
+    opt.textContent = `${label} - ${runtime} (${hubStatus})`;
+    select.appendChild(opt);
+  }
+  select.value = selectedId || String(connectionsCache?.[0]?.id || "");
+}
+
+function renderAgentsConnectionDiscoveredAgents(agents) {
+  const list = $("agents_connection_agents_list");
+  if (!list) return;
+  list.innerHTML = "";
+
+  const rows = Array.isArray(agents) ? agents : [];
+  if (!rows.length) {
+    list.innerHTML = '<p class="helper">No discovered agents yet. Ensure Hivee Hub is online and runtime is reachable.</p>';
+    return;
+  }
+
+  for (const item of rows) {
+    const managedAgentId = String(item?.managed_agent_id || "").trim();
+    const runtimeAgentId = String(item?.runtime_agent_id || item?.agent_id || "").trim() || "agent";
+    const agentName = String(item?.agent_name || runtimeAgentId).trim() || runtimeAgentId;
+    const status = String(item?.status || "online").trim().toLowerCase() || "online";
+    const statusClass = status === "online" || status === "active"
+      ? "active"
+      : status === "offline"
+        ? "offline"
+        : "idle";
+    const cardJson = item?.agent_card_json && typeof item.agent_card_json === "object"
+      ? item.agent_card_json
+      : {};
+
+    const article = document.createElement("article");
+    article.className = "summary-agent-card";
+    article.innerHTML = `
+      <div class="summary-agent-avatar"></div>
+      <div class="summary-agent-body">
+        <div class="summary-agent-heading">
+          <strong>${esc(agentName)}</strong>
+          <span class="agent-status-badge ${statusClass}"><span class="asd"></span>${esc(status)}</span>
+        </div>
+        <p class="summary-agent-meta">runtime_agent_id: ${esc(runtimeAgentId)}${managedAgentId ? ` | managed_agent_id: ${esc(managedAgentId)}` : ""}</p>
+        <details>
+          <summary>Agent Card JSON</summary>
+          <pre class="agent-card-pre">${esc(JSON.stringify(cardJson, null, 2))}</pre>
+        </details>
+      </div>
+    `;
+    const avatarHost = article.querySelector(".summary-agent-avatar");
+    if (avatarHost) {
+      const palette = colorForAgent(runtimeAgentId);
+      avatarHost.style.borderColor = palette.border;
+      avatarHost.style.background = hexToRgba(palette.hex, 0.08);
+      const avatar = createAgentAvatarImg(runtimeAgentId, `${agentName} mascot`);
+      avatar.onerror = () => {
+        avatar.src = AGENT_MASCOT_PATH || SUMMARY_AGENT_DEFAULT_AVATAR;
+      };
+      avatarHost.appendChild(avatar);
+    }
+    list.appendChild(article);
+  }
+}
+
+function renderAgentsConnectionPanel() {
+  renderAgentsConnectionsOptions();
+  const msgEl = $("agents_connection_msg");
+  if (!msgEl) return;
+  msgEl.classList.remove("error", "ok");
+
+  if (!connectionsCache.length) {
+    writeInstallInstructions("agents_install_instructions", "");
+    renderAgentsConnectionDiscoveredAgents([]);
+    msgEl.textContent = "No connections yet. Create your first connection above.";
+    return;
+  }
+
+  const connectionId = currentAgentsPanelConnectionId();
+  const connection = connectionsCache.find((c) => String(c?.id || "").trim() === connectionId) || null;
+  if (!connection) {
+    writeInstallInstructions("agents_install_instructions", "");
+    renderAgentsConnectionDiscoveredAgents([]);
+    msgEl.textContent = "Connection not selected.";
+    return;
+  }
+
+  const installPayload = agentsInstallInstructionsByConnection.get(connectionId);
+  if (installPayload) {
+    writeInstallInstructions(
+      "agents_install_instructions",
+      buildInstallInstructionsText(installPayload, connectionId),
+    );
+  } else {
+    writeInstallInstructions("agents_install_instructions", "");
+  }
+
+  const discovered = agentsDiscoveredByConnection.get(connectionId) || [];
+  renderAgentsConnectionDiscoveredAgents(discovered);
+
+  const status = String(connection?.hub_status || "pending_install").trim() || "pending_install";
+  const runtime = String(connection?.runtime_type || "openclaw").trim() || "openclaw";
+  const machine = String(connection?.machine_name || "").trim();
+  const heartbeat = connection?.last_heartbeat_at ? formatTs(connection.last_heartbeat_at) : "never";
+  const bits = [
+    `runtime: ${runtime}`,
+    `hub_status: ${status}`,
+    machine ? `machine: ${machine}` : "",
+    `last_heartbeat: ${heartbeat}`,
+    `${Array.isArray(discovered) ? discovered.length : 0} discovered`,
+  ].filter(Boolean);
+  msgEl.textContent = bits.join(" | ");
+}
+
+async function loadAgentsConnectionInstallInstructions(connectionId, { rotateToken = false } = {}) {
+  const cid = String(connectionId || "").trim();
+  if (!cid) return null;
+  const query = rotateToken ? "?rotate_token=true" : "";
+  const payload = await api(`/api/connections/${encodeURIComponent(cid)}/install-instructions${query}`);
+  agentsInstallInstructionsByConnection.set(cid, payload);
+  return payload;
+}
+
+async function loadAgentsConnectionDiscoveredAgents(connectionId, { refresh = false } = {}) {
+  const cid = String(connectionId || "").trim();
+  if (!cid) return [];
+  if (refresh) {
+    await api(`/api/connections/${encodeURIComponent(cid)}/agents/refresh`, "POST").catch(() => null);
+  }
+  const listed = await api(`/api/connections/${encodeURIComponent(cid)}/agents?include_cards=true`);
+  const rows = Array.isArray(listed?.agents) ? listed.agents : [];
+  agentsDiscoveredByConnection.set(cid, rows);
+  return rows;
+}
+
+async function loadAgentsConnectionPanel({ force = false } = {}) {
+  renderAgentsConnectionPanel();
+  if (!connectionsCache.length) return;
+  const connectionId = currentAgentsPanelConnectionId();
+  if (!connectionId) return;
+  if (force) {
+    agentsInstallInstructionsByConnection.delete(connectionId);
+    agentsDiscoveredByConnection.delete(connectionId);
+  }
+  try {
+    const tasks = [];
+    if (!agentsInstallInstructionsByConnection.has(connectionId)) {
+      tasks.push(loadAgentsConnectionInstallInstructions(connectionId));
+    }
+    if (!agentsDiscoveredByConnection.has(connectionId)) {
+      tasks.push(loadAgentsConnectionDiscoveredAgents(connectionId));
+    }
+    if (tasks.length) {
+      await Promise.all(tasks);
+    }
+    renderAgentsConnectionPanel();
+  } catch (e) {
+    const msg = $("agents_connection_msg");
+    if (msg) {
+      msg.textContent = detailToText(e?.message || e);
+      msg.classList.add("error");
+    }
+  }
+}
+
+async function createConnectionFromAgentsPanel() {
+  setMessage("agents_connection_msg", "");
+  const input = $("agents_conn_label");
+  const label = String(input?.value || "").trim() || "My Runtime Host";
+  const created = await createConnectionRecord(label);
+  const createdConnectionId = String(created?.connection?.id || "").trim();
+  if (createdConnectionId) {
+    agentsInstallInstructionsByConnection.set(createdConnectionId, created);
+  }
+  const listedConnections = await api("/api/connections").catch(() => ({ connections: [] }));
+  const connections = Array.isArray(listedConnections?.connections) ? listedConnections.connections : [];
+  renderConnections(connections);
+  renderConfigConnectionDetails();
+  await loadAgentsConnectionPanel({ force: true });
+  await loadSummaryAgents({ force: true }).catch(() => {});
+  if (input) input.value = "";
+  const token = String(created?.install_token || "").trim();
+  setMessage(
+    "agents_connection_msg",
+    token ? `Connection created. Install token: ${token}` : "Connection created. Rotate token to get a fresh install token.",
+    "ok",
+  );
+}
+
+async function rotateAgentsConnectionInstallToken() {
+  const connectionId = currentAgentsPanelConnectionId();
+  if (!connectionId) throw new Error("No connection selected.");
+  const rotated = await loadAgentsConnectionInstallInstructions(connectionId, { rotateToken: true });
+  renderAgentsConnectionPanel();
+  const token = String(rotated?.install_token || "").trim();
+  setMessage(
+    "agents_connection_msg",
+    token ? `Install token rotated: ${token}` : "Install token rotated.",
+    "ok",
+  );
+}
+
+async function refreshAgentsConnectionDiscovery() {
+  const connectionId = currentAgentsPanelConnectionId();
+  if (!connectionId) throw new Error("No connection selected.");
+  await loadAgentsConnectionDiscoveredAgents(connectionId, { refresh: true });
+  renderAgentsConnectionPanel();
+  setMessage("agents_connection_msg", "Discovery refresh requested. Latest agent list loaded.", "ok");
+  await loadSummaryAgents({ force: true }).catch(() => {});
+}
+
+async function loadAgentsWorkspacePanel({ force = false } = {}) {
+  await Promise.all([
+    loadSummaryAgents({ force }),
+    loadAgentsConnectionPanel({ force }),
+  ]);
+}
+
 function openAgentDetailModal(agent) {
   const modal = $("agent_detail_modal");
   if (!modal) return;
@@ -6948,10 +7228,10 @@ function openAgentDetailModal(agent) {
   }
 
   // Detail fields
-  const setField = (id, val) => { const el = $(id); if (el) el.textContent = val || "—"; };
+  const setField = (id, val) => { const el = $(id); if (el) el.textContent = val || "Ã¢â‚¬â€"; };
   setField("modal_agent_id", agent.agent_id);
   setField("modal_agent_connection", agent.connection_id);
-  setField("modal_agent_model", agent.model || agent.adapter_type || "—");
+  setField("modal_agent_model", agent.model || agent.adapter_type || "Ã¢â‚¬â€");
 
   // Current activity (live log)
   const activitySection = $("modal_agent_activity");
@@ -6963,7 +7243,7 @@ function openAgentDetailModal(agent) {
     });
     activitySection.innerHTML = liveProject
       ? `<div class="summary-agent-live agent-live-active"><span class="sal-dot"></span><span class="sal-text">Working on: ${esc(liveProject.title)}</span></div>`
-      : `<div class="summary-agent-live"><span class="sal-text sal-idle">Idle — not assigned to any running project</span></div>`;
+      : `<div class="summary-agent-live"><span class="sal-text sal-idle">Idle Ã¢â‚¬â€ not assigned to any running project</span></div>`;
   }
 
   // Capabilities
@@ -6999,7 +7279,7 @@ function openAgentDetailModal(agent) {
     const maxAgentTokens = Math.max(1, ...summaryAgents.map((a) => Number(a.usage_tokens || a.total_tokens || 0)));
     const tokenPct = agentTokens > 0 ? Math.max(4, Math.round((agentTokens / maxAgentTokens) * 100)) : 0;
     const tokenStr = agentTokens > 999999 ? `${(agentTokens / 1_000_000).toFixed(1)}M`
-                   : agentTokens > 999 ? `${(agentTokens / 1000).toFixed(1)}k` : String(agentTokens || "—");
+                   : agentTokens > 999 ? `${(agentTokens / 1000).toFixed(1)}k` : String(agentTokens || "Ã¢â‚¬â€");
     tokensEl.innerHTML = `
       <div class="summary-agent-token-bar" style="grid-template-columns: auto 1fr auto">
         <span class="satb-label">Total</span>
@@ -7026,32 +7306,77 @@ async function loadSummaryAgents({ force = false } = {}) {
   renderSummaryAgents();
 
   try {
-    const listed = await api("/api/a2a/agents");
-    const items = Array.isArray(listed?.agents) ? listed.agents : [];
+    const listedConnections = await api("/api/connections");
+    const connections = Array.isArray(listedConnections?.connections) ? listedConnections.connections : [];
+    if (!connections.length) {
+      summaryAgents = [];
+      summaryAgentsError = "";
+      return;
+    }
 
-    const enriched = await Promise.all(items.map(async (agent) => {
-      const agentId = String(agent?.agent_id || "").trim();
-      const connectionId = String(agent?.connection_id || "").trim();
-      let card = {};
-      if (agentId) {
-        const q = connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : "";
-        try {
-          const detail = await api(`/api/a2a/agents/${encodeURIComponent(agentId)}/card${q}`);
-          card = (detail && typeof detail.card === "object" && detail.card) ? detail.card : {};
-        } catch {
-          card = {};
-        }
+    const perConnectionAgents = await Promise.all(
+      connections.map(async (connection) => {
+        const connectionId = String(connection?.id || "").trim();
+        if (!connectionId) return { connection, agents: [] };
+        const listed = await api(
+          `/api/connections/${encodeURIComponent(connectionId)}/agents?include_cards=true`,
+        ).catch(() => ({ agents: [] }));
+        return {
+          connection,
+          agents: Array.isArray(listed?.agents) ? listed.agents : [],
+        };
+      }),
+    );
+
+    const merged = [];
+    const seenManagedAgentIds = new Set();
+    for (const bundle of perConnectionAgents) {
+      const connection = (bundle && typeof bundle.connection === "object") ? bundle.connection : {};
+      const connectionId = String(connection?.id || "").trim();
+      const connectionLabel = String(connection?.label || connectionId || "connection").trim();
+      const runtimeType = String(connection?.runtime_type || "openclaw").trim() || "openclaw";
+      const hubStatus = String(connection?.hub_status || "").trim().toLowerCase() || "pending_install";
+      const agents = Array.isArray(bundle?.agents) ? bundle.agents : [];
+
+      for (const agent of agents) {
+        const source = (agent && typeof agent === "object") ? agent : {};
+        const managedAgentId = String(source.managed_agent_id || "").trim();
+        const runtimeAgentId = String(source.runtime_agent_id || source.agent_id || source.id || "").trim();
+        if (!runtimeAgentId) continue;
+        if (managedAgentId && seenManagedAgentIds.has(managedAgentId)) continue;
+        if (managedAgentId) seenManagedAgentIds.add(managedAgentId);
+
+        const rawStatus = String(source.status || "online").trim().toLowerCase();
+        const normalizedStatus = rawStatus === "online"
+          ? "active"
+          : (rawStatus || "active");
+        const card = source.agent_card_json && typeof source.agent_card_json === "object"
+          ? source.agent_card_json
+          : {};
+
+        merged.push({
+          managed_agent_id: managedAgentId || null,
+          agent_id: runtimeAgentId,
+          agent_name: String(source.agent_name || runtimeAgentId || "agent").trim() || runtimeAgentId,
+          connection_id: connectionId,
+          connection_label: connectionLabel,
+          status: normalizedStatus,
+          runtime_type: runtimeType,
+          adapter_type: runtimeType,
+          hub_status: hubStatus,
+          capabilities: _extractSummaryAgentCapabilities(card),
+          card,
+        });
       }
-      return {
-        agent_id: agentId,
-        agent_name: String(agent?.agent_name || agentId || "agent").trim(),
-        connection_id: connectionId,
-        status: String(agent?.status || "active").trim() || "active",
-        capabilities: _extractSummaryAgentCapabilities(card),
-      };
-    }));
+    }
 
-    summaryAgents = enriched.filter((agent) => Boolean(agent.agent_id));
+    merged.sort((a, b) => {
+      const aOnline = String(a?.hub_status || "") === "online" ? 0 : 1;
+      const bOnline = String(b?.hub_status || "") === "online" ? 0 : 1;
+      if (aOnline !== bOnline) return aOnline - bOnline;
+      return String(a?.agent_name || "").localeCompare(String(b?.agent_name || ""));
+    });
+    summaryAgents = merged;
     summaryAgentsError = "";
   } catch (e) {
     summaryAgents = [];
@@ -7134,7 +7459,7 @@ function setNavTab(tab) {
     renderInbox();
   }
   if (tab === "agents") {
-    loadSummaryAgents().catch(() => {});
+    loadAgentsWorkspacePanel().catch(() => {});
   }
   if (tab === "issues") {
     renderIssuesGlobal();
@@ -7505,10 +7830,39 @@ function renderWizardOwnerAgents() {
   }
 }
 
+function setWizardEntryMode(mode) {
+  wizardEntryMode = mode === "join" ? "join" : "create";
+  const isJoin = wizardEntryMode === "join";
+  $("btn_wizard_entry_create")?.classList.toggle("active", !isJoin);
+  $("btn_wizard_entry_join")?.classList.toggle("active", isJoin);
+  $("wizard_join_block")?.classList.toggle("hidden", !isJoin);
+
+  if (isJoin) {
+    $("wizard_title").textContent = "Join Project";
+    $("wizard_step_mode")?.classList.add("hidden");
+    $("wizard_step_chat")?.classList.add("hidden");
+    $("wizard_step_project")?.classList.add("hidden");
+    $("wizard_step_agents")?.classList.add("hidden");
+    $("wizard_footer_actions")?.classList.add("hidden");
+    setMessage("wizard_msg", "Join a project using project API key.", "");
+    return;
+  }
+
+  $("wizard_title").textContent = wizardMode === "chat" ? "New Project (Chat)" : "New Project (Manual)";
+  $("wizard_join_block")?.classList.add("hidden");
+  $("wizard_step_mode")?.classList.remove("hidden");
+  $("wizard_footer_actions")?.classList.remove("hidden");
+  setWizardMode(wizardMode || "manual");
+}
+
 function openWizard(newProject = true) {
   $("project_wizard").classList.remove("hidden");
   setMessage("wizard_msg", "");
   if (newProject) {
+    $("wizard_entry_mode_row")?.classList.remove("hidden");
+    $("wizard_join_block")?.classList.add("hidden");
+    if ($("wizard_join_api_key")) $("wizard_join_api_key").value = "";
+    wizardEntryMode = "create";
     $("wizard_title").textContent = "New Project";
     $("wizard_step_mode").classList.remove("hidden");
     $("wizard_step_chat").classList.add("hidden");
@@ -7534,8 +7888,11 @@ function openWizard(newProject = true) {
     if (chatInput) chatInput.value = "";
     $("btn_mode_chat")?.classList.remove("active");
     $("btn_mode_manual")?.classList.add("active");
-    setWizardMode("manual");
+    setWizardEntryMode("create");
   } else {
+    wizardEntryMode = "create";
+    $("wizard_entry_mode_row")?.classList.add("hidden");
+    $("wizard_join_block")?.classList.add("hidden");
     $("wizard_title").textContent = "Manage Agents";
     $("wizard_step_mode").classList.add("hidden");
     $("wizard_step_chat").classList.add("hidden");
@@ -7554,6 +7911,7 @@ function openWizard(newProject = true) {
 function closeWizard() {
   $("project_wizard").classList.add("hidden");
   wizardChatPending = false;
+  wizardEntryMode = "create";
 }
 
 function appendWizardChatMessage(role, text, meta = "") {
@@ -7583,7 +7941,20 @@ function pushWizardTranscript(role, text) {
 }
 
 function setWizardMode(mode) {
-  wizardMode = mode === "manual" ? "manual" : "chat";
+  if (wizardEntryMode === "join") {
+    wizardMode = "manual";
+    $("btn_mode_chat")?.classList.remove("active");
+    $("btn_mode_manual")?.classList.remove("active");
+    return;
+  }
+  const wantsChat = mode !== "manual";
+  if (wantsChat && !activeConnectionId) {
+    wizardMode = "manual";
+    setMessage("wizard_msg", "Chat setup needs a connection first. Create one in Agents, then try chat mode.", "");
+  } else {
+    wizardMode = wantsChat ? "chat" : "manual";
+    if (!wantsChat) setMessage("wizard_msg", "");
+  }
   $("btn_mode_chat")?.classList.toggle("active", wizardMode === "chat");
   $("btn_mode_manual")?.classList.toggle("active", wizardMode === "manual");
   $("wizard_step_agents")?.classList.add("hidden");
@@ -8304,16 +8675,17 @@ function buildWizardSetupHistoryText() {
 }
 
 async function createProjectRecord({ title, brief, goal, setupDetails, setupChatHistory }) {
-  if (!activeConnectionId) throw new Error("OpenClaw connection not selected");
-  if (!title || !brief || !goal) throw new Error("title, brief, and goal are required");
+  const cleanGoal = String(goal || "").trim();
+  if (!cleanGoal) throw new Error("Goal is required");
+
 
   const created = await api("/api/projects", "POST", {
-    title,
-    brief,
-    goal,
+    title: String(title || "").trim() || null,
+    brief: String(brief || "").trim() || null,
+    goal: cleanGoal,
     setup_details: setupDetails || {},
     setup_chat_history: String(setupChatHistory || "").slice(0, 120000),
-    connection_id: activeConnectionId,
+    ...(activeConnectionId ? { connection_id: activeConnectionId } : {}),
   });
 
   selectedProjectId = created.id;
@@ -8368,7 +8740,17 @@ async function createProjectFromChatDraft() {
   });
 }
 
+async function joinProjectFromWizard() {
+  const key = String($("wizard_join_api_key")?.value || "").trim();
+  if (!key) throw new Error("Project API key is required.");
+  await joinProjectByApiKey(key);
+}
+
 async function createProjectNow() {
+  if (wizardEntryMode === "join") {
+    await joinProjectFromWizard();
+    return;
+  }
   if (wizardMode === "manual") {
     await createProjectFromManual();
     return;
@@ -8376,35 +8758,39 @@ async function createProjectNow() {
   await createProjectFromChatDraft();
 }
 
-async function joinProjectByApiKey() {
-  const raw = window.prompt("Enter project API key");
-  const key = String(raw || "").trim();
+async function joinProjectByApiKey(rawProjectApiKey = null) {
+  const key = rawProjectApiKey === null
+    ? String(window.prompt("Enter project API key") || "").trim()
+    : String(rawProjectApiKey || "").trim();
   if (!key) return;
   const joined = await api("/api/projects/join", "POST", { project_api_key: key });
   setMessage("chat_hint", `Joined project: ${joined?.title || joined?.id || "project"}`, "ok");
+  setMessage("wizard_msg", `Joined project: ${joined?.title || joined?.id || "project"}`, "ok");
+  setMessage("wizard_external_msg", "");
+  if ($("wizard_join_api_key")) $("wizard_join_api_key").value = "";
+  closeWizard();
   await fetchInitial({ preferredProjectId: String(joined?.id || "").trim() || null });
 }
 
-async function connectOpenClaw(ev) {
-  ev.preventDefault();
-  setMessage("setup_msg", "");
-  const instructionsEl = $("setup_install_instructions");
-  if (instructionsEl) {
-    instructionsEl.value = "";
-    instructionsEl.classList.add("hidden");
-  }
-  const label = $("oc_name")?.value?.trim() || $("oc_base")?.value?.trim() || "My Runtime Connection";
-  const payload = {
-    label,
-    runtime_type: "openclaw",
-  };
-  const created = await api("/api/connections", "POST", payload);
-  const token = String(created?.install_token || "").trim();
-  const exp = created?.install_token_expires_at ? formatTs(created.install_token_expires_at) : "-";
-  const ins = created?.install_instructions || {};
+function buildInstallInstructionsText(payload, fallbackConnectionId = "") {
+  const connectionId = String(
+    payload?.connection?.id
+    || payload?.connection_id
+    || fallbackConnectionId
+    || "-"
+  ).trim() || "-";
+  const installToken = String(payload?.install_token || "").trim();
+  const tokenExpiresAt = payload?.install_token_expires_at ? formatTs(payload.install_token_expires_at) : "-";
+  const tokenNote = String(payload?.token_note || "").trim();
+  const ins = payload?.install_instructions && typeof payload.install_instructions === "object"
+    ? payload.install_instructions
+    : {};
+
   const lines = [
-    `Connection ID: ${created?.connection?.id || "-"}`,
-    `Install token expires: ${exp}`,
+    `Connection ID: ${connectionId}`,
+    installToken ? `Install token: ${installToken}` : "Install token: (hidden)",
+    `Install token expires: ${tokenExpiresAt}`,
+    tokenNote ? `Token note: ${tokenNote}` : "",
     "",
     "Concept:",
     String(ins?.concept || "Install Hivee Hub on the runtime host, then complete hub registration."),
@@ -8421,11 +8807,59 @@ async function connectOpenClaw(ev) {
     "Docker:",
     String(ins?.docker || ""),
   ];
-  if (instructionsEl) {
-    instructionsEl.value = lines.join("\n");
-    instructionsEl.classList.remove("hidden");
+  return lines.filter((line, idx, all) => {
+    if (line) return true;
+    const prev = all[idx - 1] || "";
+    const next = all[idx + 1] || "";
+    return Boolean(prev && next);
+  }).join("\n");
+}
+
+function writeInstallInstructions(textareaId, text) {
+  const el = $(textareaId);
+  if (!el) return;
+  const output = String(text || "").trim();
+  if (!output) {
+    el.value = "";
+    el.classList.add("hidden");
+    return;
   }
-  setMessage("setup_msg", `Connection created. Install token: ${token}`, "ok");
+  el.value = output;
+  el.classList.remove("hidden");
+}
+
+async function createConnectionRecord(label) {
+  const cleanLabel = String(label || "").trim() || "My Runtime Connection";
+  const created = await api("/api/connections", "POST", {
+    label: cleanLabel,
+    runtime_type: "openclaw",
+  });
+  const createdConnectionId = String(created?.connection?.id || "").trim();
+  if (createdConnectionId) {
+    activeConnectionId = createdConnectionId;
+    preferredConnectionId = createdConnectionId;
+    agentsInstallInstructionsByConnection.set(createdConnectionId, created);
+  }
+  return created;
+}
+
+async function connectOpenClaw(ev) {
+  ev.preventDefault();
+  setMessage("setup_msg", "");
+  writeInstallInstructions("setup_install_instructions", "");
+  const label = $("oc_name")?.value?.trim() || $("oc_base")?.value?.trim() || "My Runtime Connection";
+  const created = await createConnectionRecord(label);
+  const createdConnectionId = String(created?.connection?.id || "").trim();
+  const instructionsText = buildInstallInstructionsText(created, createdConnectionId);
+  writeInstallInstructions("setup_install_instructions", instructionsText);
+  const token = String(created?.install_token || "").trim();
+  setMessage(
+    "setup_msg",
+    token ? `Connection created. Install token: ${token}` : "Connection created. Rotate token to get a fresh install token.",
+    "ok",
+  );
+  const setupForm = $("form_connect");
+  if (setupForm && typeof setupForm.reset === "function") setupForm.reset();
 }
 
 async function login(ev) {
@@ -8898,10 +9332,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     workspaceTreeText = "";
     projectTreeText = "";
     applyWorkspacePolicy(null);
-    renderConnections([]);
-    setView("setup");
-    setMessage("setup_msg", "Create your first connection to generate Hivee Hub install instructions.", "");
-    return;
+    setMessage("config_msg", "No connections yet. Open Agents tab to create your first connection.", "");
   }
 
   renderConnections(connections);
@@ -8956,7 +9387,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
   }
 
   if (activeNavTab === "agents") {
-    await loadSummaryAgents({ force: true }).catch(() => {});
+    await loadAgentsWorkspacePanel({ force: true }).catch(() => {});
   }
 
   initSettingsTabs();
@@ -8987,6 +9418,28 @@ function bindActions() {
     }).catch(() => {});
   });
   $("form_connect").addEventListener("submit", (ev) => connectOpenClaw(ev).catch((e) => showUiError("setup_msg", e)));
+  $("btn_agents_create_connection")?.addEventListener("click", () => {
+    createConnectionFromAgentsPanel().catch((e) => setMessage("agents_connection_msg", detailToText(e), "error"));
+  });
+  $("agents_connections_select")?.addEventListener("change", (ev) => {
+    const selectedId = String(ev?.target?.value || "").trim();
+    if (!selectedId) return;
+    activeConnectionId = selectedId;
+    const homeSel = $("home_connections");
+    if (homeSel) homeSel.value = selectedId;
+    renderConfigConnectionDetails();
+    loadAgentsConnectionPanel({ force: true }).catch((e) => setMessage("agents_connection_msg", detailToText(e), "error"));
+  });
+  $("btn_agents_connection_load")?.addEventListener("click", () => {
+    loadAgentsConnectionPanel({ force: true }).catch((e) => setMessage("agents_connection_msg", detailToText(e), "error"));
+  });
+  $("btn_agents_connection_rotate")?.addEventListener("click", () => {
+    rotateAgentsConnectionInstallToken().catch((e) => setMessage("agents_connection_msg", detailToText(e), "error"));
+  });
+  $("btn_agents_refresh_discovery")?.addEventListener("click", () => {
+    refreshAgentsConnectionDiscovery().catch((e) => setMessage("agents_connection_msg", detailToText(e), "error"));
+  });
+  $("btn_agents_open_setup")?.addEventListener("click", () => setView("setup"));
   $("btn_setup_previous")?.addEventListener("click", () => {
     setMessage("setup_msg", "");
     fetchInitial().catch((e) => setMessage("setup_msg", detailToText(e), "error"));
@@ -9011,6 +9464,7 @@ function bindActions() {
     projectTreeText = "";
     applyConnectionStatus();
     renderConfigConnectionDetails();
+    renderAgentsConnectionPanel();
     ensureWorkspaceForActiveConnection({ silent: false })
       .then(() => loadWorkspaceTree().catch(() => null))
       .then(() => loadWorkspaceFiles(DEFAULT_OWNER_FILES_PATH).catch(() => null))
@@ -9026,6 +9480,14 @@ function bindActions() {
 
   $("btn_new_project").onclick = () => openWizard(true);
   $("btn_close_wizard").onclick = closeWizard;
+  $("btn_wizard_entry_create")?.addEventListener("click", () => setWizardEntryMode("create"));
+  $("btn_wizard_entry_join")?.addEventListener("click", () => setWizardEntryMode("join"));
+  $("btn_wizard_join_now")?.addEventListener("click", () => joinProjectFromWizard().catch((e) => showUiError("wizard_msg", e)));
+  $("wizard_join_api_key")?.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    joinProjectFromWizard().catch((e) => showUiError("wizard_msg", e));
+  });
   $("btn_mode_chat").onclick = async () => {
     setWizardMode("chat");
     if (!wizardChatBooted && !wizardChatPending) {
@@ -9261,7 +9723,7 @@ function bindActions() {
       if (tab === "projects") {
         setNavTab("projects");
         if (content) content.classList.remove("hidden");
-        // Clicking "Projects" while inside a project â†’ back to grid view
+        // Clicking "Projects" while inside a project ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ back to grid view
         if (selectedProjectId) showEmptyProject();
         return;
       }
@@ -9304,7 +9766,7 @@ function bindActions() {
   if (authView && auroraCanvas) {
     const ctx = auroraCanvas.getContext("2d");
 
-    // Offscreen canvas â€” draw all trail here, then blur ONCE onto main canvas
+    // Offscreen canvas ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â draw all trail here, then blur ONCE onto main canvas
     const offCanvas = document.createElement("canvas");
     const offCtx = offCanvas.getContext("2d");
 
@@ -9329,7 +9791,7 @@ function bindActions() {
       auroraMouseActive = true;
     });
 
-    // Pre-compute Gaussian weights once â€” reused every frame
+    // Pre-compute Gaussian weights once ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â reused every frame
     const GAUSS_N = 20;
     const gaussStops = Array.from({ length: GAUSS_N + 1 }, (_, si) => {
       const pos = si / GAUSS_N;
@@ -9378,7 +9840,7 @@ function bindActions() {
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, w, h);
 
-      // Step 3: composite offscreen â†’ main with ONE blur call
+      // Step 3: composite offscreen ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ main with ONE blur call
       ctx.filter = "blur(10px)";
       ctx.globalCompositeOperation = "destination-out";
       ctx.drawImage(offCanvas, 0, 0);
@@ -9441,6 +9903,7 @@ if (oauthError) {
       setView("auth");
     });
 })();
+
 
 
 

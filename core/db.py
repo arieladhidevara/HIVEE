@@ -1,4 +1,4 @@
-from .constants import *
+﻿from .constants import *
 
 def db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -710,6 +710,39 @@ def init_db() -> None:
         """
     )
     cur.execute("CREATE INDEX IF NOT EXISTS idx_runtime_sessions_project ON runtime_sessions(project_id, updated_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS runtime_dispatch_jobs (
+            id TEXT PRIMARY KEY,
+            connection_id TEXT NOT NULL,
+            project_id TEXT NOT NULL,
+            channel_id TEXT,
+            task_id TEXT,
+            managed_agent_id TEXT,
+            project_agent_membership_id TEXT,
+            runtime_agent_id TEXT,
+            runtime_session_key TEXT NOT NULL,
+            prompt_text TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            result_text TEXT,
+            error_text TEXT,
+            response_message_id TEXT,
+            created_at INTEGER NOT NULL,
+            claimed_at INTEGER,
+            completed_at INTEGER,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(connection_id) REFERENCES connections(id),
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(channel_id) REFERENCES project_channels(id),
+            FOREIGN KEY(task_id) REFERENCES project_tasks(id),
+            FOREIGN KEY(managed_agent_id) REFERENCES managed_agents(id),
+            FOREIGN KEY(project_agent_membership_id) REFERENCES project_agent_memberships(id),
+            FOREIGN KEY(response_message_id) REFERENCES project_messages(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_runtime_dispatch_jobs_lookup ON runtime_dispatch_jobs(connection_id, status, created_at ASC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_runtime_dispatch_jobs_project ON runtime_dispatch_jobs(project_id, updated_at DESC)")
 
     cols = [r[1] for r in cur.execute("PRAGMA table_info(project_agents)").fetchall()]
     if "is_primary" not in cols:
@@ -806,6 +839,10 @@ def init_db() -> None:
     task_cols = [r[1] for r in cur.execute("PRAGMA table_info(project_tasks)").fetchall()]
     if "assignee_agent_membership_id" not in task_cols:
         cur.execute("ALTER TABLE project_tasks ADD COLUMN assignee_agent_membership_id TEXT")
+
+    dispatch_cols = [r[1] for r in cur.execute("PRAGMA table_info(runtime_dispatch_jobs)").fetchall()]
+    if dispatch_cols and "response_message_id" not in dispatch_cols:
+        cur.execute("ALTER TABLE runtime_dispatch_jobs ADD COLUMN response_message_id TEXT")
 
     now_ts = int(time.time())
     cur.execute(
@@ -1037,3 +1074,5 @@ CHAT_PATHS = [
 
 
 __all__ = [name for name in globals() if not name.startswith('__')]
+
+

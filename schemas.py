@@ -1,4 +1,4 @@
-from services.managed_agents import *
+﻿from services.managed_agents import *
 
 class SignupIn(BaseModel):
     email: str = Field(..., examples=["you@example.com"])
@@ -101,6 +101,18 @@ class HubAgentCardIn(BaseModel):
     install_token: str = Field(..., min_length=8)
     agent_card_json: Dict[str, Any] = Field(default_factory=dict)
     agent_card_version: Optional[str] = None
+
+class HubRuntimeJobClaimIn(BaseModel):
+    connection_id: str = Field(..., min_length=1)
+    install_token: str = Field(..., min_length=8)
+    max_wait_sec: int = 1
+
+class HubRuntimeJobCompleteIn(BaseModel):
+    connection_id: str = Field(..., min_length=1)
+    install_token: str = Field(..., min_length=8)
+    status: str = RUNTIME_DISPATCH_STATUS_COMPLETED
+    result_text: Optional[str] = None
+    error_text: Optional[str] = None
 
 class ProjectJoinByKeyIn(BaseModel):
     project_api_key: str = Field(..., min_length=8)
@@ -517,3 +529,4 @@ class ProjectActivityEventOut(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
     created_at: int
 __all__ = [name for name in globals() if not name.startswith('__')]
+

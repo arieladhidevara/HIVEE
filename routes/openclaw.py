@@ -13,7 +13,7 @@ def register_routes(app: FastAPI) -> None:
         if not health.get("ok"):
             raise HTTPException(400, {"message": "Could not verify OpenClaw health", "details": health})
 
-        # Health passed — save the connection before attempting bootstrap so a
+        # Health passed - save the connection before attempting bootstrap so a
         # temporarily-unavailable WS/agent endpoint doesn't block the save.
         conn = db()
         conn_id = new_id("oc")
@@ -256,6 +256,10 @@ def register_routes(app: FastAPI) -> None:
 
     @app.post("/api/openclaw/{connection_id}/ws-chat")
     async def chat_openclaw_ws(request: Request, connection_id: str, payload: OpenClawWsChatIn):
+        raise HTTPException(
+            410,
+            "OpenClaw proxy chat endpoint is deprecated. Use project-scoped channel chat via /api/projects/{project_id}/messages.",
+        )
         session_user: Optional[str] = None
         try:
             session_user = get_optional_session_user(request)
@@ -910,5 +914,3 @@ def register_routes(app: FastAPI) -> None:
                 "write_paths": selected_agent_permissions.get("write_paths") or [],
             }
         return res
-
-

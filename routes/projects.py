@@ -435,29 +435,296 @@ def _append_project_invitations_status_update(
     with doc_path.open("a", encoding="utf-8") as f:
         f.write(line)
 
+
+def _ensure_runtime_planning_lane(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    planning_channel_id: str,
+    managed_agent_id: str,
+    connection_id: str,
+) -> sqlite3.Row:
+    runtime_session_key = f"project:{project_id}:channel:{PROJECT_CHANNEL_PLANNING}:agent:{managed_agent_id}"
+    row = conn.execute(
+        """
+        SELECT id, project_id, channel_id, task_id, managed_agent_id, connection_id,
+               runtime_session_key, summary_md, last_message_id, updated_at
+        FROM runtime_sessions
+        WHERE runtime_session_key = ?
+        LIMIT 1
+        """,
+        (runtime_session_key,),
+    ).fetchone()
+    if row:
+        return row
+
+    now = int(time.time())
+    rid = new_id("rs")
+    conn.execute(
+        """
+        INSERT INTO runtime_sessions (
+            id, project_id, channel_id, task_id, managed_agent_id, connection_id,
+            runtime_session_key, summary_md, last_message_id, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            rid,
+            project_id,
+            planning_channel_id,
+            None,
+            managed_agent_id,
+            connection_id,
+            runtime_session_key,
+            "",
+            None,
+            now,
+        ),
+    )
+    created = conn.execute(
+        """
+        SELECT id, project_id, channel_id, task_id, managed_agent_id, connection_id,
+               runtime_session_key, summary_md, last_message_id, updated_at
+        FROM runtime_sessions
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (rid,),
+    ).fetchone()
+    if not created:
+        raise HTTPException(500, "Planning runtime lane creation failed")
+    return created
+
+
+def _build_project_planning_prompt(
+    *,
+    title: str,
+    goal: str,
+    brief: str,
+    setup_details: Dict[str, Any],
+    reason: str,
+) -> str:
+    safe_title = str(title or "").strip()
+    safe_goal = str(goal or "").strip()
+    safe_brief = str(brief or "").strip()
+    setup_json = json.dumps(setup_details or {}, ensure_ascii=False)[:12_000]
+
+    parts = [
+        "You are the primary planning agent for a Hivee project.",
+        "Create the initial planning output for this project.",
+        "Return markdown only with these sections in order:",
+        "## Project Info",
+        "## Initial Plan",
+        "## Task Map",
+        "## Policy Seed",
+        "Task Map must include clear task IDs, owners/roles, and dependencies when possible.",
+        "Keep output practical and actionable.",
+        f"Dispatch reason: {reason}",
+        f"Title: {safe_title}",
+        f"Goal: {safe_goal}",
+    ]
+    if safe_brief:
+        parts.append(f"Brief: {safe_brief}")
+    if setup_json and setup_json != "{}":
+        parts.append("Setup details JSON:\n" + setup_json)
+    return "\n\n".join(parts)
+
+
+def _queue_project_planning_dispatch_job(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    planning_channel_id: str,
+    connection_id: str,
+    managed_agent_id: str,
+    project_agent_membership_id: str,
+    runtime_agent_id: str,
+    title: str,
+    goal: str,
+    brief: str,
+    setup_details: Dict[str, Any],
+    reason: str,
+) -> str:
+    lane = _ensure_runtime_planning_lane(
+        conn,
+        project_id=project_id,
+        planning_channel_id=planning_channel_id,
+        managed_agent_id=managed_agent_id,
+        connection_id=connection_id,
+    )
+    prompt_text = _build_project_planning_prompt(
+        title=title,
+        goal=goal,
+        brief=brief,
+        setup_details=setup_details,
+        reason=reason,
+    )
+
+    now = int(time.time())
+    job_id = new_id("rjob")
+    # TODO(hivee-hub-daemon): move dispatch payload shaping to a shared cloud service module.
+    conn.execute(
+        """
+        INSERT INTO runtime_dispatch_jobs (
+            id, connection_id, project_id, channel_id, task_id,
+            managed_agent_id, project_agent_membership_id, runtime_agent_id,
+            runtime_session_key, prompt_text, status,
+            result_text, error_text, response_message_id,
+            created_at, claimed_at, completed_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            job_id,
+            connection_id,
+            project_id,
+            planning_channel_id,
+            None,
+            managed_agent_id,
+            project_agent_membership_id,
+            runtime_agent_id,
+            str(lane["runtime_session_key"]),
+            prompt_text,
+            RUNTIME_DISPATCH_STATUS_PENDING,
+            None,
+            None,
+            None,
+            now,
+            None,
+            None,
+            now,
+        ),
+    )
+    conn.execute(
+        "UPDATE runtime_sessions SET updated_at = ? WHERE id = ?",
+        (now, str(lane["id"])),
+    )
+    conn.execute(
+        "UPDATE channel_memory SET updated_at = ? WHERE channel_id = ?",
+        (now, planning_channel_id),
+    )
+    return job_id
+
+
+def _resolve_setup_openclaw_connection(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    connection_id: str,
+) -> Tuple[Optional[sqlite3.Row], Optional[sqlite3.Row]]:
+    selected_id = str(connection_id or "").strip()
+    if not selected_id:
+        return None, None
+
+    runtime_connection = conn.execute(
+        """
+        SELECT id, user_id, legacy_openclaw_connection_id
+        FROM connections
+        WHERE id = ? AND user_id = ?
+        LIMIT 1
+        """,
+        (selected_id, user_id),
+    ).fetchone()
+
+    candidate_ids: List[str] = []
+    if runtime_connection:
+        legacy_id = str(runtime_connection["legacy_openclaw_connection_id"] or "").strip()
+        if legacy_id:
+            candidate_ids.append(legacy_id)
+        candidate_ids.append(str(runtime_connection["id"] or "").strip())
+    else:
+        candidate_ids.append(selected_id)
+
+    seen_ids: set[str] = set()
+    for candidate_id in candidate_ids:
+        normalized = str(candidate_id or "").strip()
+        if not normalized or normalized in seen_ids:
+            continue
+        seen_ids.add(normalized)
+        oc_row = conn.execute(
+            """
+            SELECT base_url, api_key, api_key_secret_id
+            FROM openclaw_connections
+            WHERE id = ? AND user_id = ?
+            LIMIT 1
+            """,
+            (normalized, user_id),
+        ).fetchone()
+        if oc_row:
+            return runtime_connection, oc_row
+
+    return runtime_connection, None
+
+
+def _local_setup_chat_response(message: str, *, start_mode: bool = False) -> str:
+    text = str(message or "").replace("\r", "").strip()
+    local_draft = _local_setup_draft([{"role": "user", "text": text}] if text else [])
+
+    title_hint = str(local_draft.get("title") or "").strip()
+    goal_hint = str(local_draft.get("goal") or "").strip()
+    brief_hint = str(local_draft.get("brief") or "").strip()
+
+    lines: List[str] = []
+    if start_mode:
+        lines.append("Let us shape your project quickly.")
+    if title_hint:
+        lines.append(f"Working title: {title_hint}")
+    if goal_hint:
+        lines.append(f"Working goal: {goal_hint}")
+    elif text:
+        lines.append(f"Noted: {text[:220]}")
+    if brief_hint:
+        lines.append(f"Working brief: {brief_hint[:260]}")
+
+    lines.extend(
+        [
+            "Next, please reply with:",
+            "1) Target users",
+            "2) Constraints (deadline, budget, stack, compliance)",
+            "3) First output you want",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def register_routes(app: FastAPI) -> None:
     @app.post("/api/projects/setup-chat")
     async def project_setup_chat(request: Request, payload: ProjectSetupChatIn):
         user_id = get_session_user(request)
         conn = db()
-        row = conn.execute(
-            "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
-            (payload.connection_id, user_id),
-        ).fetchone()
+        runtime_connection, row = _resolve_setup_openclaw_connection(
+            conn,
+            user_id=user_id,
+            connection_id=str(payload.connection_id),
+        )
         connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         policy = conn.execute(
             "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (payload.connection_id, user_id),
         ).fetchone()
         conn.close()
-        if not row:
+
+        if not runtime_connection and not row:
             raise HTTPException(404, "Connection not found")
-    
+
         workspace = _ensure_user_workspace(user_id)
         workspace_root = str(workspace["workspace_root"])
         templates_root = str(workspace["templates_root"])
         setup_template = _read_project_setup_template(user_id)
         effective_agent_id = payload.agent_id or (str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else None)
+
+        if not row:
+            return {
+                "ok": True,
+                "text": _local_setup_chat_response(
+                    payload.message or "Start new project setup and ask the first question.",
+                    start_mode=bool(payload.start),
+                ),
+                "raw": "LOCAL_SETUP_CHAT_FALLBACK",
+                "resolved_agent_id": effective_agent_id,
+                "workspace_root": workspace_root,
+                "templates_root": templates_root,
+                "source": "local_fallback",
+            }
+
         instruction = _build_new_project_setup_instruction(
             payload.message or "Start new project setup and ask the first question.",
             template_content=setup_template,
@@ -474,27 +741,39 @@ def register_routes(app: FastAPI) -> None:
             timeout_sec=max(10, min(payload.timeout_sec, 45 if payload.optimize_tokens else 90)),
         )
         if not res.get("ok"):
+            if payload.optimize_tokens:
+                return {
+                    "ok": True,
+                    "text": _local_setup_chat_response(payload.message or "", start_mode=bool(payload.start)),
+                    "raw": "LOCAL_SETUP_CHAT_FALLBACK",
+                    "resolved_agent_id": effective_agent_id,
+                    "workspace_root": workspace_root,
+                    "templates_root": templates_root,
+                    "source": "local_fallback",
+                    "warning": detail_to_text(res.get("error") or res.get("details") or "setup chat fallback used"),
+                }
             raise HTTPException(400, res)
         res["resolved_agent_id"] = effective_agent_id
         res["workspace_root"] = workspace_root
         res["templates_root"] = templates_root
         return res
-    
+
     @app.post("/api/projects/setup-draft")
     async def project_setup_draft(request: Request, payload: ProjectSetupDraftIn):
         user_id = get_session_user(request)
         conn = db()
-        row = conn.execute(
-            "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
-            (payload.connection_id, user_id),
-        ).fetchone()
+        runtime_connection, row = _resolve_setup_openclaw_connection(
+            conn,
+            user_id=user_id,
+            connection_id=str(payload.connection_id),
+        )
         connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         policy = conn.execute(
             "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (payload.connection_id, user_id),
         ).fetchone()
         conn.close()
-        if not row:
+        if not runtime_connection and not row:
             raise HTTPException(404, "Connection not found")
     
         workspace = _ensure_user_workspace(user_id)
@@ -515,6 +794,17 @@ def register_routes(app: FastAPI) -> None:
                 "raw": "LOCAL_DRAFT_OPTIMIZED",
             }
     
+        if not row:
+            local_details["draft_source"] = "local_fallback"
+            return {
+                "ok": True,
+                "title": str(local_draft.get("title") or "")[:160],
+                "brief": str(local_draft.get("brief") or "")[:5000],
+                "goal": str(local_draft.get("goal") or "")[:5000],
+                "setup_details": local_details,
+                "raw": "LOCAL_DRAFT_FALLBACK_NO_RUNTIME",
+            }
+
         setup_template = _read_project_setup_template(user_id)
         effective_agent_id = payload.agent_id or (str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else None)
         instruction = _build_setup_draft_instruction(
@@ -845,6 +1135,7 @@ def register_routes(app: FastAPI) -> None:
                    COALESCE(NULLIF(ma.runtime_agent_id, ''), ma.agent_id) AS runtime_agent_id,
                    ma.agent_name,
                    COALESCE(c.hub_status, '') AS hub_status,
+                   COALESCE(c.install_token_hash, '') AS install_token_hash,
                    ma.updated_at
             FROM managed_agents ma
             LEFT JOIN connections c ON c.id = ma.connection_id
@@ -859,8 +1150,13 @@ def register_routes(app: FastAPI) -> None:
         ).fetchone()
 
         primary_agent_id: Optional[str] = None
+        primary_agent_name: str = ""
+        primary_agent_membership_id: Optional[str] = None
+        primary_managed_agent_id: Optional[str] = None
+        primary_connection_id: Optional[str] = None
         if primary_managed_agent:
             primary_agent_membership_id = new_id("pam")
+            primary_managed_agent_id = str(primary_managed_agent["id"] or "").strip() or None
             primary_agent_id = str(primary_managed_agent["runtime_agent_id"] or "").strip() or None
             primary_agent_name = str(primary_managed_agent["agent_name"] or primary_agent_id or "agent").strip() or (primary_agent_id or "agent")
             primary_connection_id = str(primary_managed_agent["connection_id"] or selected_connection_id or "").strip() or None
@@ -875,7 +1171,7 @@ def register_routes(app: FastAPI) -> None:
                 (
                     primary_agent_membership_id,
                     pid,
-                    str(primary_managed_agent["id"]),
+                    primary_managed_agent_id,
                     primary_connection_id,
                     user_id,
                     "primary_planning_agent",
@@ -926,6 +1222,37 @@ def register_routes(app: FastAPI) -> None:
                 """,
                 (pid, primary_agent_id, _hash_access_token(initial_project_agent_token), now),
             )
+
+        planning_dispatch_job_id: Optional[str] = None
+        planning_dispatch_mode = "none"
+        if (
+            planning_channel_id
+            and primary_agent_id
+            and primary_managed_agent_id
+            and primary_agent_membership_id
+            and primary_connection_id
+        ):
+            has_hub_install_token = bool(str(primary_managed_agent["install_token_hash"] or "").strip())
+            if has_hub_install_token:
+                planning_dispatch_job_id = _queue_project_planning_dispatch_job(
+                    conn,
+                    project_id=pid,
+                    planning_channel_id=planning_channel_id,
+                    connection_id=primary_connection_id,
+                    managed_agent_id=primary_managed_agent_id,
+                    project_agent_membership_id=primary_agent_membership_id,
+                    runtime_agent_id=primary_agent_id,
+                    title=title,
+                    goal=goal,
+                    brief=brief,
+                    setup_details=setup_details,
+                    reason="project_created",
+                )
+                planning_dispatch_mode = "hub_queue"
+                conn.execute(
+                    "UPDATE projects SET plan_status = ?, plan_updated_at = ?, updated_at = ? WHERE id = ?",
+                    (PLAN_STATUS_GENERATING, now, now, pid),
+                )
 
         conn.commit()
         conn.close()
@@ -979,7 +1306,19 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
 
         planning_dispatched = False
-        if primary_agent_id:
+        if planning_dispatch_mode == "hub_queue" and planning_dispatch_job_id:
+            planning_dispatched = True
+            await emit(
+                pid,
+                "project.plan.dispatch.queued",
+                {
+                    "project_id": pid,
+                    "source": "hivee_hub",
+                    "dispatch_job_id": planning_dispatch_job_id,
+                    "reason": "Planning job queued to Hivee Hub runtime lane.",
+                },
+            )
+        elif primary_agent_id:
             can_direct_dispatch = False
             if project_connection_id:
                 plan_conn = db()
@@ -994,16 +1333,6 @@ def register_routes(app: FastAPI) -> None:
                 asyncio.create_task(_generate_project_plan(pid, force=True))
                 await emit(pid, "project.plan.regenerate_requested", {"project_id": pid, "source": "project_created"})
                 planning_dispatched = True
-            else:
-                await emit(
-                    pid,
-                    "project.plan.dispatch.queued",
-                    {
-                        "project_id": pid,
-                        "source": "hivee_hub",
-                        "reason": "Managed agent is attached; waiting for hub-runtime planning dispatch",
-                    },
-                )
 
         if not planning_dispatched:
             await emit(
@@ -1014,7 +1343,7 @@ def register_routes(app: FastAPI) -> None:
                     "reason": (
                         "No online managed agent attached yet"
                         if not primary_agent_id
-                        else "Hub dispatch queued; direct cloud runtime adapter unavailable"
+                        else "Primary agent exists but no active Hub/runtime dispatch path is available"
                     ),
                 },
             )
@@ -1195,21 +1524,84 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         row = conn.execute(
-            "SELECT id, plan_text FROM projects WHERE id = ? AND user_id = ?",
+            "SELECT id, title, brief, goal, setup_json, plan_text FROM projects WHERE id = ? AND user_id = ?",
             (project_id, user_id),
         ).fetchone()
         if not row:
             conn.close()
             raise HTTPException(404, "Project not found")
+
         now = int(time.time())
+        planning_channel = conn.execute(
+            "SELECT id FROM project_channels WHERE project_id = ? AND name = ? LIMIT 1",
+            (project_id, PROJECT_CHANNEL_PLANNING),
+        ).fetchone()
+        planning_channel_id = str(planning_channel["id"] or "").strip() if planning_channel else ""
+
+        primary_member = conn.execute(
+            """
+            SELECT pam.id AS project_agent_membership_id,
+                   pam.managed_agent_id,
+                   COALESCE(pam.connection_id, ma.connection_id) AS connection_id,
+                   COALESCE(NULLIF(ma.runtime_agent_id, ''), ma.agent_id) AS runtime_agent_id,
+                   COALESCE(c.install_token_hash, '') AS install_token_hash
+            FROM project_agent_memberships pam
+            JOIN managed_agents ma ON ma.id = pam.managed_agent_id
+            LEFT JOIN connections c ON c.id = COALESCE(pam.connection_id, ma.connection_id)
+            WHERE pam.project_id = ?
+              AND pam.status = 'active'
+            ORDER BY pam.is_primary DESC, pam.updated_at DESC, pam.joined_at DESC
+            LIMIT 1
+            """,
+            (project_id,),
+        ).fetchone()
+
+        dispatch_job_id: Optional[str] = None
+        if planning_channel_id and primary_member:
+            member_connection_id = str(primary_member["connection_id"] or "").strip()
+            member_managed_agent_id = str(primary_member["managed_agent_id"] or "").strip()
+            member_membership_id = str(primary_member["project_agent_membership_id"] or "").strip()
+            member_runtime_agent_id = str(primary_member["runtime_agent_id"] or "").strip()
+            has_hub_install_token = bool(str(primary_member["install_token_hash"] or "").strip())
+            if has_hub_install_token and member_connection_id and member_managed_agent_id and member_membership_id:
+                setup_details = _normalize_setup_details(_parse_setup_json(row["setup_json"]))
+                dispatch_job_id = _queue_project_planning_dispatch_job(
+                    conn,
+                    project_id=project_id,
+                    planning_channel_id=planning_channel_id,
+                    connection_id=member_connection_id,
+                    managed_agent_id=member_managed_agent_id,
+                    project_agent_membership_id=member_membership_id,
+                    runtime_agent_id=member_runtime_agent_id,
+                    title=str(row["title"] or ""),
+                    goal=str(row["goal"] or ""),
+                    brief=str(row["brief"] or ""),
+                    setup_details=setup_details,
+                    reason="plan_regenerate",
+                )
+
         conn.execute(
-            "UPDATE projects SET plan_status = ?, plan_updated_at = ? WHERE id = ?",
-            (PLAN_STATUS_GENERATING, now, project_id),
+            "UPDATE projects SET plan_status = ?, plan_updated_at = ?, updated_at = ? WHERE id = ?",
+            (PLAN_STATUS_GENERATING, now, now, project_id),
         )
         conn.commit()
         conn.close()
-        asyncio.create_task(_generate_project_plan(project_id, force=True))
-        await emit(project_id, "project.plan.regenerate_requested", {"project_id": project_id})
+
+        if dispatch_job_id:
+            await emit(
+                project_id,
+                "project.plan.dispatch.queued",
+                {
+                    "project_id": project_id,
+                    "source": "hivee_hub",
+                    "dispatch_job_id": dispatch_job_id,
+                    "reason": "Plan regenerate queued to Hivee Hub runtime lane.",
+                },
+            )
+        else:
+            asyncio.create_task(_generate_project_plan(project_id, force=True))
+            await emit(project_id, "project.plan.regenerate_requested", {"project_id": project_id})
+
         return ProjectPlanOut(
             project_id=project_id,
             status=PLAN_STATUS_GENERATING,
@@ -3297,7 +3689,6 @@ def register_routes(app: FastAPI) -> None:
                     yield "event: ping\ndata: {}\n\n"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
-
 
 
 

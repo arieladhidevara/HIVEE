@@ -52,30 +52,44 @@ def _platform_install_instructions(origin: str, connection_id: str, install_toke
     if not safe_origin:
         safe_origin = "https://hivee.cloud"
 
-    # TODO(hivee-hub-daemon): replace these textual snippets with signed installer manifests.
+    install_repo = str(os.getenv("HIVEE_HUB_INSTALL_REPO") or "https://github.com/arieladhidevara/HIVEE-HUB.git").strip()
+    install_ref = str(os.getenv("HIVEE_HUB_INSTALL_REF") or "").strip()
+    install_subdir = str(os.getenv("HIVEE_HUB_INSTALL_SUBDIR") or "").strip().strip("/")
+    install_target = install_repo if install_repo.startswith("git+") else f"git+{install_repo}"
+    if install_ref:
+        install_target = f"{install_target}@{install_ref}"
+    if install_subdir and "#subdirectory=" not in install_target:
+        install_target = f"{install_target}#subdirectory={install_subdir}"
+
+    # TODO(hivee-hub-daemon): replace these snippets with signed installer manifests.
     linux_cmd = (
-        "python -m pip install hivee-hub && "
+        f"python3 -m pip install --upgrade \"{install_target}\" && "
         f"hivee-hub connect --cloud-url \"{safe_origin}\" --connection-id \"{connection_id}\" "
-        f"--install-token \"{install_token}\" --runtime {CONNECTION_RUNTIME_OPENCLAW}"
+        f"--install-token \"{install_token}\" --runtime {CONNECTION_RUNTIME_OPENCLAW} "
+        "--openclaw-base-url \"<openclaw-base-url>\" --openclaw-api-key \"<openclaw-api-key>\""
     )
     mac_cmd = linux_cmd
     windows_cmd = (
-        "py -m pip install hivee-hub; "
+        f"py -m pip install --upgrade \"{install_target}\"; "
         f"hivee-hub connect --cloud-url \"{safe_origin}\" --connection-id \"{connection_id}\" "
-        f"--install-token \"{install_token}\" --runtime {CONNECTION_RUNTIME_OPENCLAW}"
+        f"--install-token \"{install_token}\" --runtime {CONNECTION_RUNTIME_OPENCLAW} "
+        "--openclaw-base-url \"<openclaw-base-url>\" --openclaw-api-key \"<openclaw-api-key>\""
     )
     docker_cmd = (
-        "docker run --rm "
+        "docker run -d --name hivee-hub --restart unless-stopped "
         f"-e HIVEE_CLOUD_URL=\"{safe_origin}\" "
         f"-e HIVEE_CONNECTION_ID=\"{connection_id}\" "
         f"-e HIVEE_INSTALL_TOKEN=\"{install_token}\" "
         "-e HIVEE_RUNTIME_TYPE=\"openclaw\" "
-        "ghcr.io/hiveecloud/hivee-hub:latest"
+        "-e OPENCLAW_BASE_URL=\"<openclaw-base-url>\" "
+        "-e OPENCLAW_API_KEY=\"<openclaw-api-key>\" "
+        "python:3.11-slim "
+        f"sh -lc \"pip install --no-cache-dir '{install_target}' && hivee-hub run\""
     )
     concept = (
         "Install Hivee Hub on the machine where your runtime is available. "
         "Hub connects outward to Hivee Cloud and discovers local runtime agents. "
-        "Then it syncs managed agent cards and heartbeats back to this connection."
+        "Set OpenClaw URL/API key for discovery, then Hub syncs managed agent cards and heartbeats back to this connection."
     )
     return {
         "concept": concept,
@@ -148,6 +162,65 @@ def _require_hub_connection_auth(
     return row
 
 
+
+def _claim_runtime_dispatch_job(
+    conn: sqlite3.Connection,
+    *,
+    connection_id: str,
+    stale_after_sec: int = 120,
+) -> Optional[sqlite3.Row]:
+    now = int(time.time())
+    stale_before = now - max(30, min(int(stale_after_sec or 120), 3600))
+    row = conn.execute(
+        """
+        SELECT id, connection_id, project_id, channel_id, task_id,
+               managed_agent_id, project_agent_membership_id, runtime_agent_id,
+               runtime_session_key, prompt_text, status,
+               created_at, claimed_at, completed_at, updated_at
+        FROM runtime_dispatch_jobs
+        WHERE connection_id = ?
+          AND (
+                status = ?
+                OR (status = ? AND COALESCE(claimed_at, 0) < ?)
+              )
+        ORDER BY created_at ASC
+        LIMIT 1
+        """,
+        (
+            connection_id,
+            RUNTIME_DISPATCH_STATUS_PENDING,
+            RUNTIME_DISPATCH_STATUS_CLAIMED,
+            stale_before,
+        ),
+    ).fetchone()
+    if not row:
+        return None
+
+    conn.execute(
+        """
+        UPDATE runtime_dispatch_jobs
+        SET status = ?, claimed_at = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            RUNTIME_DISPATCH_STATUS_CLAIMED,
+            now,
+            now,
+            str(row["id"]),
+        ),
+    )
+    return conn.execute(
+        """
+        SELECT id, connection_id, project_id, channel_id, task_id,
+               managed_agent_id, project_agent_membership_id, runtime_agent_id,
+               runtime_session_key, prompt_text, status,
+               created_at, claimed_at, completed_at, updated_at
+        FROM runtime_dispatch_jobs
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (str(row["id"]),),
+    ).fetchone()
 def register_routes(app: FastAPI) -> None:
     @app.post("/api/connections")
     async def create_connection(request: Request, payload: ConnectionCreateIn):
@@ -659,4 +732,346 @@ def register_routes(app: FastAPI) -> None:
             "agent_card_version": card_version,
             "updated_at": now,
         }
+
+    @app.post("/api/hub/runtime/jobs/claim")
+    async def hub_runtime_job_claim(payload: HubRuntimeJobClaimIn):
+        connection_id = str(payload.connection_id or "").strip()
+        if not connection_id:
+            raise HTTPException(400, "connection_id is required")
+        max_wait_sec = max(0, min(int(payload.max_wait_sec or 0), 20))
+        deadline = time.time() + max_wait_sec
+
+        job_row: Optional[sqlite3.Row] = None
+        while True:
+            conn = db()
+            _require_hub_connection_auth(
+                conn,
+                connection_id=connection_id,
+                install_token=str(payload.install_token),
+            )
+            now = int(time.time())
+            conn.execute(
+                "UPDATE connections SET hub_status = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ?",
+                (HUB_STATUS_ONLINE, now, now, connection_id),
+            )
+            job_row = _claim_runtime_dispatch_job(conn, connection_id=connection_id)
+            conn.commit()
+            conn.close()
+
+            if job_row:
+                break
+            if max_wait_sec <= 0 or time.time() >= deadline:
+                break
+            time.sleep(1.0)
+
+        if not job_row:
+            return {"ok": True, "connection_id": connection_id, "job": None}
+
+        return {
+            "ok": True,
+            "connection_id": connection_id,
+            "job": {
+                "id": str(job_row["id"]),
+                "connection_id": str(job_row["connection_id"]),
+                "project_id": str(job_row["project_id"]),
+                "channel_id": str(job_row["channel_id"] or "") or None,
+                "task_id": str(job_row["task_id"] or "") or None,
+                "managed_agent_id": str(job_row["managed_agent_id"] or "") or None,
+                "project_agent_membership_id": str(job_row["project_agent_membership_id"] or "") or None,
+                "runtime_agent_id": str(job_row["runtime_agent_id"] or "") or None,
+                "runtime_session_key": str(job_row["runtime_session_key"] or ""),
+                "prompt_text": str(job_row["prompt_text"] or ""),
+                "status": str(job_row["status"] or RUNTIME_DISPATCH_STATUS_CLAIMED),
+                "created_at": _to_int(job_row["created_at"]),
+                "claimed_at": _to_int(job_row["claimed_at"]),
+            },
+        }
+
+    @app.post("/api/hub/runtime/jobs/{job_id}/complete")
+    async def hub_runtime_job_complete(job_id: str, payload: HubRuntimeJobCompleteIn):
+        connection_id = str(payload.connection_id or "").strip()
+        if not connection_id:
+            raise HTTPException(400, "connection_id is required")
+        next_status = str(payload.status or RUNTIME_DISPATCH_STATUS_COMPLETED).strip().lower()
+        if next_status not in {RUNTIME_DISPATCH_STATUS_COMPLETED, RUNTIME_DISPATCH_STATUS_FAILED}:
+            raise HTTPException(400, "status must be completed or failed")
+
+        conn = db()
+        _require_hub_connection_auth(
+            conn,
+            connection_id=connection_id,
+            install_token=str(payload.install_token),
+        )
+        row = conn.execute(
+            """
+            SELECT id, connection_id, project_id, channel_id, task_id,
+                   managed_agent_id, project_agent_membership_id, runtime_agent_id,
+                   runtime_session_key, status, response_message_id
+            FROM runtime_dispatch_jobs
+            WHERE id = ? AND connection_id = ?
+            LIMIT 1
+            """,
+            (job_id, connection_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "Runtime dispatch job not found")
+
+        current_status = str(row["status"] or "").strip().lower()
+        if current_status in {RUNTIME_DISPATCH_STATUS_COMPLETED, RUNTIME_DISPATCH_STATUS_FAILED}:
+            now = int(time.time())
+            conn.execute(
+                "UPDATE connections SET hub_status = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ?",
+                (HUB_STATUS_ONLINE, now, now, connection_id),
+            )
+            conn.commit()
+            conn.close()
+            return {
+                "ok": True,
+                "job_id": job_id,
+                "status": current_status,
+                "response_message_id": str(row["response_message_id"] or "") or None,
+                "idempotent": True,
+            }
+
+        now = int(time.time())
+        response_message_id: Optional[str] = None
+        project_id = str(row["project_id"])
+        task_id = str(row["task_id"] or "").strip() or None
+        channel_id = str(row["channel_id"] or "").strip() or None
+        runtime_agent_id = str(row["runtime_agent_id"] or "").strip() or None
+        managed_agent_id = str(row["managed_agent_id"] or "").strip() or None
+        project_agent_membership_id = str(row["project_agent_membership_id"] or "").strip() or None
+        runtime_session_key = str(row["runtime_session_key"] or "").strip()
+        is_planning_channel = False
+        if channel_id:
+            channel_row = conn.execute(
+                """
+                SELECT id, name
+                FROM project_channels
+                WHERE id = ? AND project_id = ?
+                LIMIT 1
+                """,
+                (channel_id, project_id),
+            ).fetchone()
+            is_planning_channel = bool(
+                channel_row and str(channel_row["name"] or "").strip().lower() == PROJECT_CHANNEL_PLANNING
+            )
+
+        if next_status == RUNTIME_DISPATCH_STATUS_COMPLETED:
+            reply_text = str(payload.result_text or "").strip()
+            if not reply_text:
+                reply_text = "Acknowledged."
+            response_message_id = new_id("msg")
+            conn.execute(
+                """
+                INSERT INTO project_messages (
+                    id, project_id, channel_id, sender_type, sender_user_id,
+                    sender_agent_membership_id, message_kind, body, task_id, metadata_json, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    response_message_id,
+                    project_id,
+                    channel_id,
+                    "agent",
+                    None,
+                    project_agent_membership_id,
+                    PROJECT_MESSAGE_KIND_CHAT,
+                    reply_text,
+                    task_id,
+                    json.dumps(
+                        {
+                            "dispatch_job_id": str(row["id"]),
+                            "managed_agent_id": managed_agent_id,
+                            "runtime_agent_id": runtime_agent_id,
+                            "runtime_session_key": runtime_session_key,
+                            "source": "hivee_hub",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE runtime_sessions
+                SET last_message_id = ?, updated_at = ?,
+                    summary_md = COALESCE(NULLIF(summary_md, ''), ?)
+                WHERE runtime_session_key = ?
+                """,
+                (
+                    response_message_id,
+                    now,
+                    f"Active lane for {runtime_agent_id or managed_agent_id or 'agent'}",
+                    runtime_session_key,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE runtime_dispatch_jobs
+                SET status = ?, result_text = ?, error_text = NULL,
+                    response_message_id = ?, completed_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    RUNTIME_DISPATCH_STATUS_COMPLETED,
+                    reply_text,
+                    response_message_id,
+                    now,
+                    now,
+                    str(row["id"]),
+                ),
+            )
+            if is_planning_channel:
+                conn.execute(
+                    """
+                    UPDATE projects
+                    SET plan_status = ?, plan_text = ?, plan_updated_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        PLAN_STATUS_AWAITING_APPROVAL,
+                        reply_text[:20000],
+                        now,
+                        now,
+                        project_id,
+                    ),
+                )
+        else:
+            err_text = str(payload.error_text or payload.result_text or "Runtime dispatch failed").strip()[:2000]
+            response_message_id = new_id("msg")
+            if channel_id:
+                conn.execute(
+                    """
+                    INSERT INTO project_messages (
+                        id, project_id, channel_id, sender_type, sender_user_id,
+                        sender_agent_membership_id, message_kind, body, task_id, metadata_json, created_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        response_message_id,
+                        project_id,
+                        channel_id,
+                        "system",
+                        None,
+                        None,
+                        PROJECT_MESSAGE_KIND_EVENT,
+                        "Runtime dispatch failed on Hivee Hub.",
+                        task_id,
+                        json.dumps(
+                            {
+                                "event": "runtime.dispatch.failed",
+                                "dispatch_job_id": str(row["id"]),
+                                "managed_agent_id": managed_agent_id,
+                                "runtime_agent_id": runtime_agent_id,
+                                "runtime_session_key": runtime_session_key,
+                                "error": err_text,
+                                "source": "hivee_hub",
+                            },
+                            ensure_ascii=False,
+                        ),
+                        now,
+                    ),
+                )
+            conn.execute(
+                """
+                UPDATE runtime_dispatch_jobs
+                SET status = ?, result_text = NULL, error_text = ?,
+                    response_message_id = ?, completed_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    RUNTIME_DISPATCH_STATUS_FAILED,
+                    err_text,
+                    response_message_id if channel_id else None,
+                    now,
+                    now,
+                    str(row["id"]),
+                ),
+            )
+            if is_planning_channel:
+                conn.execute(
+                    """
+                    UPDATE projects
+                    SET plan_status = ?, plan_text = ?, plan_updated_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        PLAN_STATUS_FAILED,
+                        err_text[:20000],
+                        now,
+                        now,
+                        project_id,
+                    ),
+                )
+
+        if channel_id:
+            conn.execute(
+                "UPDATE channel_memory SET updated_at = ? WHERE channel_id = ?",
+                (now, channel_id),
+            )
+        conn.execute(
+            "UPDATE connections SET hub_status = ?, last_heartbeat_at = ?, updated_at = ? WHERE id = ?",
+            (HUB_STATUS_ONLINE, now, now, connection_id),
+        )
+        conn.commit()
+        conn.close()
+
+        await emit(
+            project_id,
+            "project.runtime.job.completed",
+            {
+                "job_id": str(row["id"]),
+                "status": next_status,
+                "connection_id": connection_id,
+                "managed_agent_id": managed_agent_id,
+                "runtime_agent_id": runtime_agent_id,
+                "response_message_id": response_message_id,
+            },
+        )
+        if channel_id:
+            await emit(
+                project_id,
+                "project.channel.message",
+                {
+                    "channel_id": channel_id,
+                    "sender_type": "agent" if next_status == RUNTIME_DISPATCH_STATUS_COMPLETED else "system",
+                    "runtime_agent_id": runtime_agent_id,
+                    "managed_agent_id": managed_agent_id,
+                },
+            )
+        if is_planning_channel:
+            if next_status == RUNTIME_DISPATCH_STATUS_COMPLETED:
+                await emit(
+                    project_id,
+                    "project.plan.ready",
+                    {
+                        "project_id": project_id,
+                        "status": PLAN_STATUS_AWAITING_APPROVAL,
+                        "dispatch_job_id": str(row["id"]),
+                        "source": "hivee_hub",
+                    },
+                )
+            else:
+                await emit(
+                    project_id,
+                    "project.plan.failed",
+                    {
+                        "project_id": project_id,
+                        "dispatch_job_id": str(row["id"]),
+                        "source": "hivee_hub",
+                    },
+                )
+
+        return {
+            "ok": True,
+            "job_id": str(row["id"]),
+            "status": next_status,
+            "response_message_id": response_message_id,
+            "completed_at": now,
+        }
+
+
+
 

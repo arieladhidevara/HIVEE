@@ -214,7 +214,7 @@
               <input id="oc_key" placeholder="openclaw">
             <div class="setup-nav-row">
               <button id="btn_setup_previous" class="secondary" type="button">Continue Home</button>
-              <button id="btn_connect" type="submit">Join</button>
+              <button id="btn_connect" type="submit">Create Connection</button>
             </div>
           </form>
           <p id="setup_msg" class="helper"></p>
@@ -620,6 +620,39 @@
             <div class="summary-grid">
               <section class="summary-card">
                 <div class="title-row">
+                  <h4>Connections</h4>
+                </div>
+                <p class="helper">Create connection, install Hivee Hub, then sync discovered runtime agents.</p>
+
+                <div class="stack">
+                  <label>New Connection Label</label>
+                  <div class="action-row">
+                    <input id="agents_conn_label" placeholder="My Runtime Host">
+                    <button id="btn_agents_create_connection" type="button">Create Connection</button>
+                  </div>
+
+                  <label>Connection</label>
+                  <div class="action-row">
+                    <select id="agents_connections_select"></select>
+                    <button id="btn_agents_connection_load" type="button" class="secondary">Load</button>
+                    <button id="btn_agents_connection_rotate" type="button" class="secondary">Rotate Token</button>
+                  </div>
+                  <div class="action-row">
+                    <button id="btn_agents_refresh_discovery" type="button" class="secondary">Refresh Discovery</button>
+                    <button id="btn_agents_open_setup" type="button" class="secondary">Open Setup Page</button>
+                  </div>
+
+                  <label>Install Instructions</label>
+                  <textarea id="agents_install_instructions" readonly></textarea>
+
+                  <label>Discovered Agents</label>
+                  <div id="agents_connection_agents_list" class="summary-agents-grid"></div>
+                  <p id="agents_connection_msg" class="helper"></p>
+                </div>
+              </section>
+
+              <section class="summary-card">
+                <div class="title-row">
                   <h4>Managed Agents</h4>
                 </div>
                 <p class="helper">All agents in your account with mascot identity, status, and specialization metadata.</p>
@@ -647,7 +680,7 @@
                   </div>
                   <div class="config-card">
                     <div class="config-row"><span>Name</span><strong id="config_conn_name">-</strong></div>
-                    <div class="config-row"><span>Base URL</span><code id="config_conn_url">-</code></div>
+                    <div class="config-row"><span>Runtime Host</span><code id="config_conn_url">-</code></div>
                     <div class="config-row"><span>Status</span><span id="config_conn_status" class="status-pill disconnected">Disconnected</span></div>
                   </div>
                   <p id="config_msg" class="helper"></p>
@@ -879,6 +912,25 @@
           <div class="title-row">
             <h3 id="wizard_title">New Project</h3>
             <button id="btn_close_wizard" class="secondary" type="button">Close</button>
+          </div>
+
+          <div id="wizard_entry_mode_row" class="wizard-mode-grid">
+            <button id="btn_wizard_entry_create" class="wizard-mode active" type="button">
+              <strong>Create New</strong>
+              <span>Start a new project from your goal.</span>
+            </button>
+            <button id="btn_wizard_entry_join" class="wizard-mode" type="button">
+              <strong>Join Project</strong>
+              <span>Join an existing project with API key.</span>
+            </button>
+          </div>
+
+          <div id="wizard_join_block" class="hidden stack">
+            <label>Project API Key</label>
+            <input id="wizard_join_api_key" placeholder="hivee_prj_..." autocomplete="off">
+            <div class="action-row">
+              <button id="btn_wizard_join_now" type="button">Join Project</button>
+            </div>
           </div>
 
           <div id="wizard_step_mode">

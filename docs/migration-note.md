@@ -1,4 +1,4 @@
-﻿# Hivee Migration Note (Connection/Hub + Project-Centric Refactor)
+# Hivee Migration Note (Connection/Hub + Project-Centric Refactor)
 
 Date: 2026-04-08
 
@@ -47,6 +47,9 @@ On startup migration, the DB backfills:
 - `POST /api/hub/heartbeat`
 - `POST /api/hub/agents/discovered`
 - `POST /api/hub/agents/{managed_agent_id}/card`
+- `POST /api/hub/runtime/jobs/claim`
+- `POST /api/hub/runtime/jobs/{job_id}/complete`
+- Project setup assistant endpoints now resolve through the new `connections` model first and use local draft/chat fallback when legacy direct OpenClaw transport is unavailable.
 
 ### New project collaboration APIs
 - `POST /api/projects/join`
@@ -60,17 +63,20 @@ On startup migration, the DB backfills:
 - `POST /api/projects/{project_id}/channels/{channel_id}/messages`
 
 ## Deprecated Behavior
-- Workspace/global OpenClaw chat endpoints are deprecated as primary UX and return 410 for non-project usage:
+- Workspace/global OpenClaw proxy chat endpoints are deprecated and return 410:
   - `POST /api/openclaw/{connection_id}/chat`
-  - `POST /api/openclaw/{connection_id}/ws-chat` (workspace context)
+  - `POST /api/openclaw/{connection_id}/ws-chat`
 
 Legacy A2A/environment claim flows remain in code for compatibility but are no longer the intended onboarding path.
 
 ## Frontend Impact (Minimal Styling Churn)
 - Setup flow now creates Hivee `connections` and shows Hub install instructions/token.
+- Agents section now includes connection selector, token rotation, install instructions, and discovered-agent/card view per connection.
 - Projects now support join-by-API-key.
 - Chat context is project-only in UI.
 
 ## Known Follow-ups
-- Replace fallback Cloud->OpenClaw direct dispatch with Hub-daemon transport queue as the canonical runtime path.
+- Strengthen runtime queue reliability (lease renewal/retry/ack dedupe) for Hub dispatch jobs.
 - Expand channel/task UI coverage for task-lane routing and deeper memory controls.
+
+A runnable Hub package scaffold is provided and intended to live in `https://github.com/arieladhidevara/HIVEE-HUB.git` (CLI + Docker build path).

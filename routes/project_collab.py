@@ -526,52 +526,97 @@ async def _dispatch_project_channel_message(
     )
 
     dispatch_ok = False
+    dispatch_queued = False
     dispatch_error: Optional[str] = None
+    dispatch_job_id: Optional[str] = None
     reply_text = ""
 
-    # TODO(hivee-hub-daemon): move runtime dispatch to hub transport queue/webhook so
-    # Hivee Cloud never calls runtime adapters directly in production.
     if connection_id:
         c_row = conn.execute(
             """
-            SELECT id, user_id, legacy_openclaw_connection_id
+            SELECT id, user_id, legacy_openclaw_connection_id, install_token_hash, hub_status
             FROM connections
             WHERE id = ?
             LIMIT 1
             """,
             (connection_id,),
         ).fetchone()
-        legacy_connection_id = str((c_row["legacy_openclaw_connection_id"] if c_row else "") or "").strip() or connection_id
-
-        oc_row = conn.execute(
-            """
-            SELECT id, user_id, base_url, api_key, api_key_secret_id
-            FROM openclaw_connections
-            WHERE id = ?
-            LIMIT 1
-            """,
-            (legacy_connection_id,),
-        ).fetchone()
-        if oc_row:
-            adapter_user_id = str(oc_row["user_id"] or pam_row["managed_user_id"] or user_id).strip()
-            api_key = _resolve_connection_api_key_from_row(conn, user_id=adapter_user_id, row=oc_row)
-            res = await openclaw_ws_chat(
-                base_url=str(oc_row["base_url"]),
-                api_key=api_key,
-                message=hydrated_prompt,
-                agent_id=runtime_agent_id,
-                session_key=str(lane["runtime_session_key"]),
-                timeout_sec=25,
-            )
-            if res.get("ok"):
-                dispatch_ok = True
-                reply_text = str(res.get("text") or "").strip()
-                if not reply_text:
-                    reply_text = "Acknowledged."
-            else:
-                dispatch_error = detail_to_text(res.get("error") or res.get("details") or "runtime dispatch failed")[:1000]
+        if not c_row:
+            dispatch_error = "Connection not found for selected managed agent"
         else:
-            dispatch_error = "No OpenClaw adapter row available yet for this connection"
+            has_hub_install_token = bool(str(c_row["install_token_hash"] or "").strip())
+            hub_status = str(c_row["hub_status"] or "").strip().lower()
+            if has_hub_install_token:
+                now_dispatch = int(time.time())
+                dispatch_job_id = new_id("rjob")
+                conn.execute(
+                    """
+                    INSERT INTO runtime_dispatch_jobs (
+                        id, connection_id, project_id, channel_id, task_id,
+                        managed_agent_id, project_agent_membership_id, runtime_agent_id,
+                        runtime_session_key, prompt_text, status,
+                        created_at, claimed_at, completed_at, updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        dispatch_job_id,
+                        connection_id,
+                        str(project_row["id"]),
+                        str(channel_row["id"]),
+                        str(payload.task_id or "").strip() or None,
+                        managed_agent_id,
+                        str(pam_row["project_agent_membership_id"]),
+                        runtime_agent_id,
+                        str(lane["runtime_session_key"]),
+                        hydrated_prompt,
+                        RUNTIME_DISPATCH_STATUS_PENDING,
+                        now_dispatch,
+                        None,
+                        None,
+                        now_dispatch,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE runtime_sessions SET updated_at = ? WHERE id = ?",
+                    (now_dispatch, str(lane["id"])),
+                )
+                dispatch_queued = True
+                dispatch_error = (
+                    "Queued to Hivee Hub runtime lane."
+                    if hub_status == HUB_STATUS_ONLINE
+                    else "Queued to Hivee Hub. Waiting for hub heartbeat."
+                )
+            else:
+                legacy_connection_id = str(c_row["legacy_openclaw_connection_id"] or "").strip() or connection_id
+                oc_row = conn.execute(
+                    """
+                    SELECT id, user_id, base_url, api_key, api_key_secret_id
+                    FROM openclaw_connections
+                    WHERE id = ?
+                    LIMIT 1
+                    """,
+                    (legacy_connection_id,),
+                ).fetchone()
+                if oc_row:
+                    adapter_user_id = str(oc_row["user_id"] or pam_row["managed_user_id"] or user_id).strip()
+                    api_key = _resolve_connection_api_key_from_row(conn, user_id=adapter_user_id, row=oc_row)
+                    res = await openclaw_ws_chat(
+                        base_url=str(oc_row["base_url"]),
+                        api_key=api_key,
+                        message=hydrated_prompt,
+                        agent_id=runtime_agent_id,
+                        session_key=str(lane["runtime_session_key"]),
+                        timeout_sec=25,
+                    )
+                    if res.get("ok"):
+                        dispatch_ok = True
+                        reply_text = str(res.get("text") or "").strip()
+                        if not reply_text:
+                            reply_text = "Acknowledged."
+                    else:
+                        dispatch_error = detail_to_text(res.get("error") or res.get("details") or "runtime dispatch failed")[:1000]
+                else:
+                    dispatch_error = "No OpenClaw adapter row available yet for this connection"
     else:
         dispatch_error = "No connection is attached for the selected managed agent"
 
@@ -618,7 +663,7 @@ async def _dispatch_project_channel_message(
                 str(lane["id"]),
             ),
         )
-    else:
+    elif (not dispatch_queued):
         conn.execute(
             """
             INSERT INTO project_messages (
@@ -663,6 +708,8 @@ async def _dispatch_project_channel_message(
         "target_managed_agent_id": managed_agent_id,
         "target_runtime_agent_id": runtime_agent_id,
         "dispatched": dispatch_ok,
+        "queued": dispatch_queued,
+        "dispatch_job_id": dispatch_job_id,
         "dispatch_error": dispatch_error,
     }
 

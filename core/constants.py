@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import hashlib
 import json
 import mimetypes
@@ -138,6 +138,16 @@ PROJECT_CREATED_VIA_NEW = "new"
 PROJECT_CREATED_VIA_JOINED = "joined"
 PROJECT_MESSAGE_KIND_CHAT = "chat"
 PROJECT_MESSAGE_KIND_EVENT = "event"
+RUNTIME_DISPATCH_STATUS_PENDING = "pending"
+RUNTIME_DISPATCH_STATUS_CLAIMED = "claimed"
+RUNTIME_DISPATCH_STATUS_COMPLETED = "completed"
+RUNTIME_DISPATCH_STATUS_FAILED = "failed"
+RUNTIME_DISPATCH_STATUSES = (
+    RUNTIME_DISPATCH_STATUS_PENDING,
+    RUNTIME_DISPATCH_STATUS_CLAIMED,
+    RUNTIME_DISPATCH_STATUS_COMPLETED,
+    RUNTIME_DISPATCH_STATUS_FAILED,
+)
 PROJECT_INSTALL_TOKEN_DEFAULT_TTL_SEC = 60 * 60 * 24 * 7
 PROJECT_API_KEY_PREFIX = "hivee_prj"
 TASK_STATUS_TODO = "todo"
@@ -206,4 +216,5 @@ After collecting answers, summarize and ask for confirmation before starting the
 
 
 __all__ = [name for name in globals() if not name.startswith('__')]
+
 

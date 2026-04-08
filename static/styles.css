@@ -1720,6 +1720,31 @@ label {
   padding: 14px;
   background: rgba(14, 17, 26, 0.45);
 }
+#center_agents .action-row {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+#center_agents .action-row input,
+#center_agents .action-row select {
+  flex: 1 1 220px;
+}
+#agents_install_instructions {
+  min-height: 220px;
+  resize: vertical;
+}
+.agent-card-pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  font-size: 11px;
+}
 .summary-agents-grid {
   display: grid;
   gap: 10px;
