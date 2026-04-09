@@ -4966,7 +4966,7 @@ async function sendChatPrototype() {
   $("btn_chat_send").disabled = true;
 
   try {
-    const res = await api(`/api/openclaw/${activeConnectionId}/ws-chat`, "POST", payload);
+    const res = await api(`/api/openclaw/${activeConnectionId}/chat-runtime`, "POST", payload);
     const shown = res.text || detailToText(res.frames) || "(no text response yet)";
     const workspaceAgentId = workspaceMainChatAgent()?.id || "";
     const fallbackAgentId = usingProjectContext ? (selectedPrimaryAgentId || "") : workspaceAgentId;
@@ -4977,7 +4977,7 @@ async function sendChatPrototype() {
       const role = usingProjectContext ? "agent" : "assistant";
       const meta = usingProjectContext
         ? (resolvedAgent ? resolvedAgent.name : (resolvedAgentId || "agent"))
-        : `${res.transport || "ws"} via ${res.path || "gateway"}`;
+        : `${res.transport || "http"} via ${res.path || "gateway"}`;
       appendChatMessage(role, shown, meta, { agentId: resolvedAgentId });
     }
     const savedFiles = Array.isArray(res?.saved_files) ? res.saved_files : [];

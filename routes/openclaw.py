@@ -14,7 +14,7 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(400, {"message": "Could not verify OpenClaw health", "details": health})
 
         # Health passed — save the connection before attempting bootstrap so a
-        # temporarily-unavailable WS/agent endpoint doesn't block the save.
+        # temporarily-unavailable agent endpoint doesn't block the save.
         conn = db()
         conn_id = new_id("oc")
         conn.execute(
@@ -39,7 +39,7 @@ def register_routes(app: FastAPI) -> None:
             main_agent_id=bootstrap.get("main_agent_id"),
             main_agent_name=bootstrap.get("main_agent_name"),
             bootstrap_status=bs_status,
-            bootstrap_error=None if bootstrap_ok else detail_to_text(bootstrap.get("error") or bootstrap.get("ws_result")),
+            bootstrap_error=None if bootstrap_ok else detail_to_text(bootstrap.get("error")),
             workspace_tree=bootstrap.get("workspace_tree"),
             workspace_root=str(bootstrap.get("workspace_root") or HIVEE_ROOT),
             templates_root=str(bootstrap.get("templates_root") or HIVEE_TEMPLATES_ROOT),
@@ -84,13 +84,12 @@ def register_routes(app: FastAPI) -> None:
                 )
             else:
                 response["warning"] = (
-                    "Connected, but bootstrap failed. Fix OpenClaw WS/HTTP config and retry bootstrap "
+                    "Connected, but bootstrap failed. Fix OpenClaw HTTP endpoint config and retry bootstrap "
                     f"via POST /api/openclaw/{conn_id}/bootstrap."
                 )
                 response["hint"] = (
                     bootstrap.get("hint")
-                    or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow "
-                       "HTTP agent listing, or ensure the WS gateway is accessible without device-identity pairing."
+                    or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow HTTP chat and agent listing."
                 )
         return response
     
@@ -122,7 +121,7 @@ def register_routes(app: FastAPI) -> None:
             main_agent_id=bootstrap.get("main_agent_id"),
             main_agent_name=bootstrap.get("main_agent_name"),
             bootstrap_status=_bs_status,
-            bootstrap_error=None if _bs_ok else detail_to_text(bootstrap.get("error") or bootstrap.get("ws_result")),
+            bootstrap_error=None if _bs_ok else detail_to_text(bootstrap.get("error")),
             workspace_tree=bootstrap.get("workspace_tree"),
             workspace_root=str(bootstrap.get("workspace_root") or HIVEE_ROOT),
             templates_root=str(bootstrap.get("templates_root") or HIVEE_TEMPLATES_ROOT),
@@ -183,7 +182,7 @@ def register_routes(app: FastAPI) -> None:
                     "token_missing_operator_write" if error_code == "missing_operator_write"
                     else "agent_discovery_failed"
                 ),
-                "warning": res.get("error") or "Agent listing unavailable; WS requires device identity and REST agent endpoints are not exposed.",
+                "warning": res.get("error") or "Agent listing unavailable; REST agent endpoints are not exposed.",
                 "hint": res.get("hint") or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow HTTP agent listing.",
             }
 
@@ -289,8 +288,8 @@ def register_routes(app: FastAPI) -> None:
         res["workspace_root"] = workspace_root
         return res
     
-    @app.post("/api/openclaw/{connection_id}/ws-chat")
-    async def chat_openclaw_ws(request: Request, connection_id: str, payload: OpenClawWsChatIn):
+    @app.post("/api/openclaw/{connection_id}/chat-runtime")
+    async def chat_openclaw_runtime(request: Request, connection_id: str, payload: OpenClawWsChatIn):
         session_user: Optional[str] = None
         try:
             session_user = get_optional_session_user(request)

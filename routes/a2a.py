@@ -49,9 +49,9 @@ def register_routes(app: FastAPI) -> None:
         if not ws:
             return None
         lowered = ws.lower()
-        if lowered.startswith("ws://") or lowered.startswith("wss://") or lowered.startswith("http://") or lowered.startswith("https://"):
+        if lowered.startswith("http://") or lowered.startswith("https://"):
             return ws
-        raise HTTPException(400, "openclaw_ws_url must start with ws://, wss://, http://, or https://")
+        raise HTTPException(400, "openclaw_ws_url must start with http:// or https://")
 
     def _normalize_openclaw_stage_source(raw_value: Any) -> Optional[str]:
         source = str(raw_value or "").strip()
