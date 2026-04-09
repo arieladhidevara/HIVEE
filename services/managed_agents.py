@@ -686,12 +686,39 @@ def _is_openclaw_login_html(payload: Optional[Dict[str, Any]]) -> bool:
     marker = raw.lower()
     return ("welcome to openclaw" in marker) and ('action="/login"' in marker or "gateway token" in marker)
 
+
+def _is_openclaw_starting_html(payload: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    raw = payload.get("raw")
+    if not isinstance(raw, str):
+        return False
+    marker = raw.lower()
+    return (
+        "starting openclaw" in marker
+        or "please wait while we set up your environment" in marker
+        or ('id="log-output"' in marker and "/api/logs" in marker)
+    )
+
+
 def _response_looks_like_login_html(resp: httpx.Response) -> bool:
     ctype = (resp.headers.get("content-type") or "").lower()
     if "text/html" not in ctype:
         return False
     text = (resp.text or "").lower()
     return ("welcome to openclaw" in text) and ('action="/login"' in text or "gateway token" in text)
+
+
+def _response_looks_like_starting_html(resp: httpx.Response) -> bool:
+    ctype = (resp.headers.get("content-type") or "").lower()
+    if "text/html" not in ctype:
+        return False
+    text = (resp.text or "").lower()
+    return (
+        "starting openclaw" in text
+        or "please wait while we set up your environment" in text
+        or ('id="log-output"' in text and "/api/logs" in text)
+    )
 
 def _safe_json_response(resp: httpx.Response) -> Tuple[Optional[Any], Optional[str]]:
     text = (resp.text or "").strip()
@@ -829,6 +856,14 @@ async def openclaw_health(base_url: str, api_key: str) -> Dict[str, Any]:
                     "path": p,
                     "status": r.status_code,
                 }
+            if _response_looks_like_starting_html(r):
+                return {
+                    "ok": False,
+                    "error": "OpenClaw gateway is still starting. API routes are not ready yet.",
+                    "hint": "Wait for OpenClaw startup to finish, then retry /v1/models and chat endpoints.",
+                    "path": p,
+                    "status": r.status_code,
+                }
             if r.status_code == 401:
                 return {
                     "ok": False,
@@ -849,6 +884,14 @@ async def openclaw_health(base_url: str, api_key: str) -> Dict[str, Any]:
                 return {
                     "ok": False,
                     "error": "OpenClaw returned login page. Use the correct OpenClaw gateway token in api_key.",
+                    "path": p,
+                    "status": r.status_code,
+                }
+            if _is_openclaw_starting_html(payload if isinstance(payload, dict) else {"raw": str(payload)[:2000]}):
+                return {
+                    "ok": False,
+                    "error": "OpenClaw gateway is still starting. API routes are not ready yet.",
+                    "hint": "Wait for OpenClaw startup to finish, then retry /v1/models and chat endpoints.",
                     "path": p,
                     "status": r.status_code,
                 }
@@ -884,6 +927,14 @@ async def openclaw_health(base_url: str, api_key: str) -> Dict[str, Any]:
                     "path": p,
                     "status": r.status_code,
                 }
+            if _response_looks_like_starting_html(r):
+                return {
+                    "ok": False,
+                    "error": "OpenClaw gateway is still starting. API routes are not ready yet.",
+                    "hint": "Wait for OpenClaw startup to finish, then retry /v1/models and chat endpoints.",
+                    "path": p,
+                    "status": r.status_code,
+                }
             if r.status_code == 401:
                 return {
                     "ok": False,
@@ -901,6 +952,14 @@ async def openclaw_health(base_url: str, api_key: str) -> Dict[str, Any]:
                 return {
                     "ok": False,
                     "error": "OpenClaw returned login page. Use the correct OpenClaw gateway token in api_key.",
+                    "path": p,
+                    "status": r.status_code,
+                }
+            if _is_openclaw_starting_html(payload if isinstance(payload, dict) else {"raw": str(payload)[:2000]}):
+                return {
+                    "ok": False,
+                    "error": "OpenClaw gateway is still starting. API routes are not ready yet.",
+                    "hint": "Wait for OpenClaw startup to finish, then retry /v1/models and chat endpoints.",
                     "path": p,
                     "status": r.status_code,
                 }
@@ -944,6 +1003,13 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
                 r = await _request_openclaw_with_auth(client, "GET", base_url, p, api_key, timeout=15)
                 if _response_looks_like_login_html(r):
                     return {"ok": False, "error": "OpenClaw returned login page. Gateway token is invalid or missing.", "path": p}
+                if _response_looks_like_starting_html(r):
+                    return {
+                        "ok": False,
+                        "error": "OpenClaw gateway is still starting. API routes are not ready yet.",
+                        "hint": "Wait until startup completes in OpenClaw, then retry listing agents.",
+                        "path": p,
+                    }
                 if r.status_code == 401:
                     return {"ok": False, "error": "Unauthorized (401). Token/API key invalid.", "path": p}
                 if r.status_code == 403:
@@ -1188,6 +1254,14 @@ async def openclaw_chat(
                     )
                     if _response_looks_like_login_html(r):
                         return {"ok": False, "error": "OpenClaw returned login page. Gateway token is invalid or missing.", "path": p}
+                    if _response_looks_like_starting_html(r):
+                        return {
+                            "ok": False,
+                            "error": "OpenClaw gateway is still starting. API routes are not ready yet.",
+                            "error_code": "gateway_starting",
+                            "hint": "Wait until startup completes in OpenClaw, then retry chat.",
+                            "path": p,
+                        }
                     if r.status_code == 401:
                         return {"ok": False, "error": "Unauthorized (401). Token/API key invalid.", "path": p}
                     if r.status_code == 403:
@@ -2553,3 +2627,4 @@ def _read_project_execution_state(project_id: str) -> Tuple[str, int]:
     return _coerce_execution_status(row["execution_status"]), _clamp_progress(row["progress_pct"])
 
 __all__ = [name for name in globals() if not name.startswith('__')]
+
