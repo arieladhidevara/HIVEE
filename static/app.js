@@ -7068,7 +7068,20 @@ async function loadSummaryAgents({ force = false } = {}) {
   renderSummaryAgents();
 
   try {
-    const listed = await api("/api/a2a/agents");
+    const activeConn = String(activeConnectionId || "").trim();
+
+    // Keep the managed-agent index fresh for the active connection so the
+    // Agents tab stays in sync with Chat/Manage Agents live discovery.
+    if (activeConn) {
+      try {
+        await api(`/api/openclaw/${encodeURIComponent(activeConn)}/agents`);
+      } catch {
+        // Non-fatal: fallback to currently indexed managed agents below.
+      }
+    }
+
+    const query = activeConn ? `?connection_id=${encodeURIComponent(activeConn)}` : "";
+    const listed = await api(`/api/a2a/agents${query}`);
     const items = Array.isArray(listed?.agents) ? listed.agents : [];
 
     const enriched = await Promise.all(items.map(async (agent) => {
@@ -9437,4 +9450,3 @@ if (oauthError) {
       setView("auth");
     });
 })();
-
