@@ -1066,6 +1066,56 @@ def _is_missing_operator_write_error(text: str) -> bool:
     low = text.lower()
     return "missing scope" in low and "operator.write" in low
 
+
+def _candidate_openclaw_model_hints(agent_id: Optional[str]) -> List[str]:
+    raw = str(agent_id or "").strip()
+    hints: List[str] = []
+
+    def _push(value: str) -> None:
+        item = str(value or "").strip()
+        if not item or item in hints:
+            return
+        hints.append(item)
+
+    if not raw:
+        _push("openclaw/default")
+        _push("openclaw:default")
+        _push("openclaw")
+        return hints
+
+    _push(raw)
+    if raw.startswith("openclaw/"):
+        suffix = raw.split("/", 1)[1].strip()
+        if suffix:
+            _push(f"openclaw:{suffix}")
+    elif raw.startswith("openclaw:"):
+        suffix = raw.split(":", 1)[1].strip()
+        if suffix:
+            _push(f"openclaw/{suffix}")
+    else:
+        _push(f"openclaw/{raw}")
+        _push(f"openclaw:{raw}")
+    return hints
+
+
+def _is_model_resolution_error(status_code: int, raw_text: str) -> bool:
+    if status_code != 400:
+        return False
+    low = str(raw_text or "").lower()
+    if "model" not in low:
+        return False
+    return any(
+        marker in low
+        for marker in [
+            "not found",
+            "unknown",
+            "invalid model",
+            "unsupported model",
+            "does not exist",
+        ]
+    )
+
+
 async def openclaw_chat(
     base_url: str,
     api_key: str,
@@ -1077,100 +1127,114 @@ async def openclaw_chat(
     cap = _to_int(max_output_tokens) if max_output_tokens is not None else 0
     if cap <= 0:
         cap = 0
+    model_hints = _candidate_openclaw_model_hints(agent_id)
+
     async with httpx.AsyncClient(follow_redirects=True) as client:
         last_err = None
         saw_405 = False
         saw_502: Optional[str] = None  # first path that returned 502
         saw_404_paths: List[str] = []
+
         for p in CHAT_PATHS:
-            model_hint = f"openclaw:{agent_id}" if agent_id else "openclaw:default"
             extra_headers: Dict[str, str] = {}
             if agent_id:
                 extra_headers["x-openclaw-agent-id"] = agent_id
             if session_key:
                 extra_headers["x-openclaw-session-key"] = str(session_key)[:240]
-            if p.endswith("/responses"):
-                body: Dict[str, Any] = {"model": model_hint, "input": message}
-                if agent_id:
-                    body["agent_id"] = agent_id
-                if session_key:
-                    body["session_key"] = session_key
-                    body["sessionKey"] = session_key
-                if cap > 0:
-                    body["max_output_tokens"] = cap
-                    # Compatibility fallback for providers/gateways expecting chat-completions naming.
-                    body["max_tokens"] = cap
-            elif "chat/completions" in p:
-                body = {
-                    "model": model_hint,
-                    "messages": [{"role": "user", "content": message}],
-                }
-                if session_key:
-                    body["session_key"] = session_key
-                    body["sessionKey"] = session_key
-                if cap > 0:
-                    body["max_tokens"] = cap
-            else:
-                body = {"model": model_hint, "message": message, "prompt": message, "input": message}
-                if agent_id:
-                    body["agent_id"] = agent_id
-                if session_key:
-                    body["session_key"] = session_key
-                    body["sessionKey"] = session_key
-                if cap > 0:
-                    body["max_output_tokens"] = cap
-                    body["max_tokens"] = cap
 
-            try:
-                r = await _request_openclaw_with_auth(
-                    client,
-                    "POST",
-                    base_url,
-                    p,
-                    api_key,
-                    json_body=body,
-                    timeout=30,
-                    extra_headers=extra_headers,
-                )
-                if _response_looks_like_login_html(r):
-                    return {"ok": False, "error": "OpenClaw returned login page. Gateway token is invalid or missing.", "path": p}
-                if r.status_code == 401:
-                    return {"ok": False, "error": "Unauthorized (401). Token/API key invalid.", "path": p}
-                if r.status_code == 403:
-                    body = r.text[:600]
-                    if _is_missing_operator_write_error(body):
-                        # Token-level scope failure - no point trying other paths.
-                        return {
-                            "ok": False,
-                            "error": "Token is valid but missing operator.write scope. Chat requires an operator token.",
-                            "error_code": "missing_operator_write",
-                            "hint": "Provide an OpenClaw token with operator.write scope.",
-                            "path": p,
-                        }
-                    last_err = f"{p}: 403 {body}"
-                    continue
-                if r.status_code == 502:
-                    # Path exists on the proxy but the upstream LLM/backend is down.
-                    # No point probing remaining paths - they will 404.
-                    saw_502 = saw_502 or p
-                    last_err = f"{p}: 502 {r.text[:300]}"
-                    break
-                if r.status_code == 405:
-                    saw_405 = True
-                if r.status_code == 404:
-                    saw_404_paths.append(p)
-                if r.status_code >= 400:
-                    last_err = f"{p}: {r.status_code} {r.text[:300]}"
-                    continue
-
-                ctype = r.headers.get("content-type", "")
-                if "application/json" in ctype:
-                    data: Any = r.json()
+            for model_idx, model_hint in enumerate(model_hints):
+                if p.endswith("/responses"):
+                    body: Dict[str, Any] = {"model": model_hint, "input": message}
+                    if agent_id:
+                        body["agent_id"] = agent_id
+                    if session_key:
+                        body["session_key"] = session_key
+                        body["sessionKey"] = session_key
+                    if cap > 0:
+                        body["max_output_tokens"] = cap
+                        # Compatibility fallback for providers/gateways expecting chat-completions naming.
+                        body["max_tokens"] = cap
+                elif "chat/completions" in p:
+                    body = {
+                        "model": model_hint,
+                        "messages": [{"role": "user", "content": message}],
+                    }
+                    if session_key:
+                        body["session_key"] = session_key
+                        body["sessionKey"] = session_key
+                    if cap > 0:
+                        body["max_tokens"] = cap
                 else:
-                    data = {"raw": r.text[:4000]}
-                return {"ok": True, "path": p, "response": data, "text": _extract_chat_text(data)}
-            except Exception as e:
-                last_err = f"{p}: {str(e)}"
+                    body = {"model": model_hint, "message": message, "prompt": message, "input": message}
+                    if agent_id:
+                        body["agent_id"] = agent_id
+                    if session_key:
+                        body["session_key"] = session_key
+                        body["sessionKey"] = session_key
+                    if cap > 0:
+                        body["max_output_tokens"] = cap
+                        body["max_tokens"] = cap
+
+                try:
+                    r = await _request_openclaw_with_auth(
+                        client,
+                        "POST",
+                        base_url,
+                        p,
+                        api_key,
+                        json_body=body,
+                        timeout=30,
+                        extra_headers=extra_headers,
+                    )
+                    if _response_looks_like_login_html(r):
+                        return {"ok": False, "error": "OpenClaw returned login page. Gateway token is invalid or missing.", "path": p}
+                    if r.status_code == 401:
+                        return {"ok": False, "error": "Unauthorized (401). Token/API key invalid.", "path": p}
+                    if r.status_code == 403:
+                        body_text = r.text[:600]
+                        if _is_missing_operator_write_error(body_text):
+                            # Token-level scope failure - no point trying other paths.
+                            return {
+                                "ok": False,
+                                "error": "Token is valid but missing operator.write scope. Chat requires an operator token.",
+                                "error_code": "missing_operator_write",
+                                "hint": "Provide an OpenClaw token with operator.write scope.",
+                                "path": p,
+                            }
+                        last_err = f"{p}: 403 {body_text}"
+                        break
+                    if r.status_code == 502:
+                        # Path exists on the proxy but the upstream LLM/backend is down.
+                        # No point probing remaining paths - they will 404.
+                        saw_502 = saw_502 or p
+                        last_err = f"{p}: 502 {r.text[:300]}"
+                        break
+                    if r.status_code == 405:
+                        saw_405 = True
+                    if r.status_code == 404:
+                        saw_404_paths.append(p)
+                    if r.status_code >= 400:
+                        last_err = f"{p}: {r.status_code} {r.text[:300]}"
+                        # Try alternate model IDs only when this looks like model-resolution failure.
+                        if (model_idx + 1) < len(model_hints) and _is_model_resolution_error(r.status_code, r.text):
+                            continue
+                        break
+
+                    ctype = r.headers.get("content-type", "")
+                    if "application/json" in ctype:
+                        data: Any = r.json()
+                    else:
+                        data = {"raw": r.text[:4000]}
+                    return {
+                        "ok": True,
+                        "path": p,
+                        "response": data,
+                        "text": _extract_chat_text(data),
+                        "model_hint": model_hint,
+                    }
+                except Exception as e:
+                    last_err = f"{p}: {str(e)}"
+                    break
 
     if saw_502:
         return {
@@ -1215,6 +1279,7 @@ async def openclaw_chat(
         "error": f"Could not call chat endpoint on common paths. Last error: {last_err}",
         "hint": hint,
     }
+
 def _collect_text_fields(node: Any, out: List[str]) -> None:
     if isinstance(node, dict):
         for key, value in node.items():
