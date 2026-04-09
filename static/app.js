@@ -7069,20 +7069,44 @@ async function loadSummaryAgents({ force = false } = {}) {
 
   try {
     const activeConn = String(activeConnectionId || "").trim();
+    let liveListed = null;
 
     // Keep the managed-agent index fresh for the active connection so the
     // Agents tab stays in sync with Chat/Manage Agents live discovery.
     if (activeConn) {
       try {
-        await api(`/api/openclaw/${encodeURIComponent(activeConn)}/agents`);
+        liveListed = await api(`/api/openclaw/${encodeURIComponent(activeConn)}/agents`);
       } catch {
         // Non-fatal: fallback to currently indexed managed agents below.
       }
     }
 
-    const query = activeConn ? `?connection_id=${encodeURIComponent(activeConn)}` : "";
-    const listed = await api(`/api/a2a/agents${query}`);
-    const items = Array.isArray(listed?.agents) ? listed.agents : [];
+    const listed = await api("/api/a2a/agents");
+    const allItems = Array.isArray(listed?.agents) ? listed.agents : [];
+    let items = allItems;
+    if (activeConn) {
+      const scoped = allItems.filter((item) => String(item?.connection_id || "").trim() === activeConn);
+      if (scoped.length) items = scoped;
+    }
+    // If managed index is still empty for this connection, render cards from
+    // live discovery so the Agents tab is not blank.
+    if (!items.length && activeConn) {
+      const liveAgents = Array.isArray(liveListed?.agents) ? liveListed.agents : [];
+      if (liveAgents.length) {
+        items = liveAgents.map((item) => {
+          const src = (item && typeof item === "object") ? item : {};
+          const raw = (src.raw && typeof src.raw === "object") ? src.raw : src;
+          const aid = String(src.id || src.agent_id || src.name || raw.id || raw.agent_id || "").trim();
+          const aname = String(src.name || src.title || raw.name || aid).trim() || aid;
+          return {
+            agent_id: aid,
+            agent_name: aname,
+            connection_id: activeConn,
+            status: "active",
+          };
+        }).filter((row) => Boolean(String(row.agent_id || "").trim()));
+      }
+    }
 
     const enriched = await Promise.all(items.map(async (agent) => {
       const agentId = String(agent?.agent_id || "").trim();
