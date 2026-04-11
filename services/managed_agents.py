@@ -1576,6 +1576,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         agent_id=primary_agent_id,
         session_key=f"{project_id}:project-info",
         timeout_sec=55,
+        user_id=str(row["user_id"] or ""),
     )
     p_tokens, c_tokens, _ = _extract_usage_counts(res)
     if p_tokens <= 0:
@@ -1773,6 +1774,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         agent_id=primary_agent_id,
         session_key=f"{project_id}:plan",
         timeout_sec=55,
+        user_id=str(row["user_id"] or ""),
     )
     prompt_tokens, completion_tokens, _ = _extract_usage_counts(res)
     if prompt_tokens <= 0:
@@ -1905,6 +1907,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
         agent_id=primary_agent_id,
         session_key=f"{project_id}:delegate",
         timeout_sec=55,
+        user_id=str(row["user_id"] or ""),
     )
     prompt_tokens, completion_tokens, _ = _extract_usage_counts(res)
     if prompt_tokens <= 0:
@@ -2147,6 +2150,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             agent_id=aid,
             session_key=f"{project_id}:agent:{aid}",
             timeout_sec=50,
+            user_id=str(row["user_id"] or ""),
         )
         p_tokens, c_tokens, _ = _extract_usage_counts(agent_res)
         if p_tokens <= 0:
@@ -2224,6 +2228,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
                 timeout_sec=45,
+                user_id=str(row["user_id"] or ""),
             )
             if followup_res.get("ok"):
                 fp, fc, _ = _extract_usage_counts(followup_res)
@@ -2292,6 +2297,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
                 timeout_sec=45,
+                user_id=str(row["user_id"] or ""),
             )
             if rescue_res.get("ok"):
                 rp, rc, _ = _extract_usage_counts(rescue_res)
