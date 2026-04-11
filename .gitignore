@@ -23,3 +23,7 @@ Thumbs.db
 # Local dev seed script — never commit
 seed_local.py
 
+cloudflared
+cloudflared.tgz
+*.db
+hivee/
