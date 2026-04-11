@@ -1576,7 +1576,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         message=task,
         agent_id=primary_agent_id,
         session_key=f"{project_id}:project-info",
-        timeout_sec=55,
+        timeout_sec=120,
         user_id=str(row["user_id"] or ""),
     )
     p_tokens, c_tokens, _ = _extract_usage_counts(res)
@@ -1774,7 +1774,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         message=instruction,
         agent_id=primary_agent_id,
         session_key=f"{project_id}:plan",
-        timeout_sec=55,
+        timeout_sec=120,
         user_id=str(row["user_id"] or ""),
     )
     prompt_tokens, completion_tokens, _ = _extract_usage_counts(res)
@@ -1907,7 +1907,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
         message=instruction,
         agent_id=primary_agent_id,
         session_key=f"{project_id}:delegate",
-        timeout_sec=55,
+        timeout_sec=120,
         user_id=str(row["user_id"] or ""),
     )
     prompt_tokens, completion_tokens, _ = _extract_usage_counts(res)
@@ -2150,7 +2150,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             message=agent_instruction,
             agent_id=aid,
             session_key=f"{project_id}:agent:{aid}",
-            timeout_sec=50,
+            timeout_sec=120,
             user_id=str(row["user_id"] or ""),
         )
         p_tokens, c_tokens, _ = _extract_usage_counts(agent_res)
@@ -2228,7 +2228,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 message=followup_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=45,
+                timeout_sec=120,
                 user_id=str(row["user_id"] or ""),
             )
             if followup_res.get("ok"):
@@ -2297,7 +2297,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 message=rescue_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=45,
+                timeout_sec=120,
                 user_id=str(row["user_id"] or ""),
             )
             if rescue_res.get("ok"):
