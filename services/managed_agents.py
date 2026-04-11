@@ -1190,6 +1190,7 @@ async def openclaw_chat(
     max_output_tokens: Optional[int] = None,
     session_key: Optional[str] = None,
     user_id: Optional[str] = None,
+    timeout_sec: int = 90,
 ) -> Dict[str, Any]:
     cap = _to_int(max_output_tokens) if max_output_tokens is not None else 0
     if cap <= 0:
@@ -1321,7 +1322,7 @@ async def openclaw_chat(
                     message=message,
                     agent_id=agent_id,
                     session_key=session_key,
-                    timeout_sec=45,
+                    timeout_sec=max(timeout_sec, 90),
                 )
                 if connector_res.get("ok"):
                     return connector_res
@@ -1429,7 +1430,6 @@ async def openclaw_ws_chat(
     user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     # HTTP-only mode: keep function name for backward compatibility with existing callers.
-    _ = timeout_sec
     routed_session_key = _derive_ws_session_key(session_key=session_key, agent_id=agent_id)
     http_res = await openclaw_chat(
         base_url=base_url,
@@ -1438,6 +1438,7 @@ async def openclaw_ws_chat(
         agent_id=agent_id,
         session_key=routed_session_key,
         user_id=user_id,
+        timeout_sec=timeout_sec,
     )
     if http_res.get("ok"):
         return {
