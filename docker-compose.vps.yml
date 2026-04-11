@@ -1,0 +1,84 @@
+services:
+  hivee:
+    image: python:3.11-slim
+    container_name: hivee-app
+    working_dir: /app
+    command: >
+      sh -c "apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1 &&
+      if [ ! -f /app/main.py ]; then
+        rm -rf /tmp/hivee-repo &&
+        git clone https://github.com/rezaerfit-commits/HIVEE-Reza-Version.git /tmp/hivee-repo &&
+        cp -r /tmp/hivee-repo/* /tmp/hivee-repo/.* /app/ 2>/dev/null || true &&
+        rm -rf /tmp/hivee-repo;
+      else
+        cd /app && git pull origin main 2>/dev/null || true;
+      fi &&
+      pip install -q -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8000"
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.hivee.rule=Host(`hivee.srv1570855.hstgr.cloud`)
+      - traefik.http.routers.hivee.entrypoints=websecure
+      - traefik.http.routers.hivee.tls.certresolver=letsencrypt
+      - traefik.http.services.hivee.loadbalancer.server.port=8000
+    environment:
+      - TZ=Asia/Jakarta
+    ports:
+      - "8000:8000"
+    volumes:
+      - hivee-code:/app
+    networks:
+      - openclaw-izjk_default
+
+  hivee-connector:
+    image: node:20-alpine
+    container_name: hivee-connector-vps
+    working_dir: /app
+    command: >
+      sh -c "apk add --no-cache git curl >/dev/null 2>&1 &&
+      if [ ! -f /app/package.json ]; then
+        rm -rf /tmp/conn-repo &&
+        git clone https://github.com/rezaerfit-commits/HIVEE-connector.git /tmp/conn-repo &&
+        cp -r /tmp/conn-repo/* /tmp/conn-repo/.* /app/ 2>/dev/null || true &&
+        rm -rf /tmp/conn-repo;
+      fi &&
+      npm install &&
+      npm run dev"
+    restart: unless-stopped
+    environment:
+      NODE_ENV: "production"
+      PORT: "43137"
+      HOST: "0.0.0.0"
+      LOG_LEVEL: "info"
+      DATA_DIR: "/data"
+      CONNECTOR_NAME: "Hivee VPS Connector"
+      CONNECTOR_BIND_PUBLIC: "false"
+      # Hivee on same Docker network — no tunnel!
+      CLOUD_BASE_URL: "http://hivee-app:8000"
+      CLOUD_WS_URL: ""
+      PAIRING_TOKEN: "${PAIRING_TOKEN:-}"
+      # OpenClaw on same Docker network
+      OPENCLAW_BASE_URL: "http://openclaw:18790"
+      OPENCLAW_DISCOVERY_CANDIDATES: "http://openclaw:18790"
+      OPENCLAW_TOKEN: "${OPENCLAW_TOKEN:-sCirXcZyRCckVnHz9IFtHch77NKatkvp}"
+      OPENCLAW_TRANSPORT: "http"
+      OPENCLAW_WS_PATH: ""
+      OPENCLAW_REQUEST_TIMEOUT_MS: "60000"
+      ENABLE_DOCKER_DISCOVERY: "false"
+    ports:
+      - "43137:43137"
+    volumes:
+      - connector-data:/data
+    networks:
+      - openclaw-izjk_default
+    depends_on:
+      - hivee
+
+volumes:
+  hivee-code:
+  connector-data:
+
+networks:
+  openclaw-izjk_default:
+    external: true
