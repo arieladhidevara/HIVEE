@@ -457,4 +457,97 @@ class ProjectActivityEventOut(BaseModel):
     summary: str
     payload: Dict[str, Any] = Field(default_factory=dict)
     created_at: int
+
+# ── Connector Mode Schemas ──────────────────────────────────────────────
+
+class ConnectorPairingTokenCreateIn(BaseModel):
+    label: Optional[str] = None
+    expires_in_sec: int = 600
+
+class ConnectorPairingTokenCreateOut(BaseModel):
+    token: str
+    expires_at: int
+
+class ConnectorRegisterHostIn(BaseModel):
+    hostname: str
+    platform: str
+    arch: str
+
+class ConnectorRegisterOpenClawAgentIn(BaseModel):
+    id: str
+    name: str
+
+class ConnectorRegisterOpenClawIn(BaseModel):
+    baseUrl: Optional[str] = None
+    transport: str = "auto"
+    agents: List[ConnectorRegisterOpenClawAgentIn] = []
+    models: List[str] = []
+
+class ConnectorRegisterIn(BaseModel):
+    pairingToken: str
+    connectorName: str
+    version: str = "0.1.0"
+    host: ConnectorRegisterHostIn
+    openclaw: ConnectorRegisterOpenClawIn
+
+class ConnectorRegisterOut(BaseModel):
+    connectorId: str
+    connectorSecret: str
+    heartbeatIntervalSec: int
+    commandPollIntervalSec: int
+
+class ConnectorHeartbeatIn(BaseModel):
+    status: str = "online"
+    openclaw: Optional[Dict[str, Any]] = None
+    connectorName: Optional[str] = None
+    version: Optional[str] = None
+    observedAt: Optional[int] = None
+
+class ConnectorCommandOut(BaseModel):
+    id: str
+    type: str
+    payload: Dict[str, Any]
+    createdAt: int
+
+class ConnectorCommandsPollOut(BaseModel):
+    cursor: Optional[str] = None
+    commands: List[ConnectorCommandOut] = []
+
+class ConnectorCommandResultIn(BaseModel):
+    ok: bool
+    commandId: str
+    type: str = ""
+    output: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    startedAt: Optional[int] = None
+    finishedAt: Optional[int] = None
+
+class ConnectorOut(BaseModel):
+    id: str
+    name: str
+    status: str
+    host_hostname: Optional[str] = None
+    host_platform: Optional[str] = None
+    host_arch: Optional[str] = None
+    openclaw_base_url: Optional[str] = None
+    openclaw_transport: Optional[str] = None
+    last_seen_at: Optional[int] = None
+    created_at: Optional[int] = None
+
+class ConnectorDetailOut(BaseModel):
+    id: str
+    name: str
+    status: str
+    host_hostname: Optional[str] = None
+    host_platform: Optional[str] = None
+    host_arch: Optional[str] = None
+    openclaw_base_url: Optional[str] = None
+    openclaw_transport: Optional[str] = None
+    heartbeat_interval_sec: int = 15
+    command_poll_interval_sec: int = 5
+    last_seen_at: Optional[int] = None
+    created_at: Optional[int] = None
+    updated_at: Optional[int] = None
+    agent_snapshot: Optional[Dict[str, Any]] = None
+
 __all__ = [name for name in globals() if not name.startswith('__')]

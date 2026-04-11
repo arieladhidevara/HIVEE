@@ -564,6 +564,95 @@ def init_db() -> None:
     )
     cur.execute("CREATE INDEX IF NOT EXISTS idx_oauth_identities_user_id ON oauth_identities(user_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_oauth_states_expires_at ON oauth_states(expires_at)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS connector_pairing_tokens (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            token TEXT NOT NULL UNIQUE,
+            label TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            expires_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            used_at INTEGER,
+            used_by_connector_id TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connector_pairing_tokens_token ON connector_pairing_tokens(token)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connector_pairing_tokens_user ON connector_pairing_tokens(user_id, status)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS connectors (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            secret TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'online',
+            cloud_base_url TEXT,
+            host_hostname TEXT,
+            host_platform TEXT,
+            host_arch TEXT,
+            openclaw_base_url TEXT,
+            openclaw_transport TEXT,
+            heartbeat_interval_sec INTEGER NOT NULL DEFAULT 15,
+            command_poll_interval_sec INTEGER NOT NULL DEFAULT 5,
+            last_seen_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connectors_user ON connectors(user_id, updated_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connectors_secret ON connectors(secret)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS connector_agent_snapshots (
+            id TEXT PRIMARY KEY,
+            connector_id TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(connector_id) REFERENCES connectors(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connector_agent_snapshots_connector ON connector_agent_snapshots(connector_id, updated_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS connector_commands (
+            id TEXT PRIMARY KEY,
+            connector_id TEXT NOT NULL,
+            project_id TEXT,
+            task_id TEXT,
+            command_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            cursor TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            finished_at INTEGER,
+            FOREIGN KEY(connector_id) REFERENCES connectors(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connector_commands_poll ON connector_commands(connector_id, status, created_at ASC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS connector_command_results (
+            id TEXT PRIMARY KEY,
+            command_id TEXT NOT NULL,
+            connector_id TEXT NOT NULL,
+            ok INTEGER NOT NULL DEFAULT 0,
+            result_json TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(command_id) REFERENCES connector_commands(id),
+            FOREIGN KEY(connector_id) REFERENCES connectors(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_connector_command_results_command ON connector_command_results(command_id, created_at DESC)")
     cols = [r[1] for r in cur.execute("PRAGMA table_info(project_agents)").fetchall()]
     if "is_primary" not in cols:
         cur.execute("ALTER TABLE project_agents ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0")
@@ -631,6 +720,10 @@ def init_db() -> None:
     policy_cols = [r[1] for r in cur.execute("PRAGMA table_info(connection_policies)").fetchall()]
     if "workspace_tree" not in policy_cols:
         cur.execute("ALTER TABLE connection_policies ADD COLUMN workspace_tree TEXT")
+    if "backend_mode" not in project_cols:
+        cur.execute("ALTER TABLE projects ADD COLUMN backend_mode TEXT NOT NULL DEFAULT 'direct_openclaw'")
+    if "connector_id" not in project_cols:
+        cur.execute("ALTER TABLE projects ADD COLUMN connector_id TEXT")
     conn.commit()
     conn.close()
 

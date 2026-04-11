@@ -6820,6 +6820,89 @@ function renderProjectIssues() {
   }
 }
 
+/* ===== CONNECTOR PAIRING & MANAGEMENT ===== */
+let connectorsList = [];
+
+async function generatePairingToken() {
+  const labelEl = $("connector_token_label");
+  const resultEl = $("connector_token_result");
+  const valueEl = $("connector_token_value");
+  const expiresEl = $("connector_token_expires");
+  const msgEl = $("connector_pair_msg");
+  if (!resultEl || !valueEl || !expiresEl || !msgEl) return;
+
+  msgEl.textContent = "Generating...";
+  msgEl.className = "helper";
+  resultEl.classList.add("hidden");
+
+  try {
+    const label = String(labelEl?.value || "").trim() || null;
+    const data = await api("/api/connectors/pairing-tokens", "POST", {
+      label,
+      expires_in_sec: 3600,
+    });
+    valueEl.textContent = String(data.token || "");
+    const expiresDate = new Date((data.expires_at || 0) * 1000);
+    const remainMin = Math.round((data.expires_at - Date.now() / 1000) / 60);
+    const displayTime = remainMin >= 60 ? `${Math.round(remainMin / 60)}h ${remainMin % 60}m` : `${remainMin} min`;
+    expiresEl.textContent = `Expires: ${expiresDate.toLocaleTimeString()} (${displayTime})`;
+    resultEl.classList.remove("hidden");
+    msgEl.textContent = "Token generated! Copy it and set HIVEE_PAIRING_TOKEN in your connector's .env file.";
+    msgEl.className = "helper ok";
+  } catch (e) {
+    msgEl.textContent = detailToText(e?.message || e);
+    msgEl.className = "helper error";
+  }
+}
+
+async function loadConnectorsList() {
+  const msg = $("connectors_msg");
+  if (msg) { msg.textContent = "Loading..."; msg.className = "helper"; }
+  try {
+    const data = await api("/api/connectors");
+    connectorsList = Array.isArray(data) ? data : [];
+    if (msg) {
+      msg.textContent = connectorsList.length ? `${connectorsList.length} connector(s)` : "No connectors registered yet.";
+      msg.className = "helper";
+    }
+    renderConnectorsList();
+  } catch (e) {
+    connectorsList = [];
+    if (msg) { msg.textContent = detailToText(e?.message || e); msg.className = "helper error"; }
+    renderConnectorsList();
+  }
+}
+
+function renderConnectorsList() {
+  const list = $("connectors_list");
+  if (!list) return;
+  if (!connectorsList.length) {
+    list.innerHTML = '<p class="helper">No connectors paired yet. Generate a pairing token above to get started.</p>';
+    return;
+  }
+  list.innerHTML = connectorsList.map((c) => {
+    const statusClass = String(c.status || "offline").toLowerCase() === "online" ? "active" : "offline";
+    const lastSeen = c.last_seen_at ? relativeTs(c.last_seen_at) : "Never";
+    return `
+      <div class="connector-card">
+        <div class="connector-card-header">
+          <div class="connector-card-info">
+            <strong class="connector-card-name">${esc(c.name || "Connector")}</strong>
+            <span class="agent-status-badge ${statusClass}"><span class="asd"></span>${esc(c.status || "offline")}</span>
+          </div>
+        </div>
+        <div class="connector-card-meta">
+          <div class="connector-meta-row"><span class="connector-meta-label">Host</span><span>${esc(c.host_hostname || "—")} (${esc(c.host_platform || "?")}/${esc(c.host_arch || "?")})</span></div>
+          <div class="connector-meta-row"><span class="connector-meta-label">OpenClaw</span><code>${esc(c.openclaw_base_url || "—")}</code></div>
+          <div class="connector-meta-row"><span class="connector-meta-label">Transport</span><span>${esc(c.openclaw_transport || "—")}</span></div>
+          <div class="connector-meta-row"><span class="connector-meta-label">Last Seen</span><span>${lastSeen}</span></div>
+          <div class="connector-meta-row"><span class="connector-meta-label">ID</span><code style="font-size:10px">${esc(c.id || "—")}</code></div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
 /* ===== SETTINGS TAB SWITCHING ===== */
 function initSettingsTabs() {
   const tabs = document.querySelectorAll("[data-settings-tab]");
@@ -6830,9 +6913,12 @@ function initSettingsTabs() {
       const configPane = $("settings_config_pane");
       const accountPane = $("settings_account_pane");
       const policyPane = $("settings_policy_pane");
-      if (configPane)  configPane.classList.toggle("hidden",  key !== "config");
-      if (accountPane) accountPane.classList.toggle("hidden", key !== "account");
-      if (policyPane)  policyPane.classList.toggle("hidden",  key !== "policy");
+      const connectorsPane = $("settings_connectors_pane");
+      if (configPane)     configPane.classList.toggle("hidden",     key !== "config");
+      if (accountPane)    accountPane.classList.toggle("hidden",    key !== "account");
+      if (policyPane)     policyPane.classList.toggle("hidden",     key !== "policy");
+      if (connectorsPane) connectorsPane.classList.toggle("hidden", key !== "connectors");
+      if (key === "connectors") loadConnectorsList().catch(() => {});
     });
   }
 }
@@ -9036,6 +9122,17 @@ function bindActions() {
   $("agent_detail_modal")?.addEventListener("click", (e) => {
     if (e.target === $("agent_detail_modal")) $("agent_detail_modal").close();
   });
+
+  // Connector pairing
+  $("btn_generate_pairing_token")?.addEventListener("click", () => generatePairingToken().catch((e) => showUiError("connector_pair_msg", e)));
+  $("btn_copy_pairing_token")?.addEventListener("click", () => {
+    const val = $("connector_token_value")?.textContent || "";
+    navigator.clipboard.writeText(val).then(() => {
+      const btn = $("btn_copy_pairing_token");
+      if (btn) { const o = btn.textContent; btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = o; }, 1500); }
+    }).catch(() => {});
+  });
+  $("btn_refresh_connectors")?.addEventListener("click", () => loadConnectorsList().catch(() => {}));
 
   $("home_connections").onchange = (ev) => {
     activeConnectionId = ev.target.value;

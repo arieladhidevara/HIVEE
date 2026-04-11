@@ -1189,6 +1189,7 @@ async def openclaw_chat(
     agent_id: Optional[str] = None,
     max_output_tokens: Optional[int] = None,
     session_key: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     cap = _to_int(max_output_tokens) if max_output_tokens is not None else 0
     if cap <= 0:
@@ -1253,15 +1254,11 @@ async def openclaw_chat(
                         extra_headers=extra_headers,
                     )
                     if _response_looks_like_login_html(r):
-                        return {"ok": False, "error": "OpenClaw returned login page. Gateway token is invalid or missing.", "path": p}
+                        last_err = f"{p}: OpenClaw returned login page. Gateway token is invalid or missing."
+                        break
                     if _response_looks_like_starting_html(r):
-                        return {
-                            "ok": False,
-                            "error": "OpenClaw gateway is still starting. API routes are not ready yet.",
-                            "error_code": "gateway_starting",
-                            "hint": "Wait until startup completes in OpenClaw, then retry chat.",
-                            "path": p,
-                        }
+                        last_err = f"{p}: OpenClaw gateway is still starting. API routes are not ready yet."
+                        break
                     if r.status_code == 401:
                         return {"ok": False, "error": "Unauthorized (401). Token/API key invalid.", "path": p}
                     if r.status_code == 403:
@@ -1310,6 +1307,29 @@ async def openclaw_chat(
                     last_err = f"{p}: {str(e)}"
                     break
 
+    # ── Connector fallback: if direct chat failed, try routing through connector ──
+    # This MUST be checked before any error returns so it catches all failure modes
+    # (502, 405, 404, login page, etc.)
+    if user_id:
+        try:
+            from services.connector_dispatch import get_user_online_connector, connector_chat_sync
+            online_connector = get_user_online_connector(user_id)
+            if online_connector:
+                print(f"[openclaw_chat] Direct chat failed (last_err={last_err}), trying connector fallback via {online_connector['id']}", flush=True)
+                connector_res = await connector_chat_sync(
+                    connector_id=str(online_connector["id"]),
+                    message=message,
+                    agent_id=agent_id,
+                    session_key=session_key,
+                    timeout_sec=45,
+                )
+                if connector_res.get("ok"):
+                    return connector_res
+                # If connector also failed, fall through to direct error below
+                print(f"[openclaw_chat] Connector fallback also failed: {connector_res.get('error')}", flush=True)
+        except Exception as e:
+            print(f"[openclaw_chat] Connector fallback error: {e}", flush=True)
+
     if saw_502:
         return {
             "ok": False,
@@ -1340,6 +1360,7 @@ async def openclaw_chat(
                 "and ensure your reverse proxy forwards POST /v1/chat/completions or /v1/responses."
             ),
         }
+
     hint = "Your OpenClaw may use different chat path(s). Update CHAT_PATHS in core/db.py."
     if last_err and "403" in str(last_err):
         hint = (
@@ -1405,6 +1426,7 @@ async def openclaw_ws_chat(
     agent_id: Optional[str] = None,
     session_key: str = "main",
     timeout_sec: int = 25,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     # HTTP-only mode: keep function name for backward compatibility with existing callers.
     _ = timeout_sec
@@ -1415,6 +1437,7 @@ async def openclaw_ws_chat(
         message=message,
         agent_id=agent_id,
         session_key=routed_session_key,
+        user_id=user_id,
     )
     if http_res.get("ok"):
         return {

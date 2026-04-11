@@ -281,6 +281,7 @@ def register_routes(app: FastAPI) -> None:
             scoped_message,
             effective_agent_id,
             max_output_tokens=SAFE_PROVIDER_MAX_OUTPUT_TOKENS,
+            user_id=user_id,
         )
         if not res.get("ok"):
             raise HTTPException(400, res)
@@ -571,6 +572,7 @@ def register_routes(app: FastAPI) -> None:
             agent_id=effective_agent_id,
             session_key=session_key,
             timeout_sec=payload.timeout_sec,
+            user_id=user_id,
         )
         if not res.get("ok"):
             if project_scope:

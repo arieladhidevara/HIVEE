@@ -633,6 +633,7 @@
                 <button class="settings-tab active" type="button" data-settings-tab="config">Configuration</button>
                 <button class="settings-tab" type="button" data-settings-tab="account">Account</button>
                 <button class="settings-tab" type="button" data-settings-tab="policy">Policy</button>
+                <button class="settings-tab" type="button" data-settings-tab="connectors">Connectors</button>
               </div>
 
               <div id="settings_config_pane" class="settings-tab-pane">
@@ -711,6 +712,43 @@
               <div id="settings_policy_pane" class="settings-tab-pane hidden">
                 <p class="helper">Workspace policy and rules configuration.</p>
                 <div id="settings_policy_content" class="settings-policy-content"></div>
+              </div>
+
+              <div id="settings_connectors_pane" class="settings-tab-pane hidden">
+                <div class="account-grid">
+                  <section class="account-card">
+                    <div class="account-card-head">
+                      <h4>Pair New Connector</h4>
+                    </div>
+                    <p class="account-sub">Generate a pairing token, then paste it into your connector's <code>.env</code> file as <code>HIVEE_PAIRING_TOKEN</code>.</p>
+                    <div class="stack">
+                      <label>Token Label (optional)</label>
+                      <input id="connector_token_label" type="text" placeholder="e.g. VPS-1 Connector">
+                      <div class="action-row">
+                        <button id="btn_generate_pairing_token" type="button" class="primary">Generate Pairing Token</button>
+                      </div>
+                      <div id="connector_token_result" class="hidden">
+                        <label>Pairing Token</label>
+                        <div class="connector-token-display">
+                          <code id="connector_token_value" class="connector-token-code"></code>
+                          <button id="btn_copy_pairing_token" type="button" class="secondary" style="min-height:28px;padding:4px 12px;font-size:11px">Copy</button>
+                        </div>
+                        <p id="connector_token_expires" class="helper"></p>
+                      </div>
+                      <p id="connector_pair_msg" class="helper"></p>
+                    </div>
+                  </section>
+
+                  <section class="account-card">
+                    <div class="account-card-head">
+                      <h4>Connected Connectors</h4>
+                      <button id="btn_refresh_connectors" type="button" class="secondary">Refresh</button>
+                    </div>
+                    <p class="account-sub">Connectors registered to your account. Each connector bridges your local OpenClaw to Hivee Cloud.</p>
+                    <div id="connectors_list" class="connectors-list"></div>
+                    <p id="connectors_msg" class="helper"></p>
+                  </section>
+                </div>
               </div>
             </div>
           </div>

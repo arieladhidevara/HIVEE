@@ -2762,3 +2762,32 @@ textarea[readonly]:focus {
 .tdm-controls { display: flex; flex-wrap: wrap; gap: 6px; }
 .tdm-controls select { font-size: 11px; height: 26px; padding: 0 6px; }
 #tdm_msg.error { color: var(--red); }
+
+/* ===== CONNECTOR UI ===== */
+.connector-token-display {
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(255,255,255,0.03); border: 1px solid var(--line-2);
+  border-radius: 8px; padding: 10px 14px; margin-top: 4px;
+}
+.connector-token-code {
+  flex: 1; font-size: 13px; word-break: break-all; color: var(--cyan);
+  font-family: 'Space Grotesk', monospace; letter-spacing: 0.02em;
+}
+.connectors-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.connector-card {
+  border: 1px solid var(--line-2); border-radius: 10px;
+  background: rgba(255,255,255,0.02); padding: 14px 16px;
+  transition: border-color 180ms;
+}
+.connector-card:hover { border-color: rgba(255,255,255,0.14); }
+.connector-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.connector-card-info { display: flex; align-items: center; gap: 10px; }
+.connector-card-name { font-size: 14px; font-weight: 700; }
+.connector-card-meta { display: grid; gap: 5px; }
+.connector-meta-row {
+  display: grid; grid-template-columns: 80px 1fr; gap: 8px;
+  font-size: 12px; align-items: baseline;
+}
+.connector-meta-label { color: var(--muted); font-weight: 500; }
+.connector-meta-row code { font-size: 11px; color: var(--cyan); word-break: break-all; }
+
