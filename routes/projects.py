@@ -438,21 +438,28 @@ def _append_project_invitations_status_update(
 def register_routes(app: FastAPI) -> None:
     @app.post("/api/projects/setup-chat")
     async def project_setup_chat(request: Request, payload: ProjectSetupChatIn):
+        from services.connector_dispatch import connector_chat_sync as _connector_chat_sync
         user_id = get_session_user(request)
         conn = db()
         row = conn.execute(
             "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (payload.connection_id, user_id),
         ).fetchone()
+        connector_row = None
+        if not row:
+            connector_row = conn.execute(
+                "SELECT id FROM connectors WHERE id = ? AND user_id = ?",
+                (payload.connection_id, user_id),
+            ).fetchone()
         connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         policy = conn.execute(
             "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (payload.connection_id, user_id),
         ).fetchone()
         conn.close()
-        if not row:
+        if not row and not connector_row:
             raise HTTPException(404, "Connection not found")
-    
+
         workspace = _ensure_user_workspace(user_id)
         workspace_root = str(workspace["workspace_root"])
         templates_root = str(workspace["templates_root"])
@@ -465,14 +472,24 @@ def register_routes(app: FastAPI) -> None:
             start_mode=bool(payload.start),
         )
         session_key = (payload.session_key or "new-project").strip() or "new-project"
-        res = await openclaw_ws_chat(
-            base_url=row["base_url"],
-            api_key=connection_api_key,
-            message=instruction,
-            agent_id=effective_agent_id,
-            session_key=f"project-setup:{session_key}",
-            timeout_sec=max(10, min(payload.timeout_sec, 45 if payload.optimize_tokens else 90)),
-        )
+        timeout = max(10, min(payload.timeout_sec, 45 if payload.optimize_tokens else 90))
+        if connector_row:
+            res = await _connector_chat_sync(
+                connector_id=str(payload.connection_id),
+                message=instruction,
+                agent_id=effective_agent_id,
+                session_key=f"project-setup:{session_key}",
+                timeout_sec=timeout,
+            )
+        else:
+            res = await openclaw_ws_chat(
+                base_url=row["base_url"],
+                api_key=connection_api_key,
+                message=instruction,
+                agent_id=effective_agent_id,
+                session_key=f"project-setup:{session_key}",
+                timeout_sec=timeout,
+            )
         if not res.get("ok"):
             raise HTTPException(400, res)
         res["resolved_agent_id"] = effective_agent_id
@@ -482,19 +499,26 @@ def register_routes(app: FastAPI) -> None:
     
     @app.post("/api/projects/setup-draft")
     async def project_setup_draft(request: Request, payload: ProjectSetupDraftIn):
+        from services.connector_dispatch import connector_chat_sync as _connector_chat_sync
         user_id = get_session_user(request)
         conn = db()
         row = conn.execute(
             "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (payload.connection_id, user_id),
         ).fetchone()
+        connector_row = None
+        if not row:
+            connector_row = conn.execute(
+                "SELECT id FROM connectors WHERE id = ? AND user_id = ?",
+                (payload.connection_id, user_id),
+            ).fetchone()
         connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         policy = conn.execute(
             "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (payload.connection_id, user_id),
         ).fetchone()
         conn.close()
-        if not row:
+        if not row and not connector_row:
             raise HTTPException(404, "Connection not found")
     
         workspace = _ensure_user_workspace(user_id)
@@ -523,14 +547,23 @@ def register_routes(app: FastAPI) -> None:
             workspace_root=workspace_root,
         )
         session_key = (payload.session_key or "new-project").strip() or "new-project"
-        res = await openclaw_ws_chat(
-            base_url=row["base_url"],
-            api_key=connection_api_key,
-            message=instruction,
-            agent_id=effective_agent_id,
-            session_key=f"project-setup-draft:{session_key}",
-            timeout_sec=max(10, min(payload.timeout_sec, 60)),
-        )
+        if connector_row:
+            res = await _connector_chat_sync(
+                connector_id=str(payload.connection_id),
+                message=instruction,
+                agent_id=effective_agent_id,
+                session_key=f"project-setup-draft:{session_key}",
+                timeout_sec=max(10, min(payload.timeout_sec, 60)),
+            )
+        else:
+            res = await openclaw_ws_chat(
+                base_url=row["base_url"],
+                api_key=connection_api_key,
+                message=instruction,
+                agent_id=effective_agent_id,
+                session_key=f"project-setup-draft:{session_key}",
+                timeout_sec=max(10, min(payload.timeout_sec, 60)),
+            )
     
         text = ""
         parsed: Dict[str, Any] = {}

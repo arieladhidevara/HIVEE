@@ -2969,7 +2969,9 @@ function renderConnections(connections) {
     for (const c of connectionsCache) {
       const opt = document.createElement("option");
       opt.value = c.id;
-      opt.textContent = `${c.name || "OpenClaw"} - ${c.base_url}`;
+      opt.textContent = c.mode === "connector"
+        ? `${c.name || "Connector"} (Cloud Connector)`
+        : `${c.name || "OpenClaw"} - ${c.base_url}`;
       sel.appendChild(opt);
     }
   }
@@ -7190,7 +7192,10 @@ async function loadSummaryAgents({ force = false } = {}) {
     let items = allItems;
     if (activeConn) {
       const scoped = allItems.filter((item) => String(item?.connection_id || "").trim() === activeConn);
-      if (scoped.length) items = scoped;
+      // Always scope to the active connection — if nothing matches yet (e.g. before first
+      // bootstrap) fall through to the live-discovery fallback below rather than showing
+      // stale agents from other connections.
+      items = scoped;
     }
     // If managed index is still empty for this connection, render cards from
     // live discovery so the Agents tab is not blank.
