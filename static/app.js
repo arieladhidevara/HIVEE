@@ -1498,7 +1498,7 @@ function showUiError(targetId, err) {
 }
 
 function setView(name) {
-  ["auth", "setup", "home"].forEach((v) => {
+  ["auth", "home"].forEach((v) => {
     const node = $("view_" + v);
     if (node) node.classList.toggle("active", v === name);
   });
@@ -6822,6 +6822,7 @@ function renderProjectIssues() {
 
 /* ===== CONNECTOR PAIRING & MANAGEMENT ===== */
 let connectorsList = [];
+let settingsTabsBound = false;
 
 async function generatePairingToken() {
   const labelEl = $("connector_token_label");
@@ -6904,23 +6905,40 @@ function renderConnectorsList() {
 }
 
 /* ===== SETTINGS TAB SWITCHING ===== */
+function activateSettingsTab(key = "connectors") {
+  const tabs = Array.from(document.querySelectorAll("[data-settings-tab]"));
+  if (!tabs.length) return;
+
+  const want = String(key || "").trim().toLowerCase();
+  const picked =
+    tabs.find((tab) => String(tab?.dataset?.settingsTab || "").trim().toLowerCase() === want)
+    || tabs[0];
+  const selectedKey = String(picked?.dataset?.settingsTab || "").trim().toLowerCase();
+
+  for (const tab of tabs) {
+    tab.classList.toggle("active", tab === picked);
+  }
+
+  const accountPane = $("settings_account_pane");
+  const policyPane = $("settings_policy_pane");
+  const connectorsPane = $("settings_connectors_pane");
+  if (accountPane) accountPane.classList.toggle("hidden", selectedKey !== "account");
+  if (policyPane) policyPane.classList.toggle("hidden", selectedKey !== "policy");
+  if (connectorsPane) connectorsPane.classList.toggle("hidden", selectedKey !== "connectors");
+  if (selectedKey === "connectors") loadConnectorsList().catch(() => {});
+}
+
 function initSettingsTabs() {
+  if (settingsTabsBound) return;
+  settingsTabsBound = true;
+
   const tabs = document.querySelectorAll("[data-settings-tab]");
   for (const tab of tabs) {
-    tab.addEventListener("click", () => {
-      for (const t of tabs) t.classList.toggle("active", t === tab);
-      const key = tab.dataset.settingsTab;
-      const configPane = $("settings_config_pane");
-      const accountPane = $("settings_account_pane");
-      const policyPane = $("settings_policy_pane");
-      const connectorsPane = $("settings_connectors_pane");
-      if (configPane)     configPane.classList.toggle("hidden",     key !== "config");
-      if (accountPane)    accountPane.classList.toggle("hidden",    key !== "account");
-      if (policyPane)     policyPane.classList.toggle("hidden",     key !== "policy");
-      if (connectorsPane) connectorsPane.classList.toggle("hidden", key !== "connectors");
-      if (key === "connectors") loadConnectorsList().catch(() => {});
-    });
+    tab.addEventListener("click", () => activateSettingsTab(tab.dataset.settingsTab || "connectors"));
   }
+
+  const active = document.querySelector("[data-settings-tab].active");
+  activateSettingsTab(active?.dataset?.settingsTab || "connectors");
 }
 
 function renderSummaryAgents() {
@@ -7305,7 +7323,8 @@ function setNavTab(tab) {
     renderIssuesGlobal();
   }
   if (tab === "settings") {
-    renderConfigConnectionDetails();
+    const activeSettings = document.querySelector("[data-settings-tab].active");
+    activateSettingsTab(activeSettings?.dataset?.settingsTab || "connectors");
     loadAccountProfile({ silent: true }).catch((e) => setMessage("account_msg", detailToText(e), "error"));
   }
 }
@@ -8517,19 +8536,6 @@ async function createProjectNow() {
   await createProjectFromChatDraft();
 }
 
-async function connectOpenClaw(ev) {
-  ev.preventDefault();
-  setMessage("setup_msg", "");
-  const payload = {
-    name: $("oc_name").value.trim() || null,
-    base_url: $("oc_base").value.trim(),
-    api_key: $("oc_key").value.trim(),
-  };
-  await api("/api/openclaw/connect", "POST", payload);
-  setMessage("setup_msg", "Connection saved", "ok");
-  await fetchInitial();
-}
-
 async function login(ev) {
   ev.preventDefault();
   setMessage("auth_msg", "");
@@ -8815,7 +8821,15 @@ function bindAuthMethods() {
     }
   });
   $("btn_invite_open_setup")?.addEventListener("click", () => {
-    setView("setup");
+    if (!sessionToken) {
+      setMessage("project_invite_msg", "Login first, then open Settings > Connectors to pair your connector.", "");
+      return;
+    }
+    setView("home");
+    initSettingsTabs();
+    setNavTab("settings");
+    activateSettingsTab("connectors");
+    setMessage("connector_pair_msg", "Generate pairing token and run your connector with HIVEE_PAIRING_TOKEN.", "");
   });
   $("btn_ignore_project_invite")?.addEventListener("click", () => {
     ignoreProjectInviteFromUI();
@@ -8999,8 +9013,15 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     projectTreeText = "";
     applyWorkspacePolicy(null);
     renderConnections([]);
-    setView("setup");
-    setMessage("setup_msg", "Complete agent setup to continue.", "");
+    renderProjects([]);
+    showEmptyProject();
+    setView("home");
+    applyConnectionStatus();
+    setMessage("chat_hint", "No OpenClaw connection detected yet. Pair your runtime from Settings > Connectors.", "");
+    await loadAccountProfile({ silent: true }).catch(() => {});
+    initSettingsTabs();
+    setNavTab("settings");
+    activateSettingsTab("connectors");
     return;
   }
 
@@ -9033,9 +9054,13 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
   if (!workspaceReady) {
     connectionHealthy = false;
     applyWorkspacePolicy(null);
-    setView("setup");
-    setMessage("setup_msg", "OpenClaw connection check failed. Use a valid base URL and API key to continue.", "error");
-    if (workspaceErr) setMessage("config_msg", workspaceErr, "error");
+    setView("home");
+    applyConnectionStatus();
+    setMessage("chat_hint", "OpenClaw workspace check failed. Pair and run connector first from Settings > Connectors.", "error");
+    if (workspaceErr) setMessage("chat_hint", workspaceErr, "error");
+    initSettingsTabs();
+    setNavTab("settings");
+    activateSettingsTab("connectors");
     return;
   }
 
@@ -9094,22 +9119,6 @@ function bindActions() {
       startOAuth(provider).catch((e) => showUiError("auth_msg", e));
     });
   }
-  $("btn_copy_setup_prompt")?.addEventListener("click", () => {
-    const url = `${window.location.origin}/new-user/NEW-ACCOUNT.MD`;
-    const prompt = `Read this link: ${url}, and do as the doc said`;
-    navigator.clipboard.writeText(prompt).then(() => {
-      const btn = $("btn_copy_setup_prompt");
-      const orig = btn.textContent;
-      btn.textContent = "Copied!";
-      setTimeout(() => { btn.textContent = orig; }, 1800);
-    }).catch(() => {});
-  });
-  $("form_connect").addEventListener("submit", (ev) => connectOpenClaw(ev).catch((e) => showUiError("setup_msg", e)));
-  $("btn_setup_previous")?.addEventListener("click", () => {
-    setMessage("setup_msg", "");
-    setView("auth");
-    setAuthMethod("hooman");
-  });
   $("form_change_password")?.addEventListener("submit", (ev) => changeAccountPassword(ev).catch((e) => showUiError("account_msg", e)));
   $("form_delete_account")?.addEventListener("submit", (ev) => deleteAccount(ev).catch((e) => showUiError("account_msg", e)));
   $("btn_refresh_account")?.addEventListener("click", () =>
@@ -9134,7 +9143,7 @@ function bindActions() {
   });
   $("btn_refresh_connectors")?.addEventListener("click", () => loadConnectorsList().catch(() => {}));
 
-  $("home_connections").onchange = (ev) => {
+  $("home_connections")?.addEventListener("change", (ev) => {
     activeConnectionId = ev.target.value;
     connectionHealthy = false;
     workspaceTreeText = "";
@@ -9149,10 +9158,7 @@ function bindActions() {
       .finally(() => {
         loadChatAgents().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
       });
-  };
-
-  $("btn_refresh_home").onclick = () => fetchInitial().catch((e) => setMessage("config_msg", detailToText(e), "error"));
-  $("btn_open_connect").onclick = () => setView("setup");
+  });
 
   $("btn_new_project").onclick = () => openWizard(true);
   $("btn_close_wizard").onclick = closeWizard;

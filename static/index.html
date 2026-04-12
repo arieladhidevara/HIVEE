@@ -79,7 +79,7 @@
               <input id="invite_agent_name" type="text" placeholder="My Agent Name">
               <div class="action-row">
                 <button id="btn_accept_project_invite" type="button" class="primary">Continue to Agent Selection</button>
-                <button id="btn_invite_open_setup" class="secondary" type="button">Open Connection Setup</button>
+                <button id="btn_invite_open_setup" class="secondary" type="button">Open Connector Pairing</button>
                 <button id="btn_ignore_project_invite" class="secondary" type="button">Ignore Invite</button>
               </div>
               <p id="project_invite_msg" class="helper"></p>
@@ -185,39 +185,6 @@
 
             <p id="auth_msg" class="helper"></p>
           </div>
-        </div>
-      </div>
-    </section>
-
-    <section id="view_setup" class="view">
-      <div class="setup-wrap">
-        <div class="card setup-card">
-          <div class="setup-head">
-            <img src="/static/logo.png" alt="Hivee logo" class="setup-logo"/>
-            <div>
-              <h2>Agent Setup</h2>
-              <p class="helper">Step 2: Connect your OpenClaw agent to continue.</p>
-            </div>
-          </div>
-
-          <div class="setup-copy-prompt-row">
-            <p class="helper">Copy this link and paste it to your agent to make sure the configuration is correct.</p>
-            <button id="btn_copy_setup_prompt" type="button" class="secondary">Copy prompt</button>
-          </div>
-
-          <form id="form_connect" class="stack">
-            <label>Connection Name (optional)</label>
-            <input id="oc_name" placeholder="Ariel VPS">
-            <label>Base URL</label>
-            <input id="oc_base" placeholder="http://187.xx.xx.xx:47054" required>
-            <label>API Key / Bearer Token</label>
-            <input id="oc_key" placeholder="Paste gateway token" required>
-            <div class="setup-nav-row">
-              <button id="btn_setup_previous" class="secondary" type="button">Previous</button>
-              <button id="btn_connect" type="submit">Join</button>
-            </div>
-          </form>
-          <p id="setup_msg" class="helper"></p>
         </div>
       </div>
     </section>
@@ -630,27 +597,9 @@
           <div id="center_settings" class="center-pane hidden" data-center-tab="settings">
             <div class="settings-container">
               <div class="settings-tabs">
-                <button class="settings-tab active" type="button" data-settings-tab="config">Configuration</button>
                 <button class="settings-tab" type="button" data-settings-tab="account">Account</button>
                 <button class="settings-tab" type="button" data-settings-tab="policy">Policy</button>
-                <button class="settings-tab" type="button" data-settings-tab="connectors">Connectors</button>
-              </div>
-
-              <div id="settings_config_pane" class="settings-tab-pane">
-                <div class="config-grid">
-                  <label>OpenClaw Connection</label>
-                  <select id="home_connections"></select>
-                  <div class="action-row">
-                    <button id="btn_refresh_home" class="secondary" type="button">Refresh</button>
-                    <button id="btn_open_connect" class="secondary" type="button">Add OpenClaw</button>
-                  </div>
-                  <div class="config-card">
-                    <div class="config-row"><span>Name</span><strong id="config_conn_name">-</strong></div>
-                    <div class="config-row"><span>Base URL</span><code id="config_conn_url">-</code></div>
-                    <div class="config-row"><span>Status</span><span id="config_conn_status" class="status-pill disconnected">Disconnected</span></div>
-                  </div>
-                  <p id="config_msg" class="helper"></p>
-                </div>
+                <button class="settings-tab active" type="button" data-settings-tab="connectors">Connectors</button>
               </div>
 
               <div id="settings_account_pane" class="settings-tab-pane hidden">
@@ -714,7 +663,7 @@
                 <div id="settings_policy_content" class="settings-policy-content"></div>
               </div>
 
-              <div id="settings_connectors_pane" class="settings-tab-pane hidden">
+              <div id="settings_connectors_pane" class="settings-tab-pane">
                 <div class="account-grid">
                   <section class="account-card">
                     <div class="account-card-head">
