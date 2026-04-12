@@ -586,9 +586,18 @@ def register_routes(app: FastAPI) -> None:
             "SELECT id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (payload.connection_id, user_id),
         ).fetchone()
+        # Also accept connector IDs as a valid connection source
+        is_connector_mode = False
+        connector_c = None
         if not c:
-            conn.close()
-            raise HTTPException(400, "Invalid connection_id (not found for this user)")
+            connector_c = conn.execute(
+                "SELECT id FROM connectors WHERE id = ? AND user_id = ?",
+                (payload.connection_id, user_id),
+            ).fetchone()
+            if not connector_c:
+                conn.close()
+                raise HTTPException(400, "Invalid connection_id (not found for this user)")
+            is_connector_mode = True
 
         policy_row = conn.execute(
             "SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1",
@@ -600,7 +609,7 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(
                 400,
-                "Primary owner agent is not configured for this connection. Re-run OpenClaw bootstrap first.",
+                "Primary owner agent is not configured for this connection. Run bootstrap first.",
             )
         managed_primary = conn.execute(
             """
@@ -615,7 +624,7 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(
                 400,
-                "Primary owner agent is missing from managed agents. Reconnect OpenClaw and try again.",
+                "Primary owner agent is missing from managed agents. Re-run bootstrap and try again.",
             )
         main_agent_name = str(managed_primary["agent_name"] or main_agent_name or main_agent_id).strip() or main_agent_id
 
@@ -645,9 +654,10 @@ def register_routes(app: FastAPI) -> None:
                 id, user_id, env_id, title, brief, goal, setup_json, plan_text, plan_status, plan_updated_at, plan_approved_at,
                 execution_status, progress_pct, execution_updated_at,
                 usage_prompt_tokens, usage_completion_tokens, usage_total_tokens, usage_updated_at,
-                connection_id, workspace_root, project_root, scope_requires_owner_approval, created_at
+                connection_id, workspace_root, project_root, scope_requires_owner_approval, created_at,
+                backend_mode, connector_id
             )
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 pid,
@@ -673,6 +683,8 @@ def register_routes(app: FastAPI) -> None:
                 project_root,
                 1,
                 now,
+                "connector" if is_connector_mode else "direct_openclaw",
+                payload.connection_id if is_connector_mode else None,
             ),
         )
         conn.execute(
@@ -1212,7 +1224,7 @@ def register_routes(app: FastAPI) -> None:
                    p.plan_status, p.execution_status, p.progress_pct, p.connection_id,
                    c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
             FROM projects p
-            JOIN openclaw_connections c ON c.id = p.connection_id
+            LEFT JOIN openclaw_connections c ON c.id = p.connection_id
             LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
             WHERE p.id = ? AND p.user_id = ?
             """,

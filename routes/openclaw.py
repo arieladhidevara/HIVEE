@@ -1,4 +1,34 @@
 from hivee_shared import *
+from services.connector_dispatch import connector_chat_sync as _connector_chat_sync
+
+
+def _get_connector_row(connection_id: str, user_id: str, conn) -> Optional[Dict]:
+    """Return connector row if connection_id maps to a connector owned by user, else None."""
+    row = conn.execute(
+        "SELECT * FROM connectors WHERE id = ? AND user_id = ?",
+        (connection_id, user_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _get_connector_agents(connector_id: str, conn) -> List[Dict]:
+    """Return agents list from the latest connector snapshot."""
+    snap = conn.execute(
+        "SELECT snapshot_json FROM connector_agent_snapshots WHERE connector_id = ? ORDER BY updated_at DESC LIMIT 1",
+        (connector_id,),
+    ).fetchone()
+    if not snap:
+        return []
+    try:
+        data = json.loads(str(snap["snapshot_json"] or "{}"))
+        return [
+            {"id": str(a.get("id") or ""), "name": str(a.get("name") or a.get("id") or ""), "source": "connector"}
+            for a in (data.get("agents") or [])
+            if str(a.get("id") or "").strip()
+        ]
+    except Exception:
+        return []
+
 
 def register_routes(app: FastAPI) -> None:
     @app.post("/api/openclaw/connect")
@@ -101,10 +131,52 @@ def register_routes(app: FastAPI) -> None:
             "SELECT base_url, api_key, api_key_secret_id, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
-        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
-        conn.close()
+
+        # ── Connector mode ────────────────────────────────────────────────
         if not row:
-            raise HTTPException(404, "Connection not found")
+            connector_row = _get_connector_row(connection_id, user_id, conn)
+            if not connector_row:
+                conn.close()
+                raise HTTPException(404, "Connection not found")
+            agents = _get_connector_agents(connection_id, conn)
+            first = agents[0] if agents else None
+            main_agent_id = first["id"] if first else None
+            main_agent_name = first["name"] if first else None
+            workspace = _ensure_user_workspace(user_id)
+            if agents:
+                _provision_managed_agents_for_connection(
+                    user_id=user_id,
+                    env_id=None,
+                    connection_id=connection_id,
+                    base_url=str(connector_row.get("openclaw_base_url") or ""),
+                    raw_agents=agents,
+                    fallback_agent_id=main_agent_id,
+                    fallback_agent_name=main_agent_name,
+                )
+            _upsert_connection_policy(
+                connection_id,
+                user_id,
+                main_agent_id=main_agent_id,
+                main_agent_name=main_agent_name,
+                bootstrap_status="ok" if agents else "no_agents",
+                bootstrap_error=None if agents else "No agents found in connector snapshot",
+                workspace_tree=workspace.get("workspace_tree"),
+                workspace_root=workspace["workspace_root"],
+                templates_root=workspace["templates_root"],
+            )
+            conn.close()
+            return {
+                "ok": True,
+                "agents": agents,
+                "main_agent_id": main_agent_id,
+                "main_agent_name": main_agent_name,
+                "workspace_root": workspace["workspace_root"],
+                "transport": "connector",
+                "mode": "connector",
+            }
+        # ── Direct OpenClaw mode ──────────────────────────────────────────
+        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row)
+        conn.close()
     
         bootstrap = await _bootstrap_connection_workspace(user_id, row["base_url"], connection_api_key)
         _bs_ok = bool(bootstrap.get("ok"))
@@ -147,8 +219,21 @@ def register_routes(app: FastAPI) -> None:
             "SELECT id, base_url, name FROM openclaw_connections WHERE user_id = ? ORDER BY created_at DESC",
             (user_id,),
         ).fetchall()
+        connector_rows = conn.execute(
+            "SELECT id, name, openclaw_base_url, status FROM connectors WHERE user_id = ? ORDER BY last_seen_at DESC",
+            (user_id,),
+        ).fetchall()
         conn.close()
-        return [ConnectionOut(id=r["id"], base_url=r["base_url"], name=r["name"]) for r in rows]
+        result: List[ConnectionOut] = [ConnectionOut(id=r["id"], base_url=r["base_url"], name=r["name"]) for r in rows]
+        for r in connector_rows:
+            result.append(ConnectionOut(
+                id=r["id"],
+                base_url=str(r["openclaw_base_url"] or ""),
+                name=str(r["name"] or "connector"),
+                mode="connector",
+                connector_id=r["id"],
+            ))
+        return result
     
     @app.get("/api/openclaw/{connection_id}/agents")
     async def list_agents(request: Request, connection_id: str):
@@ -158,7 +243,36 @@ def register_routes(app: FastAPI) -> None:
             "SELECT base_url, api_key, api_key_secret_id, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
-        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
+
+        # ── Connector mode ────────────────────────────────────────────────
+        if not row:
+            connector_row = _get_connector_row(connection_id, user_id, conn)
+            if not connector_row:
+                conn.close()
+                raise HTTPException(404, "Connection not found")
+            agents = _get_connector_agents(connection_id, conn)
+            # Also merge any previously provisioned managed_agents for this connector
+            saved_rows = conn.execute(
+                "SELECT agent_id, agent_name FROM managed_agents WHERE user_id = ? AND connection_id = ? AND status = 'active' ORDER BY agent_name ASC",
+                (user_id, connection_id),
+            ).fetchall()
+            conn.close()
+            snap_ids = {a["id"] for a in agents}
+            for r in saved_rows:
+                if str(r["agent_id"]) not in snap_ids:
+                    agents.append({"id": str(r["agent_id"]), "name": str(r["agent_name"]), "source": "saved"})
+            connector_status = str(connector_row.get("status") or "offline")
+            conn_state = "healthy_connection" if connector_status == "online" else "agent_discovery_failed"
+            return {
+                "ok": True,
+                "agents": agents,
+                "agents_source": "connector" if agents else "none",
+                "transport": "connector",
+                "connection_state": conn_state,
+            }
+
+        # ── Direct OpenClaw mode ──────────────────────────────────────────
+        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row)
         # Load previously provisioned agents from DB as fallback for when live discovery fails.
         saved_rows = conn.execute(
             "SELECT agent_id, agent_name FROM managed_agents WHERE user_id = ? AND connection_id = ? AND status = ? ORDER BY agent_name ASC",
@@ -167,8 +281,6 @@ def register_routes(app: FastAPI) -> None:
         conn.close()
         saved_agents = [{"id": r["agent_id"], "name": r["agent_name"], "source": "saved"} for r in saved_rows]
         saved_ids = {r["agent_id"] for r in saved_rows}
-        if not row:
-            raise HTTPException(404, "Connection not found")
 
         res = await openclaw_list_agents(row["base_url"], connection_api_key)
         if not res.get("ok"):
@@ -213,8 +325,14 @@ def register_routes(app: FastAPI) -> None:
             (connection_id, user_id),
         ).fetchone()
         if not exists:
-            conn.close()
-            raise HTTPException(404, "Connection not found")
+            # Accept connector IDs as virtual connections
+            connector_exists = conn.execute(
+                "SELECT id FROM connectors WHERE id = ? AND user_id = ?",
+                (connection_id, user_id),
+            ).fetchone()
+            if not connector_exists:
+                conn.close()
+                raise HTTPException(404, "Connection not found")
     
         policy = conn.execute(
             """
@@ -308,6 +426,9 @@ def register_routes(app: FastAPI) -> None:
             "SELECT base_url, api_key, api_key_secret_id, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
+        connector_row: Optional[Dict] = None
+        if not row:
+            connector_row = _get_connector_row(connection_id, user_id, conn)
         connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         policy = conn.execute(
             "SELECT main_agent_id, workspace_root FROM connection_policies WHERE connection_id = ? AND user_id = ?",
@@ -409,14 +530,17 @@ def register_routes(app: FastAPI) -> None:
                 if payload.agent_id not in allowed:
                     conn.close()
                     raise HTTPException(403, "Only allowed project agents can be targeted in this project chat")
-        if not row:
+        if not row and not connector_row:
             conn.close()
             raise HTTPException(404, "Connection not found")
-        if a2a_access:
+        if a2a_access and row:
             connection_env_id = str(row["env_id"] or "").strip()
             if not connection_env_id or connection_env_id != str(a2a_access.get("env_id") or "").strip():
                 conn.close()
                 raise HTTPException(403, "A2A agent session is not linked to this connection")
+        if a2a_access and connector_row:
+            conn.close()
+            raise HTTPException(403, "A2A agent session is not supported in connector mode")
 
         workspace_root = str(policy["workspace_root"]) if (policy and policy["workspace_root"]) else HIVEE_ROOT
         main_agent_id = str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else ""
@@ -565,15 +689,24 @@ def register_routes(app: FastAPI) -> None:
             project_root=project_root,
             task_instruction=project_instruction,
         )
-        res = await openclaw_ws_chat(
-            base_url=row["base_url"],
-            api_key=connection_api_key,
-            message=scoped_message,
-            agent_id=effective_agent_id,
-            session_key=session_key,
-            timeout_sec=payload.timeout_sec,
-            user_id=user_id,
-        )
+        if connector_row:
+            res = await _connector_chat_sync(
+                connector_id=connection_id,
+                message=scoped_message,
+                agent_id=effective_agent_id,
+                session_key=session_key,
+                timeout_sec=payload.timeout_sec,
+            )
+        else:
+            res = await openclaw_ws_chat(
+                base_url=row["base_url"],
+                api_key=connection_api_key,
+                message=scoped_message,
+                agent_id=effective_agent_id,
+                session_key=session_key,
+                timeout_sec=payload.timeout_sec,
+                user_id=user_id,
+            )
         if not res.get("ok"):
             if project_scope:
                 _append_project_daily_log(
@@ -631,14 +764,23 @@ def register_routes(app: FastAPI) -> None:
                     user_message=payload.message,
                     previous_response=raw_agent_text,
                 )
-                followup_res = await openclaw_ws_chat(
-                    base_url=row["base_url"],
-                    api_key=connection_api_key,
-                    message=followup_prompt,
-                    agent_id=effective_agent_id,
-                    session_key=session_key,
-                    timeout_sec=max(10, min(payload.timeout_sec, 60)),
-                )
+                if connector_row:
+                    followup_res = await _connector_chat_sync(
+                        connector_id=connection_id,
+                        message=followup_prompt,
+                        agent_id=effective_agent_id,
+                        session_key=session_key,
+                        timeout_sec=max(10, min(payload.timeout_sec, 60)),
+                    )
+                else:
+                    followup_res = await openclaw_ws_chat(
+                        base_url=row["base_url"],
+                        api_key=connection_api_key,
+                        message=followup_prompt,
+                        agent_id=effective_agent_id,
+                        session_key=session_key,
+                        timeout_sec=max(10, min(payload.timeout_sec, 60)),
+                    )
                 if followup_res.get("ok"):
                     followup_text = str(followup_res.get("text") or "").strip()
                     followup_parsed = _extract_agent_report_payload(followup_text)
@@ -696,14 +838,23 @@ def register_routes(app: FastAPI) -> None:
                     task_text=payload.message,
                     previous_response=raw_agent_text,
                 )
-                rescue_res = await openclaw_ws_chat(
-                    base_url=row["base_url"],
-                    api_key=connection_api_key,
-                    message=rescue_prompt,
-                    agent_id=effective_agent_id,
-                    session_key=session_key,
-                    timeout_sec=max(10, min(payload.timeout_sec, 60)),
-                )
+                if connector_row:
+                    rescue_res = await _connector_chat_sync(
+                        connector_id=connection_id,
+                        message=rescue_prompt,
+                        agent_id=effective_agent_id,
+                        session_key=session_key,
+                        timeout_sec=max(10, min(payload.timeout_sec, 60)),
+                    )
+                else:
+                    rescue_res = await openclaw_ws_chat(
+                        base_url=row["base_url"],
+                        api_key=connection_api_key,
+                        message=rescue_prompt,
+                        agent_id=effective_agent_id,
+                        session_key=session_key,
+                        timeout_sec=max(10, min(payload.timeout_sec, 60)),
+                    )
                 if rescue_res.get("ok"):
                     rescue_text = str(rescue_res.get("text") or "").strip()
                     rescue_parsed = _extract_agent_report_payload(rescue_text)

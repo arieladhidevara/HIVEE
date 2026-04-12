@@ -54,6 +54,8 @@ class ConnectionOut(BaseModel):
     id: str
     base_url: str
     name: Optional[str]
+    mode: str = "direct"
+    connector_id: Optional[str] = None
 
 class ConnectionPolicyOut(BaseModel):
     connection_id: str
