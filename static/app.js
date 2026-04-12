@@ -9017,11 +9017,9 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     showEmptyProject();
     setView("home");
     applyConnectionStatus();
-    setMessage("chat_hint", "No OpenClaw connection detected yet. Pair your runtime from Settings > Connectors.", "");
+    setMessage("chat_hint", "No connector paired yet. Go to Settings > Connectors to pair your runtime.", "");
     await loadAccountProfile({ silent: true }).catch(() => {});
-    initSettingsTabs();
-    setNavTab("settings");
-    activateSettingsTab("connectors");
+    setNavTab("dashboard");
     return;
   }
 
@@ -9058,9 +9056,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     applyConnectionStatus();
     setMessage("chat_hint", "OpenClaw workspace check failed. Pair and run connector first from Settings > Connectors.", "error");
     if (workspaceErr) setMessage("chat_hint", workspaceErr, "error");
-    initSettingsTabs();
-    setNavTab("settings");
-    activateSettingsTab("connectors");
+    setNavTab("dashboard");
     return;
   }
 
