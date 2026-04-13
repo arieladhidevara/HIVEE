@@ -1756,7 +1756,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         f"2) Write or replace `{PROJECT_INFO_FILE}` with complete project context.\n"
         "3) Include: project summary, user requirements, constraints, assumptions, role responsibilities, execution prerequisites, and open questions.\n"
         "4) If some information is missing, make reasonable assumptions and clearly mark them under `Assumptions`.\n"
-        "5) Return JSON only with `chat_update`, `output_files`, optional `notes`, and pause fields.\n"
+        "5) Return JSON only with `chat_update`, `output_files`, optional `actions`, optional `notes`, and pause fields.\n"
         "6) Keep language concise and human-readable.\n"
     )
     info_context = _build_project_file_context(
@@ -2051,6 +2051,17 @@ async def _delegate_project_tasks(project_id: str) -> None:
         return
     connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=str(row["user_id"]), row=row)
     role_rows = _project_agent_rows(conn, project_id)
+    permissions_by_agent: Dict[str, Dict[str, Any]] = {}
+    for role_row in role_rows:
+        agent_key = str(role_row.get("agent_id") or "").strip()
+        if not agent_key:
+            continue
+        permissions_by_agent[agent_key] = _get_project_agent_permissions(
+            conn,
+            project_id=project_id,
+            agent_id=agent_key,
+            source_type=str(role_row.get("source_type") or "owner"),
+        )
     conn.close()
 
     if _coerce_plan_status(row["plan_status"]) != PLAN_STATUS_APPROVED:
@@ -2205,6 +2216,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             f"- Follow dependency order from {PROJECT_DELEGATION_FILE}.\n"
             "- If your output unblocks another agent, mention them explicitly as @agent_id in chat_update so handoff happens in chat.\n"
             "- Save concrete artifacts into project files using output_files.\n"
+            "- Use structured actions when you must mutate real project files or task-map state directly.\n"
             "- Persist deliverables in Hivee project files; do not keep final-only copies on provider/local runtime server.\n"
             "- If blocked by missing user approval/input (credentials, API key, sign-off, pit stop), set requires_user_input=true with pause_reason and resume_hint.\n"
             "- If user answers SKIP, decide assumptions responsibly and continue.\n"
@@ -2330,11 +2342,14 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "\n\n"
             + f"You are invited agent `{aid}` with role `{role}`.\n"
             + team_roster_text
+            + "\n\n"
+            + _build_project_task_snapshot(project_id)
             + "\n"
             + "Execute your assigned task and return JSON object only:\n"
             + "{\n"
             + "  \"chat_update\": \"Human-friendly update sentence to show in chat\",\n"
             + "  \"output_files\": [{\"path\":\"relative/path.ext\",\"content\":\"file content\",\"append\":false}],\n"
+            + "  \"actions\": [{\"type\":\"write_file\",\"path\":\"src/app.js\",\"content\":\"...\"}],\n"
             + "  \"notes\": \"optional technical notes\",\n"
             + "  \"requires_user_input\": false,\n"
             + "  \"pause_reason\": \"\",\n"
@@ -2343,6 +2358,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "Rules:\n"
             + "- chat_update must read like normal conversation.\n"
             + "- Put every created/updated artifact in output_files.\n"
+            + "- Use `actions` when you need to change real project files or task-map state in place.\n"
             + "- Persist deliverables in Hivee project files; do not keep final-only copies on provider/local runtime server.\n"
             + "- Use relative paths inside this project only.\n"
             + "- Use exact IDs from roster when mentioning other agents.\n"
@@ -2397,10 +2413,18 @@ async def _delegate_project_tasks(project_id: str) -> None:
         pause_reason = str(parsed_report.get("pause_reason") or "").strip()
         resume_hint = str(parsed_report.get("resume_hint") or "").strip()
         output_files_raw = parsed_report.get("output_files") or []
-        agent_output_allow_paths = [
-            USER_OUTPUTS_DIRNAME,
-            f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
-        ]
+        action_items_raw = parsed_report.get("actions") or []
+        agent_perms = permissions_by_agent.get(str(aid).strip()) or {}
+        if bool(agent_perms.get("can_write_files")):
+            agent_output_allow_paths = _normalize_permission_write_paths(
+                agent_perms.get("write_paths") or [],
+                fallback=[
+                    USER_OUTPUTS_DIRNAME,
+                    f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+                ],
+            )
+        else:
+            agent_output_allow_paths = []
         write_result = _apply_project_file_writes(
             owner_user_id=str(row["user_id"]),
             project_root=str(row["project_root"] or ""),
@@ -2410,6 +2434,18 @@ async def _delegate_project_tasks(project_id: str) -> None:
         )
         saved_files = write_result.get("saved") or []
         skipped_files = write_result.get("skipped") or []
+        action_result = _apply_project_actions(
+            owner_user_id=str(row["user_id"]),
+            project_id=project_id,
+            project_root=str(row["project_root"] or ""),
+            actions=action_items_raw if isinstance(action_items_raw, list) else [],
+            allow_paths=agent_output_allow_paths,
+            actor_type="project_agent",
+            actor_id=aid,
+            actor_label=f"agent:{aid}",
+        )
+        applied_actions = action_result.get("applied") or []
+        skipped_actions = action_result.get("skipped") or []
         artifact_followup_used = False
         artifact_rescue_used = False
         artifact_like_task = _looks_like_artifact_request(task_text)
@@ -2453,6 +2489,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 parsed_followup = _extract_agent_report_payload(followup_text)
                 followup_chat = str(parsed_followup.get("chat_update") or "").strip()
                 followup_writes = parsed_followup.get("output_files") or []
+                followup_actions = parsed_followup.get("actions") or []
                 requires_user_input = requires_user_input or bool(parsed_followup.get("requires_user_input"))
                 if not pause_reason:
                     pause_reason = str(parsed_followup.get("pause_reason") or "").strip()
@@ -2469,10 +2506,26 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 )
                 followup_saved = followup_write_result.get("saved") or []
                 followup_skipped = followup_write_result.get("skipped") or []
+                followup_action_result = _apply_project_actions(
+                    owner_user_id=str(row["user_id"]),
+                    project_id=project_id,
+                    project_root=str(row["project_root"] or ""),
+                    actions=followup_actions if isinstance(followup_actions, list) else [],
+                    allow_paths=agent_output_allow_paths,
+                    actor_type="project_agent",
+                    actor_id=aid,
+                    actor_label=f"agent:{aid}",
+                )
+                followup_applied_actions = followup_action_result.get("applied") or []
+                followup_skipped_actions = followup_action_result.get("skipped") or []
                 if followup_saved:
                     saved_files.extend(followup_saved)
                 if followup_skipped:
                     skipped_files.extend(followup_skipped)
+                if followup_applied_actions:
+                    applied_actions.extend(followup_applied_actions)
+                if followup_skipped_actions:
+                    skipped_actions.extend(followup_skipped_actions)
                 if followup_chat:
                     chat_update = followup_chat
                 if followup_text:
@@ -2522,6 +2575,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 parsed_rescue = _extract_agent_report_payload(rescue_text)
                 rescue_chat = str(parsed_rescue.get("chat_update") or "").strip()
                 rescue_writes = parsed_rescue.get("output_files") or []
+                rescue_actions = parsed_rescue.get("actions") or []
                 if not rescue_writes:
                     rescue_writes = _extract_artifacts_from_fenced_code(rescue_text)
                 rescue_write_result = _apply_project_file_writes(
@@ -2533,10 +2587,26 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 )
                 rescue_saved = rescue_write_result.get("saved") or []
                 rescue_skipped = rescue_write_result.get("skipped") or []
+                rescue_action_result = _apply_project_actions(
+                    owner_user_id=str(row["user_id"]),
+                    project_id=project_id,
+                    project_root=str(row["project_root"] or ""),
+                    actions=rescue_actions if isinstance(rescue_actions, list) else [],
+                    allow_paths=agent_output_allow_paths,
+                    actor_type="project_agent",
+                    actor_id=aid,
+                    actor_label=f"agent:{aid}",
+                )
+                rescue_applied_actions = rescue_action_result.get("applied") or []
+                rescue_skipped_actions = rescue_action_result.get("skipped") or []
                 if rescue_saved:
                     saved_files.extend(rescue_saved)
                 if rescue_skipped:
                     skipped_files.extend(rescue_skipped)
+                if rescue_applied_actions:
+                    applied_actions.extend(rescue_applied_actions)
+                if rescue_skipped_actions:
+                    skipped_actions.extend(rescue_skipped_actions)
                 requires_user_input = requires_user_input or bool(parsed_rescue.get("requires_user_input"))
                 if not pause_reason:
                     pause_reason = str(parsed_rescue.get("pause_reason") or "").strip()
@@ -2633,6 +2703,11 @@ async def _delegate_project_tasks(project_id: str) -> None:
                     "actor": f"agent:{aid}",
                 },
             )
+        for item in applied_actions:
+            event_name = str(item.get("event") or "").strip()
+            event_payload = item.get("event_payload") if isinstance(item.get("event_payload"), dict) else {}
+            if event_name:
+                await emit(project_id, event_name, event_payload)
         await emit(
             project_id,
             "agent.task.reported",
@@ -2643,11 +2718,24 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 "output_file": f"{USER_OUTPUTS_DIRNAME}/{report_file.name}",
                 "saved_files": saved_files[:20],
                 "skipped_files": skipped_files[:10],
+                "applied_actions": applied_actions[:20],
+                "skipped_actions": skipped_actions[:10],
                 "requires_user_input": bool(pause_decision.get("pause")),
                 "pause_reason": pause_reason[:500],
                 "resume_hint": resume_hint[:300],
             },
         )
+        if applied_actions:
+            await emit(
+                project_id,
+                "agent.task.actions_applied",
+                {
+                    "agent_id": aid,
+                    "agent_name": agent_name,
+                    "applied_actions": applied_actions[:20],
+                    "skipped_actions": skipped_actions[:10],
+                },
+            )
         _append_project_daily_log(
             owner_user_id=str(row["user_id"]),
             project_root=str(row["project_root"] or ""),
@@ -2657,6 +2745,8 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 "output_file": f"{USER_OUTPUTS_DIRNAME}/{report_file.name}",
                 "saved_files": saved_files[:20],
                 "skipped_files": skipped_files[:10],
+                "applied_actions": applied_actions[:20],
+                "skipped_actions": skipped_actions[:10],
                 "requires_user_input": bool(pause_decision.get("pause")),
                 "pause_reason": pause_reason[:500],
                 "resume_hint": resume_hint[:300],

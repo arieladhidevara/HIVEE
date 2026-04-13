@@ -2783,6 +2783,18 @@ textarea[readonly]:focus {
 .connector-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .connector-card-info { display: flex; align-items: center; gap: 10px; }
 .connector-card-name { font-size: 14px; font-weight: 700; }
+.connector-card-actions { display: flex; align-items: center; gap: 8px; }
+.connector-card-type {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .connector-card-meta { display: grid; gap: 5px; }
 .connector-meta-row {
   display: grid; grid-template-columns: 80px 1fr; gap: 8px;

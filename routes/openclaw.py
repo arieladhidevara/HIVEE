@@ -29,6 +29,66 @@ def _get_connector_agents(connector_id: str, conn) -> List[Dict]:
     except Exception:
         return []
 
+def _list_connection_delete_blockers(conn, *, user_id: str, connection_id: str) -> Dict[str, Any]:
+    owner_projects = conn.execute(
+        """
+        SELECT id, title
+        FROM projects
+        WHERE user_id = ? AND connection_id = ?
+        ORDER BY created_at DESC
+        LIMIT 6
+        """,
+        (user_id, connection_id),
+    ).fetchall()
+    active_memberships = conn.execute(
+        """
+        SELECT pem.project_id, pem.agent_id, p.title AS project_title
+        FROM project_external_agent_memberships pem
+        LEFT JOIN projects p ON p.id = pem.project_id
+        WHERE pem.member_user_id = ? AND pem.member_connection_id = ? AND pem.status = 'active'
+        ORDER BY pem.updated_at DESC, pem.created_at DESC
+        LIMIT 6
+        """,
+        (user_id, connection_id),
+    ).fetchall()
+    return {
+        "projects": [
+            {"id": str(row["id"] or ""), "title": str(row["title"] or row["id"] or "").strip() or "Project"}
+            for row in owner_projects
+        ],
+        "active_memberships": [
+            {
+                "project_id": str(row["project_id"] or ""),
+                "project_title": str(row["project_title"] or row["project_id"] or "").strip() or "Project",
+                "agent_id": str(row["agent_id"] or ""),
+            }
+            for row in active_memberships
+        ],
+    }
+
+def _cleanup_connection_runtime_state(conn, *, user_id: str, connection_id: str) -> None:
+    conn.execute("DELETE FROM managed_agent_approval_rules WHERE user_id = ? AND connection_id = ?", (user_id, connection_id))
+    conn.execute("DELETE FROM managed_agent_metrics WHERE user_id = ? AND connection_id = ?", (user_id, connection_id))
+    conn.execute("DELETE FROM managed_agent_permissions WHERE user_id = ? AND connection_id = ?", (user_id, connection_id))
+    conn.execute("DELETE FROM managed_agent_checkpoints WHERE user_id = ? AND connection_id = ?", (user_id, connection_id))
+    conn.execute("DELETE FROM managed_agent_history WHERE user_id = ? AND connection_id = ?", (user_id, connection_id))
+    conn.execute("DELETE FROM managed_agent_memory WHERE user_id = ? AND connection_id = ?", (user_id, connection_id))
+    conn.execute("DELETE FROM managed_agents WHERE user_id = ? AND connection_id = ?", (user_id, connection_id))
+    conn.execute("DELETE FROM connection_policies WHERE user_id = ? AND connection_id = ?", (user_id, connection_id))
+
+def _delete_connection_secret_rows(conn, *, user_id: str, secret_id: Optional[str]) -> None:
+    sid = str(secret_id or "").strip()
+    if not sid:
+        return
+    row = conn.execute(
+        "SELECT id FROM user_secrets WHERE id = ? AND user_id = ? LIMIT 1",
+        (sid, user_id),
+    ).fetchone()
+    if not row:
+        return
+    conn.execute("DELETE FROM user_secret_versions WHERE secret_id = ?", (sid,))
+    conn.execute("DELETE FROM user_secrets WHERE id = ?", (sid,))
+
 
 def register_routes(app: FastAPI) -> None:
     @app.post("/api/openclaw/connect")
@@ -234,7 +294,69 @@ def register_routes(app: FastAPI) -> None:
                 connector_id=r["id"],
             ))
         return result
-    
+
+    @app.delete("/api/openclaw/{connection_id}")
+    async def delete_connection(request: Request, connection_id: str):
+        user_id = get_session_user(request)
+        conn = db()
+        direct_row = conn.execute(
+            "SELECT id, name, base_url, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
+            (connection_id, user_id),
+        ).fetchone()
+        connector_row = None if direct_row else _get_connector_row(connection_id, user_id, conn)
+        if not direct_row and not connector_row:
+            conn.close()
+            raise HTTPException(404, "Connection not found")
+
+        blockers = _list_connection_delete_blockers(conn, user_id=user_id, connection_id=connection_id)
+        if blockers["projects"] or blockers["active_memberships"]:
+            conn.close()
+            raise HTTPException(
+                409,
+                {
+                    "message": "Connection is still in use",
+                    "references": blockers,
+                    "hint": "Reassign or remove the listed project/membership references first, then delete this connection.",
+                },
+            )
+
+        mode = "connector" if connector_row else "direct"
+        name = str((connector_row or {}).get("name") or (direct_row["name"] if direct_row else "") or connection_id)
+        base_url = str((connector_row or {}).get("openclaw_base_url") or (direct_row["base_url"] if direct_row else "") or "")
+        try:
+            _cleanup_connection_runtime_state(conn, user_id=user_id, connection_id=connection_id)
+            if connector_row:
+                conn.execute("DELETE FROM connector_command_results WHERE connector_id = ?", (connection_id,))
+                conn.execute("DELETE FROM connector_commands WHERE connector_id = ?", (connection_id,))
+                conn.execute("DELETE FROM connector_agent_snapshots WHERE connector_id = ?", (connection_id,))
+                conn.execute(
+                    "UPDATE connector_pairing_tokens SET used_by_connector_id = NULL WHERE user_id = ? AND used_by_connector_id = ?",
+                    (user_id, connection_id),
+                )
+                conn.execute("DELETE FROM connectors WHERE id = ? AND user_id = ?", (connection_id, user_id))
+            else:
+                _delete_connection_secret_rows(
+                    conn,
+                    user_id=user_id,
+                    secret_id=str(direct_row["api_key_secret_id"] or "").strip() or None,
+                )
+                conn.execute("DELETE FROM openclaw_connections WHERE id = ? AND user_id = ?", (connection_id, user_id))
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            conn.close()
+            raise HTTPException(500, f"Failed to delete connection: {detail_to_text(exc)}")
+        conn.close()
+        return {
+            "ok": True,
+            "deleted": {
+                "id": connection_id,
+                "mode": mode,
+                "name": name,
+                "base_url": base_url,
+            },
+        }
+
     @app.get("/api/openclaw/{connection_id}/agents")
     async def list_agents(request: Request, connection_id: str):
         user_id = get_session_user(request)
@@ -670,6 +792,9 @@ def register_routes(app: FastAPI) -> None:
                     "- You currently do not have permission to read project files.\n"
                     "- Ask @owner to grant file-read permission if deeper context is required."
                 )
+            task_snapshot = _build_project_task_snapshot(session_key)
+            if task_snapshot:
+                sections.append(task_snapshot)
             project_instruction = "\n\n".join([s for s in sections if str(s or "").strip()])
             if bool(selected_agent_permissions.get("can_write_files")):
                 write_allow_paths = _normalize_permission_write_paths(
@@ -732,15 +857,28 @@ def register_routes(app: FastAPI) -> None:
             pause_reason = str(parsed_payload.get("pause_reason") or "").strip()
             resume_hint = str(parsed_payload.get("resume_hint") or "").strip()
             write_payload = parsed_payload.get("output_files") or []
+            action_payload = parsed_payload.get("actions") or []
             write_result = _apply_project_file_writes(
                 owner_user_id=project_owner_user_id,
                 project_root=str(project_scope["project_root"] or ""),
                 writes=write_payload if isinstance(write_payload, list) else [],
                 default_prefix=f"{USER_OUTPUTS_DIRNAME}/chat-generated",
-            allow_paths=write_allow_paths,
+                allow_paths=write_allow_paths,
             )
             saved_writes = write_result.get("saved") or []
             skipped_writes = write_result.get("skipped") or []
+            action_result = _apply_project_actions(
+                owner_user_id=project_owner_user_id,
+                project_id=session_key,
+                project_root=str(project_scope["project_root"] or ""),
+                actions=action_payload if isinstance(action_payload, list) else [],
+                allow_paths=write_allow_paths,
+                actor_type="project_agent",
+                actor_id=str(effective_agent_id or "").strip() or None,
+                actor_label=f"agent:{effective_agent_id or 'unknown'}",
+            )
+            applied_actions = action_result.get("applied") or []
+            skipped_actions = action_result.get("skipped") or []
             artifact_followup_used = False
             artifact_rescue_used = False
             artifact_like_request = _looks_like_artifact_request(payload.message)
@@ -793,6 +931,7 @@ def register_routes(app: FastAPI) -> None:
                     followup_parsed = _extract_agent_report_payload(followup_text)
                     followup_chat_update = str(followup_parsed.get("chat_update") or "").strip()
                     followup_writes_raw = followup_parsed.get("output_files") or []
+                    followup_actions_raw = followup_parsed.get("actions") or []
                     requires_user_input = requires_user_input or bool(followup_parsed.get("requires_user_input"))
                     if not pause_reason:
                         pause_reason = str(followup_parsed.get("pause_reason") or "").strip()
@@ -805,14 +944,30 @@ def register_routes(app: FastAPI) -> None:
                         project_root=str(project_scope["project_root"] or ""),
                         writes=followup_writes_raw if isinstance(followup_writes_raw, list) else [],
                         default_prefix=f"{USER_OUTPUTS_DIRNAME}/chat-generated",
-                    allow_paths=write_allow_paths,
+                        allow_paths=write_allow_paths,
                     )
                     followup_saved = followup_write_result.get("saved") or []
                     followup_skipped = followup_write_result.get("skipped") or []
+                    followup_action_result = _apply_project_actions(
+                        owner_user_id=project_owner_user_id,
+                        project_id=session_key,
+                        project_root=str(project_scope["project_root"] or ""),
+                        actions=followup_actions_raw if isinstance(followup_actions_raw, list) else [],
+                        allow_paths=write_allow_paths,
+                        actor_type="project_agent",
+                        actor_id=str(effective_agent_id or "").strip() or None,
+                        actor_label=f"agent:{effective_agent_id or 'unknown'}",
+                    )
+                    followup_applied_actions = followup_action_result.get("applied") or []
+                    followup_skipped_actions = followup_action_result.get("skipped") or []
                     if followup_saved:
                         saved_writes.extend(followup_saved)
                     if followup_skipped:
                         skipped_writes.extend(followup_skipped)
+                    if followup_applied_actions:
+                        applied_actions.extend(followup_applied_actions)
+                    if followup_skipped_actions:
+                        skipped_actions.extend(followup_skipped_actions)
                     if followup_chat_update:
                         chat_update = followup_chat_update
                         res["text"] = followup_chat_update
@@ -867,6 +1022,7 @@ def register_routes(app: FastAPI) -> None:
                     rescue_parsed = _extract_agent_report_payload(rescue_text)
                     rescue_chat_update = str(rescue_parsed.get("chat_update") or "").strip()
                     rescue_writes_raw = rescue_parsed.get("output_files") or []
+                    rescue_actions_raw = rescue_parsed.get("actions") or []
                     if not rescue_writes_raw:
                         rescue_writes_raw = _extract_artifacts_from_fenced_code(rescue_text)
                     rescue_write_result = _apply_project_file_writes(
@@ -874,14 +1030,30 @@ def register_routes(app: FastAPI) -> None:
                         project_root=str(project_scope["project_root"] or ""),
                         writes=rescue_writes_raw if isinstance(rescue_writes_raw, list) else [],
                         default_prefix=f"{USER_OUTPUTS_DIRNAME}/chat-generated",
-                    allow_paths=write_allow_paths,
+                        allow_paths=write_allow_paths,
                     )
                     rescue_saved = rescue_write_result.get("saved") or []
                     rescue_skipped = rescue_write_result.get("skipped") or []
+                    rescue_action_result = _apply_project_actions(
+                        owner_user_id=project_owner_user_id,
+                        project_id=session_key,
+                        project_root=str(project_scope["project_root"] or ""),
+                        actions=rescue_actions_raw if isinstance(rescue_actions_raw, list) else [],
+                        allow_paths=write_allow_paths,
+                        actor_type="project_agent",
+                        actor_id=str(effective_agent_id or "").strip() or None,
+                        actor_label=f"agent:{effective_agent_id or 'unknown'}",
+                    )
+                    rescue_applied_actions = rescue_action_result.get("applied") or []
+                    rescue_skipped_actions = rescue_action_result.get("skipped") or []
                     if rescue_saved:
                         saved_writes.extend(rescue_saved)
                     if rescue_skipped:
                         skipped_writes.extend(rescue_skipped)
+                    if rescue_applied_actions:
+                        applied_actions.extend(rescue_applied_actions)
+                    if rescue_skipped_actions:
+                        skipped_actions.extend(rescue_skipped_actions)
                     requires_user_input = requires_user_input or bool(rescue_parsed.get("requires_user_input"))
                     if not pause_reason:
                         pause_reason = str(rescue_parsed.get("pause_reason") or "").strip()
@@ -1046,6 +1218,11 @@ def register_routes(app: FastAPI) -> None:
                         "actor": f"agent:{effective_agent_id or 'unknown'}",
                     },
                 )
+            for item in applied_actions:
+                event_name = str(item.get("event") or "").strip()
+                event_payload = item.get("event_payload") if isinstance(item.get("event_payload"), dict) else {}
+                if event_name:
+                    await emit(session_key, event_name, event_payload)
             if saved_writes:
                 await emit(
                     session_key,
@@ -1056,6 +1233,16 @@ def register_routes(app: FastAPI) -> None:
                         "skipped": skipped_writes[:10],
                     },
                 )
+            if applied_actions:
+                await emit(
+                    session_key,
+                    "agent.chat.actions_applied",
+                    {
+                        "agent_id": effective_agent_id,
+                        "applied_actions": applied_actions[:20],
+                        "skipped_actions": skipped_actions[:10],
+                    },
+                )
             _append_project_daily_log(
                 owner_user_id=project_owner_user_id,
                 project_root=str(project_scope["project_root"] or ""),
@@ -1064,12 +1251,15 @@ def register_routes(app: FastAPI) -> None:
                     f"USER: {payload.message.strip()}\n"
                     f"AGENT({effective_agent_id or 'auto'}): {str(res.get('text') or '').strip()}\n"
                     f"FILES_SAVED: {len(saved_writes)}\n"
+                    f"ACTIONS_APPLIED: {len(applied_actions)}\n"
                     f"ARTIFACT_FOLLOWUP_USED: {'yes' if artifact_followup_used else 'no'}\n"
                     f"ARTIFACT_RESCUE_USED: {'yes' if artifact_rescue_used else 'no'}"
                 ),
                 payload={
                     "saved_files": saved_writes,
                     "skipped_files": skipped_writes[:10],
+                    "applied_actions": applied_actions[:20],
+                    "skipped_actions": skipped_actions[:10],
                     "requires_user_input": bool(res.get("requires_user_input")),
                     "pause_reason": str(res.get("pause_reason") or "")[:500],
                     "resume_hint": str(res.get("resume_hint") or "")[:300],
@@ -1077,6 +1267,8 @@ def register_routes(app: FastAPI) -> None:
             )
             res["saved_files"] = saved_writes
             res["skipped_files"] = skipped_writes[:20]
+            res["applied_actions"] = applied_actions[:20]
+            res["skipped_actions"] = skipped_actions[:20]
             res["artifact_followup_used"] = artifact_followup_used
             res["artifact_rescue_used"] = artifact_rescue_used
         res["resolved_agent_id"] = effective_agent_id

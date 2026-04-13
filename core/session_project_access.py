@@ -76,7 +76,7 @@ def _default_project_agent_write_paths(source_type: str, agent_id: str) -> List[
     if source == "external":
         safe_agent = _safe_agent_filename(agent_id)
         return [f"{USER_OUTPUTS_DIRNAME}/external/{safe_agent}"]
-    return [USER_OUTPUTS_DIRNAME, PROJECT_INFO_DIRNAME, "agents", "logs"]
+    return ["*"]
 
 
 def _normalize_permission_write_paths(raw_paths: Any, *, fallback: Optional[List[str]] = None) -> List[str]:
@@ -103,7 +103,13 @@ def _normalize_permission_write_paths(raw_paths: Any, *, fallback: Optional[List
     cleaned: List[str] = []
     seen: set[str] = set()
     for item in candidate_values:
-        rel = _clean_relative_project_path(str(item or ""))
+        raw_item = str(item or "").strip()
+        if raw_item in {"*", "all", "project", "project_root"}:
+            if "*" not in seen:
+                seen.add("*")
+                cleaned.append("*")
+            continue
+        rel = _clean_relative_project_path(raw_item)
         if not rel:
             continue
         rel = _remap_legacy_project_doc_rel_path(rel)
@@ -161,11 +167,19 @@ def _get_project_agent_permissions(
     ).fetchone()
     if not row:
         return defaults
+    write_paths = _normalize_permission_write_paths(row["write_paths_json"], fallback=defaults["write_paths"])
+    source = str(source_type or "owner").strip().lower() or "owner"
+    legacy_owner_defaults = _normalize_permission_write_paths(
+        [USER_OUTPUTS_DIRNAME, PROJECT_INFO_DIRNAME, "agents", "logs"],
+        fallback=None,
+    )
+    if source != "external" and write_paths == legacy_owner_defaults:
+        write_paths = ["*"]
     return {
         "can_chat_project": bool(_to_int(row["can_chat_project"])),
         "can_read_files": bool(_to_int(row["can_read_files"])),
         "can_write_files": bool(_to_int(row["can_write_files"])),
-        "write_paths": _normalize_permission_write_paths(row["write_paths_json"], fallback=defaults["write_paths"]),
+        "write_paths": write_paths,
         "has_custom": True,
     }
 
@@ -178,6 +192,8 @@ def _project_path_allowed_for_agent(rel_path: str, allow_paths: List[str]) -> bo
     normalized_allow = _normalize_permission_write_paths(allow_paths, fallback=[])
     if not normalized_allow:
         return False
+    if "*" in normalized_allow:
+        return True
     return any(_rel_path_startswith(rel, root) for root in normalized_allow)
 
 def _parse_a2a_session_scopes(raw_scopes: Any) -> List[str]:

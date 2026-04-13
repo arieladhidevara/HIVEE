@@ -20,6 +20,7 @@ let connectionsCache = [];
 let projectsCache = [];
 let connectionHealthy = false;
 let currentAccountProfile = null;
+let savedConnectionsList = [];
 
 let activeNavTab = "projects";
 let activeProjectPane = "overview";
@@ -3367,9 +3368,15 @@ function eventSummary(kind, payload) {
   if (kind === "agent.task.assigned") return `${name} assigned task.`;
   if (kind === "agent.task.started") return `${name} started task.`;
   if (kind === "agent.task.reported") return `${name} reported update.`;
+  if (kind === "agent.task.actions_applied") return `${name} applied project actions.`;
+  if (kind === "agent.chat.actions_applied") return `${name} applied structured project actions.`;
   if (kind === "agent.task.failed") return `${name} failed: ${shortText(data.error || "", 180)}`;
   if (kind === "agent.task.live") return `${name}: ${shortText(data.note || "", 180)}`;
   if (kind === "project.file.written") return `${data.actor || "actor"} wrote ${data.path || "file"}.`;
+  if (kind === "project.file.deleted") return `${data.actor || "actor"} deleted ${data.path || "file"}.`;
+  if (kind === "project.file.moved") return `${data.actor || "actor"} moved ${data.path || "file"} to ${data.to_path || "new path"}.`;
+  if (kind === "project.task.deleted") return `Task deleted: ${data.task_id || "task"}.`;
+  if (kind === "project.task.blueprint.applied") return `Task blueprint applied: ${Number(data.created_count || 0)} task(s).`;
   if (kind === "project.execution.auto_paused") return `Execution paused: ${shortText(data.reason || "Waiting for user input.", 180)}`;
   if (kind === "project.execution.resumed_after_pause") return "Execution resumed after approval.";
   if (kind.startsWith("project.execution.")) return `Execution ${kind.split(".").pop()}: ${data.status || "-"}.`;
@@ -3408,6 +3415,8 @@ function eventChatMessage(kind, payload) {
   }
   if (kind === "agent.task.started") return { role: "agent", agentId: data.agent_id || name, text: "I started working on my assigned task.", meta: `${name}` };
   if (kind === "agent.task.reported") return { role: "agent", agentId: data.agent_id || name, text: data.text || "I finished this step and shared my output.", meta: `${name}` };
+  if (kind === "agent.task.actions_applied") return { role: "system", text: `${name} applied structured project actions.`, meta: "workflow" };
+  if (kind === "agent.chat.actions_applied") return { role: "system", text: `${name} applied structured project actions.`, meta: "workflow" };
   if (kind === "agent.chat.update") return { role: "agent", agentId: data.agent_id || name, text: data.text || "Update posted.", meta: `${name}` };
   if (kind === "project.external_agent.joined") {
     const roleText = String(data.role || "").trim();
@@ -6976,6 +6985,99 @@ async function loadConnectorsList() {
   }
 }
 
+async function loadSavedConnectionsList({ silent = false } = {}) {
+  const msg = $("saved_connections_msg");
+  if (msg && !silent) { msg.textContent = "Loading..."; msg.className = "helper"; }
+  try {
+    const data = await api("/api/openclaw/connections");
+    savedConnectionsList = Array.isArray(data) ? data : [];
+    if (msg) {
+      msg.textContent = savedConnectionsList.length ? `${savedConnectionsList.length} saved connection(s)` : "No saved connections yet.";
+      msg.className = "helper";
+    }
+    renderSavedConnectionsList();
+  } catch (e) {
+    savedConnectionsList = [];
+    if (msg) { msg.textContent = detailToText(e?.message || e); msg.className = "helper error"; }
+    renderSavedConnectionsList();
+  }
+}
+
+async function deleteSavedConnection(connectionId) {
+  const id = String(connectionId || "").trim();
+  if (!id) throw new Error("connection_id is required");
+  const conn = savedConnectionsList.find((item) => String(item?.id || "").trim() === id)
+    || connectionsCache.find((item) => String(item?.id || "").trim() === id)
+    || connectorsList.find((item) => String(item?.id || "").trim() === id)
+    || null;
+  const label = String(conn?.name || conn?.id || "connection").trim();
+  const confirmed = window.confirm(`Delete connection "${label}"?\nThis removes the saved connection and its managed-agent cache.`);
+  if (!confirmed) return;
+  try {
+    const res = await api(`/api/openclaw/${encodeURIComponent(id)}`, "DELETE");
+    const deletedLabel = String(res?.deleted?.name || label).trim();
+    setMessage("saved_connections_msg", `Connection "${deletedLabel}" deleted.`, "ok");
+    await fetchInitial();
+    await Promise.all([
+      loadSavedConnectionsList({ silent: true }).catch(() => {}),
+      loadConnectorsList().catch(() => {}),
+      loadProjectInviteConnections().catch(() => {}),
+    ]);
+  } catch (e) {
+    const detail = e?.message || e;
+    let message = detailToText(detail);
+    if (typeof detail === "string" && detail.includes("Connection is still in use")) {
+      message = "Connection masih dipakai project atau membership aktif. Reassign/detach dulu baru hapus.";
+    }
+    setMessage("saved_connections_msg", message, "error");
+    throw e;
+  }
+}
+
+function renderSavedConnectionsList() {
+  const list = $("saved_connections_list");
+  if (!list) return;
+  if (!savedConnectionsList.length) {
+    list.innerHTML = '<p class="helper">No saved connections yet.</p>';
+    return;
+  }
+  list.innerHTML = savedConnectionsList.map((c) => {
+    const mode = String(c.mode || "direct").trim().toLowerCase();
+    const typeLabel = mode === "connector" ? "Connector" : "Direct";
+    const activeBadge = String(activeConnectionId || "").trim() === String(c.id || "").trim() ? " | active" : "";
+    const displayName = c.name || (mode === "connector" ? "Connector" : "OpenClaw");
+    return `
+      <div class="connector-card">
+        <div class="connector-card-header">
+          <div class="connector-card-info">
+            <strong class="connector-card-name">${esc(displayName)}</strong>
+            <span class="connector-card-type">${esc(typeLabel + activeBadge)}</span>
+          </div>
+          <div class="connector-card-actions">
+            <button
+              type="button"
+              class="secondary danger"
+              data-delete-connection-id="${esc(c.id || "")}"
+              style="min-height:30px;padding:4px 12px;font-size:11px"
+            >Delete</button>
+          </div>
+        </div>
+        <div class="connector-card-meta">
+          <div class="connector-meta-row"><span class="connector-meta-label">Name</span><span>${esc(displayName)}</span></div>
+          <div class="connector-meta-row"><span class="connector-meta-label">Mode</span><span>${esc(typeLabel)}</span></div>
+          <div class="connector-meta-row"><span class="connector-meta-label">OpenClaw</span><code>${esc(c.base_url || "—")}</code></div>
+          <div class="connector-meta-row"><span class="connector-meta-label">ID</span><code style="font-size:10px">${esc(c.id || "—")}</code></div>
+        </div>
+      </div>
+    `;
+  }).join("");
+  list.querySelectorAll("[data-delete-connection-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      deleteSavedConnection(btn.getAttribute("data-delete-connection-id")).catch(() => {});
+    });
+  });
+}
+
 function renderConnectorsList() {
   const list = $("connectors_list");
   if (!list) return;
@@ -6993,6 +7095,14 @@ function renderConnectorsList() {
             <strong class="connector-card-name">${esc(c.name || "Connector")}</strong>
             <span class="agent-status-badge ${statusClass}"><span class="asd"></span>${esc(c.status || "offline")}</span>
           </div>
+          <div class="connector-card-actions">
+            <button
+              type="button"
+              class="secondary danger"
+              data-delete-connection-id="${esc(c.id || "")}"
+              style="min-height:30px;padding:4px 12px;font-size:11px"
+            >Delete</button>
+          </div>
         </div>
         <div class="connector-card-meta">
           <div class="connector-meta-row"><span class="connector-meta-label">Host</span><span>${esc(c.host_hostname || "—")} (${esc(c.host_platform || "?")}/${esc(c.host_arch || "?")})</span></div>
@@ -7004,6 +7114,11 @@ function renderConnectorsList() {
       </div>
     `;
   }).join("");
+  list.querySelectorAll("[data-delete-connection-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      deleteSavedConnection(btn.getAttribute("data-delete-connection-id")).catch(() => {});
+    });
+  });
 }
 
 /* ===== SETTINGS TAB SWITCHING ===== */
@@ -7027,7 +7142,10 @@ function activateSettingsTab(key = "connectors") {
   if (accountPane) accountPane.classList.toggle("hidden", selectedKey !== "account");
   if (policyPane) policyPane.classList.toggle("hidden", selectedKey !== "policy");
   if (connectorsPane) connectorsPane.classList.toggle("hidden", selectedKey !== "connectors");
-  if (selectedKey === "connectors") loadConnectorsList().catch(() => {});
+  if (selectedKey === "connectors") {
+    loadConnectorsList().catch(() => {});
+    loadSavedConnectionsList({ silent: true }).catch(() => {});
+  }
 }
 
 function initSettingsTabs() {
@@ -9139,7 +9257,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     showEmptyProject();
     setView("home");
     applyConnectionStatus();
-    setMessage("chat_hint", "No connector paired yet. Go to Settings > Connectors to pair your runtime.", "");
+    setMessage("chat_hint", "No connection saved yet. Go to Settings > Connectors to pair or manage your runtime.", "");
     await loadAccountProfile({ silent: true }).catch(() => {});
     setNavTab("dashboard");
     return;
@@ -9260,6 +9378,7 @@ function bindActions() {
     }).catch(() => {});
   });
   $("btn_refresh_connectors")?.addEventListener("click", () => loadConnectorsList().catch(() => {}));
+  $("btn_refresh_saved_connections")?.addEventListener("click", () => loadSavedConnectionsList().catch(() => {}));
 
   $("home_connections")?.addEventListener("change", (ev) => {
     activeConnectionId = ev.target.value;

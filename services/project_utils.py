@@ -1,3 +1,5 @@
+import base64
+
 from core.workspace_paths import *
 
 def _parse_setup_json(raw: Any) -> Dict[str, Any]:
@@ -189,7 +191,7 @@ def _project_protocol_markdown(*, title: str, brief: str, goal: str) -> str:
         "",
         "## Delegation Flow",
         "1. Primary agent creates delegation plan and per-agent tasks.",
-        "2. Each agent executes scope, writes artifacts via output_files, then reports chat_update.",
+        "2. Each agent executes scope, writes artifacts via output_files, and uses structured actions for file/task mutations when needed.",
         "3. Next agent continues only after explicit handoff mention.",
         "",
         "## UI Sync Contract (API Source Of Truth)",
@@ -199,8 +201,9 @@ def _project_protocol_markdown(*, title: str, brief: str, goal: str) -> str:
         "- Activity feed/live updates: project activity log and project event stream.",
         "",
         "## Agent Output Contract",
-        "- Return JSON with `chat_update`, `output_files`, optional `notes`, and pause fields.",
+        "- Return JSON with `chat_update`, `output_files`, optional `actions`, optional `notes`, and pause fields.",
         "- Persist every deliverable/handoff artifact through `output_files` using project-relative paths.",
+        "- Use `actions` for explicit project mutations like editing real project files, deleting files, moving files, or updating the task map.",
         "- Do not mark work done if artifacts only exist outside Hivee project files.",
         "",
         "## Task And Issue Update Expectations",
@@ -222,10 +225,11 @@ def _artifact_sync_rule_lines(*, project_root: Optional[str] = None) -> List[str
     lines = [
         "Artifact sync policy:",
         "- Persist every deliverable and handoff artifact into Hivee project files via `output_files`.",
+        "- Use structured `actions` when you must mutate real project files or task-map state in place.",
         "- Use project-relative paths only (no absolute machine/server paths).",
         "- Do not mark work as done if files exist only on provider/local agent server.",
         "- If external tools/runtime produce artifacts, copy full final content back into `output_files`.",
-        f"- Preferred writable roots: `{USER_OUTPUTS_DIRNAME}`, `{PROJECT_INFO_DIRNAME}`, `agents`, `logs`.",
+        f"- Preferred artifact-sync roots: `{USER_OUTPUTS_DIRNAME}`, `{PROJECT_INFO_DIRNAME}`, `agents`, `logs`.",
     ]
     if project_root:
         lines.append(f"- Hivee source-of-truth project root: `{project_root}`.")
@@ -279,8 +283,64 @@ def _project_context_instruction(
         "- If you generate or modify files, include them in JSON field `output_files` as "
         "[{\"path\":\"...\",\"content\":\"...\",\"append\":false}] and include a human sentence in `chat_update`."
     )
+    sections.append(
+        "- For explicit project mutations, you may also return JSON `actions` "
+        "such as `write_file`, `append_file`, `upload_file`, `delete_file`, `move_file`, "
+        "`create_task`, `update_task`, `delete_task`, `add_task_dependency`, `remove_task_dependency`, and `apply_task_blueprint`."
+    )
+    sections.append("- Use `output_files` for synced deliverables, and use `actions` when you must modify real project files or task-map state.")
     sections.append("- Keep continuity with previous conversation turns in this same project session.")
     return "\n".join(sections)
+
+def _build_project_task_snapshot(project_id: str, *, max_tasks: int = 24) -> str:
+    pid = str(project_id or "").strip()
+    if not pid:
+        return ""
+    conn = db()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                t.id,
+                t.title,
+                t.status,
+                t.priority,
+                t.assignee_agent_id,
+                t.updated_at,
+                COUNT(d.depends_on_task_id) AS dep_total,
+                SUM(CASE WHEN COALESCE(td.status, '') != ? THEN 1 ELSE 0 END) AS dep_open
+            FROM project_tasks t
+            LEFT JOIN project_task_dependencies d
+                ON d.project_id = t.project_id AND d.task_id = t.id
+            LEFT JOIN project_tasks td
+                ON td.project_id = d.project_id AND td.id = d.depends_on_task_id
+            WHERE t.project_id = ?
+            GROUP BY t.id, t.title, t.status, t.priority, t.assignee_agent_id, t.updated_at
+            ORDER BY t.updated_at DESC, t.created_at DESC
+            LIMIT ?
+            """,
+            (TASK_STATUS_DONE, pid, max(1, min(int(max_tasks), 60))),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return "Current task map:\n- no tasks yet"
+    lines = [
+        "Current task map (use exact `task_id` or exact task title in `actions` when mutating tasks):",
+    ]
+    for row in rows:
+        dep_open = max(0, _to_int(row["dep_open"]))
+        dep_total = max(0, _to_int(row["dep_total"]))
+        dep_part = f" | deps_open={dep_open}/{dep_total}" if dep_total else ""
+        assignee = str(row["assignee_agent_id"] or "").strip()
+        assignee_part = f" | assignee={assignee}" if assignee else ""
+        lines.append(
+            f"- [{str(row['id'] or '').strip()}] {str(row['title'] or '').strip() or 'Task'}"
+            f" | status={str(row['status'] or '').strip() or TASK_STATUS_TODO}"
+            f" | priority={str(row['priority'] or '').strip() or TASK_PRIORITY_MEDIUM}"
+            f"{assignee_part}{dep_part}"
+        )
+    return "\n".join(lines)
 
 def _agent_roster_markdown(role_rows: List[Dict[str, Any]]) -> str:
     lines = ["Invited agents roster (use exact agent_id in @mentions):"]
@@ -1406,7 +1466,7 @@ def _delegate_prompt_from_project(
 
 def _project_agent_rows(conn: sqlite3.Connection, project_id: str) -> List[Dict[str, Any]]:
     rows = conn.execute(
-        "SELECT agent_id, agent_name, is_primary, role FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
+        "SELECT agent_id, agent_name, is_primary, role, source_type FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
         (project_id,),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -2074,11 +2134,98 @@ def _extract_file_blocks_from_text(text: str) -> List[Dict[str, Any]]:
             break
     return out
 
+def _normalize_agent_action_kind(raw_kind: Any) -> str:
+    key = str(raw_kind or "").strip().lower().replace("-", "_").replace(" ", "_")
+    alias_map = {
+        "write": "write_file",
+        "writefile": "write_file",
+        "file_write": "write_file",
+        "file.write": "write_file",
+        "create_file": "write_file",
+        "replace_file": "write_file",
+        "append": "append_file",
+        "appendfile": "append_file",
+        "file_append": "append_file",
+        "file.append": "append_file",
+        "upload": "upload_file",
+        "uploadfile": "upload_file",
+        "file_upload": "upload_file",
+        "file.upload": "upload_file",
+        "delete": "delete_file",
+        "remove": "delete_file",
+        "deletefile": "delete_file",
+        "remove_file": "delete_file",
+        "file_delete": "delete_file",
+        "file.delete": "delete_file",
+        "move": "move_file",
+        "rename": "move_file",
+        "movefile": "move_file",
+        "rename_file": "move_file",
+        "file_move": "move_file",
+        "file.move": "move_file",
+        "create_task": "create_task",
+        "task_create": "create_task",
+        "task.create": "create_task",
+        "update_task": "update_task",
+        "task_update": "update_task",
+        "task.update": "update_task",
+        "delete_task": "delete_task",
+        "remove_task": "delete_task",
+        "task_delete": "delete_task",
+        "task.delete": "delete_task",
+        "add_dependency": "add_task_dependency",
+        "add_task_dependency": "add_task_dependency",
+        "task_dependency_add": "add_task_dependency",
+        "task.dependency.add": "add_task_dependency",
+        "remove_dependency": "remove_task_dependency",
+        "remove_task_dependency": "remove_task_dependency",
+        "task_dependency_remove": "remove_task_dependency",
+        "task.dependency.remove": "remove_task_dependency",
+        "apply_blueprint": "apply_task_blueprint",
+        "apply_task_blueprint": "apply_task_blueprint",
+        "task_blueprint_apply": "apply_task_blueprint",
+        "task.blueprint.apply": "apply_task_blueprint",
+    }
+    return alias_map.get(key, key)
+
+def _normalize_agent_action_items(raw: Any) -> List[Dict[str, Any]]:
+    items: List[Any] = []
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        nested = raw.get("items")
+        if isinstance(nested, list):
+            items = nested
+        else:
+            items = [raw]
+    out: List[Dict[str, Any]] = []
+    for item in items[:MAX_AGENT_FILE_WRITES]:
+        if not isinstance(item, dict):
+            continue
+        kind = _normalize_agent_action_kind(
+            item.get("type")
+            or item.get("method")
+            or item.get("action")
+            or item.get("name")
+        )
+        if not kind:
+            continue
+        params = item.get("params")
+        payload: Dict[str, Any] = dict(params) if isinstance(params, dict) else {}
+        for key, value in item.items():
+            if key in {"type", "method", "action", "name", "params"}:
+                continue
+            payload[key] = value
+        payload["type"] = kind
+        out.append(payload)
+    return out
+
 def _extract_agent_report_payload(text: str) -> Dict[str, Any]:
     raw = str(text or "").strip()
     parsed = _extract_json_object(raw) or {}
     chat_update = raw
     output_files: List[Dict[str, Any]] = []
+    actions: List[Dict[str, Any]] = []
     notes = ""
     requires_user_input = False
     pause_reason = ""
@@ -2119,6 +2266,11 @@ def _extract_agent_report_payload(text: str) -> Dict[str, Any]:
             output_files.extend(_normalize_output_file_items(parsed.get("files")))
         if not output_files:
             output_files.extend(_normalize_output_file_items(parsed.get("writes")))
+        actions.extend(_normalize_agent_action_items(parsed.get("actions")))
+        if not actions:
+            actions.extend(_normalize_agent_action_items(parsed.get("methods")))
+        if not actions:
+            actions.extend(_normalize_agent_action_items(parsed.get("operations")))
         artifacts = parsed.get("artifacts")
         if isinstance(artifacts, dict):
             for k, v in artifacts.items():
@@ -2141,11 +2293,68 @@ def _extract_agent_report_payload(text: str) -> Dict[str, Any]:
     return {
         "chat_update": chat_update[:4000],
         "output_files": output_files[:MAX_AGENT_FILE_WRITES],
+        "actions": actions[:MAX_AGENT_FILE_WRITES],
         "notes": notes[:2000],
         "requires_user_input": bool(requires_user_input),
         "pause_reason": pause_reason[:1200],
         "resume_hint": resume_hint[:500],
     }
+
+def _normalize_permission_write_paths(raw_paths: Any, *, fallback: Optional[List[str]] = None) -> List[str]:
+    candidate_values: List[Any] = []
+    if isinstance(raw_paths, list):
+        candidate_values = raw_paths
+    elif isinstance(raw_paths, tuple):
+        candidate_values = list(raw_paths)
+    elif isinstance(raw_paths, str):
+        text = raw_paths.strip()
+        if text:
+            parsed: Any = None
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                candidate_values = parsed
+            else:
+                candidate_values = [text]
+    elif raw_paths is not None:
+        candidate_values = [raw_paths]
+
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for item in candidate_values:
+        raw_item = str(item or "").strip()
+        if raw_item in {"*", "all", "project", "project_root"}:
+            if "*" not in seen:
+                seen.add("*")
+                cleaned.append("*")
+            continue
+        rel = _clean_relative_project_path(raw_item)
+        if not rel:
+            continue
+        rel = _remap_legacy_project_doc_rel_path(rel)
+        if rel.lower() == LEGACY_OUTPUTS_DIRNAME:
+            rel = USER_OUTPUTS_DIRNAME
+        elif _rel_path_startswith(rel, LEGACY_OUTPUTS_DIRNAME):
+            suffix = rel[len(LEGACY_OUTPUTS_DIRNAME) :].lstrip("/\\")
+            rel = _clean_relative_project_path(f"{USER_OUTPUTS_DIRNAME}/{suffix}")
+        path_parts = [p for p in Path(rel).parts if p not in {"", "."}]
+        if any(p == ".." for p in path_parts):
+            continue
+        low = rel.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        cleaned.append(rel)
+        if len(cleaned) >= 40:
+            break
+
+    if cleaned:
+        return cleaned
+    if fallback is not None:
+        return _normalize_permission_write_paths(fallback, fallback=None)
+    return []
 
 def _apply_project_file_writes(
     *,
@@ -2169,6 +2378,11 @@ def _apply_project_file_writes(
         normalized_allow_paths = []
         allow_seen: set[str] = set()
         for raw_allow in allow_paths:
+            raw_allow_text = str(raw_allow or "").strip()
+            if raw_allow_text in {"*", "all", "project", "project_root"}:
+                normalized_allow_paths = None
+                allow_seen = {"*"}
+                break
             allow_rel = _clean_relative_project_path(str(raw_allow or ""))
             if not allow_rel:
                 continue
@@ -2234,6 +2448,871 @@ def _apply_project_file_writes(
             }
         )
     return {"saved": saved, "skipped": skipped}
+
+def _allow_paths_grant_full_project_access(allow_paths: Optional[List[str]]) -> bool:
+    if allow_paths is None:
+        return True
+    normalized = _normalize_permission_write_paths(allow_paths, fallback=[])
+    return "*" in normalized
+
+def _project_action_path_allowed(rel_path: str, allow_paths: Optional[List[str]]) -> bool:
+    rel = _clean_relative_project_path(rel_path)
+    if not rel:
+        return False
+    if _allow_paths_grant_full_project_access(allow_paths):
+        return True
+    normalized = _normalize_permission_write_paths(allow_paths, fallback=[])
+    if not normalized:
+        return False
+    return any(_rel_path_startswith(rel, root) for root in normalized)
+
+def _append_project_activity_log_entry(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    actor_type: str,
+    actor_id: Optional[str],
+    actor_label: Optional[str],
+    event_type: str,
+    summary: str,
+    payload: Optional[Dict[str, Any]] = None,
+    created_at: Optional[int] = None,
+) -> str:
+    event_id = new_id("act")
+    ts = int(time.time()) if created_at is None else int(created_at)
+    conn.execute(
+        """
+        INSERT INTO project_activity_log (
+            id, project_id, actor_type, actor_id, actor_label, event_type, summary, payload_json, created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            str(event_id),
+            str(project_id or "").strip(),
+            str(actor_type or "").strip() or "unknown",
+            str(actor_id or "").strip() or None,
+            str(actor_label or "").strip() or None,
+            str(event_type or "").strip() or "event",
+            str(summary or "").strip()[:1000] or "-",
+            json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False),
+            ts,
+        ),
+    )
+    return str(event_id)
+
+def _coerce_project_action_task_status(raw_status: Any, *, required: bool = False) -> str:
+    status = str(raw_status or "").strip().lower()
+    if not status:
+        if required:
+            raise HTTPException(400, "Task status is required")
+        return TASK_STATUS_TODO
+    if status not in TASK_STATUSES:
+        raise HTTPException(400, f"Invalid task status. Allowed: {', '.join(TASK_STATUSES)}")
+    return status
+
+def _coerce_project_action_task_priority(raw_priority: Any, *, required: bool = False) -> str:
+    priority = str(raw_priority or "").strip().lower()
+    if not priority:
+        if required:
+            raise HTTPException(400, "Task priority is required")
+        return TASK_PRIORITY_MEDIUM
+    if priority not in TASK_PRIORITIES:
+        raise HTTPException(400, f"Invalid task priority. Allowed: {', '.join(TASK_PRIORITIES)}")
+    return priority
+
+def _project_action_assert_assignee_exists(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    assignee_agent_id: Optional[str],
+) -> Optional[str]:
+    aid = str(assignee_agent_id or "").strip()
+    if not aid:
+        return None
+    row = conn.execute(
+        "SELECT agent_id FROM project_agents WHERE project_id = ? AND agent_id = ? LIMIT 1",
+        (project_id, aid),
+    ).fetchone()
+    if not row:
+        raise HTTPException(400, "assignee_agent_id is not part of this project")
+    return aid
+
+def _project_action_open_dependencies(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    task_id: str,
+) -> List[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT d.depends_on_task_id, t.title, t.status
+        FROM project_task_dependencies d
+        JOIN project_tasks t
+            ON t.id = d.depends_on_task_id AND t.project_id = d.project_id
+        WHERE d.project_id = ?
+          AND d.task_id = ?
+          AND COALESCE(t.status, '') != ?
+        ORDER BY t.updated_at DESC
+        """,
+        (project_id, task_id, TASK_STATUS_DONE),
+    ).fetchall()
+
+def _project_action_ensure_status_transition_allowed(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    task_id: str,
+    next_status: str,
+) -> None:
+    target = str(next_status or "").strip().lower()
+    if target not in {TASK_STATUS_IN_PROGRESS, TASK_STATUS_REVIEW, TASK_STATUS_DONE}:
+        return
+    blockers = _project_action_open_dependencies(conn, project_id=project_id, task_id=task_id)
+    if not blockers:
+        return
+    preview = ", ".join(
+        [str(row["title"] or row["depends_on_task_id"]).strip()[:80] for row in blockers[:3] if str(row["title"] or row["depends_on_task_id"]).strip()]
+    )
+    raise HTTPException(409, f"Task has open dependencies: {preview or 'dependency tasks'}. Complete dependencies first.")
+
+def _project_action_would_create_dependency_cycle(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    task_id: str,
+    depends_on_task_id: str,
+) -> bool:
+    origin = str(task_id or "").strip()
+    start = str(depends_on_task_id or "").strip()
+    if not origin or not start:
+        return False
+    stack: List[str] = [start]
+    seen: set[str] = set()
+    while stack:
+        current = stack.pop()
+        if current == origin:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        rows = conn.execute(
+            """
+            SELECT depends_on_task_id
+            FROM project_task_dependencies
+            WHERE project_id = ? AND task_id = ?
+            """,
+            (project_id, current),
+        ).fetchall()
+        for row in rows:
+            nxt = str(row["depends_on_task_id"] or "").strip()
+            if nxt and nxt not in seen:
+                stack.append(nxt)
+    return False
+
+def _resolve_project_action_task_row(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    task_id: Optional[str] = None,
+    task_title: Optional[str] = None,
+    refs: Optional[Dict[str, str]] = None,
+) -> sqlite3.Row:
+    candidate_id = str(task_id or "").strip()
+    if candidate_id.startswith("$") and refs:
+        candidate_id = refs.get(candidate_id[1:], "") or candidate_id
+    elif refs and candidate_id in refs:
+        candidate_id = refs.get(candidate_id, "") or candidate_id
+    if candidate_id:
+        row = conn.execute(
+            "SELECT * FROM project_tasks WHERE project_id = ? AND id = ? LIMIT 1",
+            (project_id, candidate_id),
+        ).fetchone()
+        if row:
+            return row
+        raise HTTPException(404, "Task not found")
+    title = str(task_title or "").strip()
+    if not title:
+        raise HTTPException(400, "task_id or task_title is required")
+    rows = conn.execute(
+        "SELECT * FROM project_tasks WHERE project_id = ? AND lower(trim(title)) = lower(trim(?)) ORDER BY updated_at DESC LIMIT 2",
+        (project_id, title),
+    ).fetchall()
+    if not rows:
+        raise HTTPException(404, "Task not found")
+    if len(rows) > 1:
+        raise HTTPException(409, "Multiple tasks share that title. Use task_id instead.")
+    return rows[0]
+
+def _resolve_project_action_rel_path(raw_path: Any) -> str:
+    rel = _clean_relative_project_path(str(raw_path or ""))
+    rel = _remap_legacy_project_doc_rel_path(rel)
+    return rel
+
+def _resolve_project_action_target(
+    *,
+    owner_user_id: str,
+    project_root: str,
+    raw_path: Any,
+    allow_paths: Optional[List[str]],
+    require_exists: bool,
+) -> Tuple[str, Path]:
+    rel = _resolve_project_action_rel_path(raw_path)
+    if not rel:
+        raise HTTPException(400, "path is required")
+    if not _project_action_path_allowed(rel, allow_paths):
+        raise HTTPException(403, f"{rel}: outside allowed project write scope")
+    target = _resolve_project_relative_path(
+        owner_user_id,
+        project_root,
+        rel,
+        require_exists=require_exists,
+        require_dir=False,
+    ).resolve()
+    return rel, target
+
+def _normalize_project_action_payload(raw_payload: Any) -> Dict[str, Any]:
+    if isinstance(raw_payload, dict):
+        return dict(raw_payload)
+    return {}
+
+def _action_ref_key(raw_value: Any) -> str:
+    value = str(raw_value or "").strip()
+    if value.startswith("$"):
+        value = value[1:]
+    return value
+
+def _apply_project_actions(
+    *,
+    owner_user_id: str,
+    project_id: str,
+    project_root: str,
+    actions: List[Dict[str, Any]],
+    allow_paths: Optional[List[str]] = None,
+    actor_type: str = "project_agent",
+    actor_id: Optional[str] = None,
+    actor_label: Optional[str] = None,
+) -> Dict[str, Any]:
+    applied: List[Dict[str, Any]] = []
+    skipped: List[str] = []
+    refs: Dict[str, str] = {}
+    if not actions:
+        return {"applied": applied, "skipped": skipped}
+
+    conn = db()
+    try:
+        for idx, raw_action in enumerate(actions[:MAX_AGENT_FILE_WRITES], start=1):
+            action = _normalize_project_action_payload(raw_action)
+            kind = _normalize_agent_action_kind(action.get("type"))
+            if not kind:
+                skipped.append(f"action {idx}: missing type")
+                continue
+            now = int(time.time())
+            try:
+                if kind in {"write_file", "append_file"}:
+                    rel, target = _resolve_project_action_target(
+                        owner_user_id=owner_user_id,
+                        project_root=project_root,
+                        raw_path=action.get("path") or action.get("target_path"),
+                        allow_paths=allow_paths,
+                        require_exists=False,
+                    )
+                    content = str(action.get("content") or "")
+                    if not content:
+                        raise HTTPException(400, "content is required")
+                    payload_bytes = len(content.encode("utf-8"))
+                    if payload_bytes > MAX_AGENT_FILE_BYTES:
+                        raise HTTPException(400, f"content exceeds {MAX_AGENT_FILE_BYTES} bytes")
+                    if target.exists() and target.is_dir():
+                        raise HTTPException(400, "target path is a directory")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    mode = "a" if kind == "append_file" or bool(action.get("append")) else "w"
+                    with target.open(mode, encoding="utf-8") as f:
+                        f.write(content)
+                    applied.append(
+                        {
+                            "type": kind,
+                            "path": rel,
+                            "mode": mode,
+                            "bytes": payload_bytes,
+                            "event": "project.file.written",
+                            "event_payload": {
+                                "path": rel,
+                                "mode": mode,
+                                "bytes": payload_bytes,
+                                "actor": f"agent:{actor_id or 'unknown'}",
+                            },
+                        }
+                    )
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="file.write",
+                        summary=f"File written: {rel}",
+                        payload={"path": rel, "mode": mode, "bytes": payload_bytes, "method": kind},
+                        created_at=now,
+                    )
+                elif kind == "upload_file":
+                    rel, target = _resolve_project_action_target(
+                        owner_user_id=owner_user_id,
+                        project_root=project_root,
+                        raw_path=action.get("path") or action.get("target_path"),
+                        allow_paths=allow_paths,
+                        require_exists=False,
+                    )
+                    content_b64 = str(action.get("content_base64") or action.get("base64") or "").strip()
+                    if content_b64:
+                        try:
+                            payload_bytes = base64.b64decode(content_b64, validate=True)
+                        except Exception:
+                            raise HTTPException(400, "content_base64 is not valid base64")
+                    else:
+                        payload_bytes = str(action.get("content") or "").encode("utf-8")
+                    if not payload_bytes:
+                        raise HTTPException(400, "file payload is empty")
+                    if len(payload_bytes) > MAX_AGENT_FILE_BYTES:
+                        raise HTTPException(400, f"file exceeds {MAX_AGENT_FILE_BYTES} bytes")
+                    if target.exists() and target.is_dir():
+                        raise HTTPException(400, "target path is a directory")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with target.open("wb") as f:
+                        f.write(payload_bytes)
+                    applied.append(
+                        {
+                            "type": kind,
+                            "path": rel,
+                            "mode": "wb",
+                            "bytes": len(payload_bytes),
+                            "event": "project.file.written",
+                            "event_payload": {
+                                "path": rel,
+                                "mode": "wb",
+                                "bytes": len(payload_bytes),
+                                "actor": f"agent:{actor_id or 'unknown'}",
+                            },
+                        }
+                    )
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="file.write",
+                        summary=f"Binary file uploaded: {rel}",
+                        payload={"path": rel, "mode": "wb", "bytes": len(payload_bytes), "method": kind},
+                        created_at=now,
+                    )
+                elif kind == "delete_file":
+                    rel, target = _resolve_project_action_target(
+                        owner_user_id=owner_user_id,
+                        project_root=project_root,
+                        raw_path=action.get("path") or action.get("target_path"),
+                        allow_paths=allow_paths,
+                        require_exists=True,
+                    )
+                    if target.is_dir():
+                        raise HTTPException(400, "delete_file only supports files")
+                    target.unlink(missing_ok=False)
+                    applied.append(
+                        {
+                            "type": kind,
+                            "path": rel,
+                            "event": "project.file.deleted",
+                            "event_payload": {"path": rel, "actor": f"agent:{actor_id or 'unknown'}"},
+                        }
+                    )
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="file.delete",
+                        summary=f"File deleted: {rel}",
+                        payload={"path": rel},
+                        created_at=now,
+                    )
+                elif kind == "move_file":
+                    src_rel, src_target = _resolve_project_action_target(
+                        owner_user_id=owner_user_id,
+                        project_root=project_root,
+                        raw_path=action.get("path") or action.get("from_path") or action.get("source_path"),
+                        allow_paths=allow_paths,
+                        require_exists=True,
+                    )
+                    dst_rel, dst_target = _resolve_project_action_target(
+                        owner_user_id=owner_user_id,
+                        project_root=project_root,
+                        raw_path=action.get("to_path") or action.get("destination_path") or action.get("target_path"),
+                        allow_paths=allow_paths,
+                        require_exists=False,
+                    )
+                    if src_target.is_dir():
+                        raise HTTPException(400, "move_file only supports files")
+                    if dst_target.exists():
+                        if dst_target.is_dir():
+                            raise HTTPException(400, "destination path is a directory")
+                        if not bool(action.get("overwrite")):
+                            raise HTTPException(409, "destination file already exists")
+                        dst_target.unlink()
+                    dst_target.parent.mkdir(parents=True, exist_ok=True)
+                    src_target.replace(dst_target)
+                    applied.append(
+                        {
+                            "type": kind,
+                            "path": src_rel,
+                            "to_path": dst_rel,
+                            "event": "project.file.moved",
+                            "event_payload": {
+                                "path": src_rel,
+                                "to_path": dst_rel,
+                                "actor": f"agent:{actor_id or 'unknown'}",
+                            },
+                        }
+                    )
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="file.moved",
+                        summary=f"File moved: {src_rel} -> {dst_rel}",
+                        payload={"path": src_rel, "to_path": dst_rel},
+                        created_at=now,
+                    )
+                elif kind == "create_task":
+                    title = str(action.get("title") or "").strip()
+                    if not title:
+                        raise HTTPException(400, "title is required")
+                    task_id = new_id("tsk")
+                    status_value = _coerce_project_action_task_status(action.get("status"), required=False)
+                    priority_value = _coerce_project_action_task_priority(action.get("priority"), required=False)
+                    assignee = _project_action_assert_assignee_exists(
+                        conn,
+                        project_id=project_id,
+                        assignee_agent_id=action.get("assignee_agent_id"),
+                    )
+                    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+                    due_at_value = _to_int(action.get("due_at")) if action.get("due_at") is not None else None
+                    conn.execute(
+                        """
+                        INSERT INTO project_tasks (
+                            id, project_id, created_by_user_id, created_by_agent_id,
+                            title, description, status, priority, assignee_agent_id,
+                            due_at, metadata_json, created_at, updated_at, closed_at
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            task_id,
+                            project_id,
+                            actor_id if actor_type == "user" else None,
+                            actor_id if actor_type == "project_agent" else None,
+                            title[:TASK_TITLE_MAX_CHARS],
+                            str(action.get("description") or "")[:TASK_DESCRIPTION_MAX_CHARS],
+                            status_value,
+                            priority_value,
+                            assignee,
+                            due_at_value,
+                            json.dumps(metadata, ensure_ascii=False),
+                            now,
+                            now,
+                            now if status_value == TASK_STATUS_DONE else None,
+                        ),
+                    )
+                    ref_key = _action_ref_key(action.get("ref") or action.get("task_ref"))
+                    if ref_key:
+                        refs[ref_key] = task_id
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="task.created",
+                        summary=f"Task created: {title[:120]}",
+                        payload={
+                            "task_id": task_id,
+                            "status": status_value,
+                            "priority": priority_value,
+                            "assignee_agent_id": assignee,
+                            "ref": ref_key or None,
+                        },
+                        created_at=now,
+                    )
+                    applied.append(
+                        {
+                            "type": kind,
+                            "task_id": task_id,
+                            "title": title[:TASK_TITLE_MAX_CHARS],
+                            "ref": ref_key or None,
+                            "event": "project.task.created",
+                            "event_payload": {"task_id": task_id},
+                        }
+                    )
+                elif kind == "update_task":
+                    row = _resolve_project_action_task_row(
+                        conn,
+                        project_id=project_id,
+                        task_id=action.get("task_id") or action.get("task_ref"),
+                        task_title=action.get("task_title"),
+                        refs=refs,
+                    )
+                    task_id = str(row["id"] or "")
+                    updates: List[str] = []
+                    params: List[Any] = []
+                    changed_fields: List[str] = []
+                    if action.get("title") is not None:
+                        title_value = str(action.get("title") or "").strip()
+                        if not title_value:
+                            raise HTTPException(400, "title cannot be empty")
+                        updates.append("title = ?")
+                        params.append(title_value[:TASK_TITLE_MAX_CHARS])
+                        changed_fields.append("title")
+                    if action.get("description") is not None:
+                        updates.append("description = ?")
+                        params.append(str(action.get("description") or "")[:TASK_DESCRIPTION_MAX_CHARS])
+                        changed_fields.append("description")
+                    if action.get("status") is not None:
+                        next_status = _coerce_project_action_task_status(action.get("status"), required=True)
+                        _project_action_ensure_status_transition_allowed(
+                            conn,
+                            project_id=project_id,
+                            task_id=task_id,
+                            next_status=next_status,
+                        )
+                        updates.append("status = ?")
+                        params.append(next_status)
+                        changed_fields.append("status")
+                        if next_status == TASK_STATUS_DONE:
+                            updates.append("closed_at = ?")
+                            params.append(now)
+                        else:
+                            updates.append("closed_at = NULL")
+                    if action.get("priority") is not None:
+                        updates.append("priority = ?")
+                        params.append(_coerce_project_action_task_priority(action.get("priority"), required=True))
+                        changed_fields.append("priority")
+                    if bool(action.get("clear_assignee")):
+                        updates.append("assignee_agent_id = NULL")
+                        changed_fields.append("assignee_agent_id")
+                    elif action.get("assignee_agent_id") is not None:
+                        assignee = _project_action_assert_assignee_exists(
+                            conn,
+                            project_id=project_id,
+                            assignee_agent_id=action.get("assignee_agent_id"),
+                        )
+                        updates.append("assignee_agent_id = ?")
+                        params.append(assignee)
+                        changed_fields.append("assignee_agent_id")
+                    if bool(action.get("clear_due_at")):
+                        updates.append("due_at = NULL")
+                        changed_fields.append("due_at")
+                    elif action.get("due_at") is not None:
+                        updates.append("due_at = ?")
+                        params.append(_to_int(action.get("due_at")))
+                        changed_fields.append("due_at")
+                    if action.get("metadata") is not None:
+                        metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+                        updates.append("metadata_json = ?")
+                        params.append(json.dumps(metadata, ensure_ascii=False))
+                        changed_fields.append("metadata")
+                    if not updates:
+                        skipped.append(f"update_task {task_id}: no fields changed")
+                        continue
+                    updates.append("updated_at = ?")
+                    params.append(now)
+                    params.append(task_id)
+                    conn.execute(f"UPDATE project_tasks SET {', '.join(updates)} WHERE id = ?", tuple(params))
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="task.updated",
+                        summary=f"Task updated: {task_id}",
+                        payload={"task_id": task_id, "changed_fields": changed_fields[:20]},
+                        created_at=now,
+                    )
+                    applied.append(
+                        {
+                            "type": kind,
+                            "task_id": task_id,
+                            "changed_fields": changed_fields[:20],
+                            "event": "project.task.updated",
+                            "event_payload": {"task_id": task_id, "changed_fields": changed_fields[:20]},
+                        }
+                    )
+                elif kind == "delete_task":
+                    row = _resolve_project_action_task_row(
+                        conn,
+                        project_id=project_id,
+                        task_id=action.get("task_id") or action.get("task_ref"),
+                        task_title=action.get("task_title"),
+                        refs=refs,
+                    )
+                    task_id = str(row["id"] or "")
+                    conn.execute("DELETE FROM project_task_checkouts WHERE task_id = ?", (task_id,))
+                    conn.execute("DELETE FROM project_task_comments WHERE task_id = ?", (task_id,))
+                    conn.execute(
+                        "DELETE FROM project_task_dependencies WHERE project_id = ? AND (task_id = ? OR depends_on_task_id = ?)",
+                        (project_id, task_id, task_id),
+                    )
+                    conn.execute("DELETE FROM project_tasks WHERE id = ?", (task_id,))
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="task.deleted",
+                        summary=f"Task deleted: {str(row['title'] or task_id)[:120]}",
+                        payload={"task_id": task_id},
+                        created_at=now,
+                    )
+                    applied.append(
+                        {
+                            "type": kind,
+                            "task_id": task_id,
+                            "event": "project.task.deleted",
+                            "event_payload": {"task_id": task_id},
+                        }
+                    )
+                elif kind == "add_task_dependency":
+                    row = _resolve_project_action_task_row(
+                        conn,
+                        project_id=project_id,
+                        task_id=action.get("task_id") or action.get("task_ref"),
+                        task_title=action.get("task_title"),
+                        refs=refs,
+                    )
+                    dep_row = _resolve_project_action_task_row(
+                        conn,
+                        project_id=project_id,
+                        task_id=action.get("depends_on_task_id") or action.get("depends_on_task_ref"),
+                        task_title=action.get("depends_on_task_title"),
+                        refs=refs,
+                    )
+                    task_id = str(row["id"] or "")
+                    dep_id = str(dep_row["id"] or "")
+                    if task_id == dep_id:
+                        raise HTTPException(400, "Task cannot depend on itself")
+                    existing = conn.execute(
+                        """
+                        SELECT 1
+                        FROM project_task_dependencies
+                        WHERE project_id = ? AND task_id = ? AND depends_on_task_id = ?
+                        LIMIT 1
+                        """,
+                        (project_id, task_id, dep_id),
+                    ).fetchone()
+                    if not existing:
+                        if _project_action_would_create_dependency_cycle(
+                            conn,
+                            project_id=project_id,
+                            task_id=task_id,
+                            depends_on_task_id=dep_id,
+                        ):
+                            raise HTTPException(409, "Dependency would create a cycle")
+                        conn.execute(
+                            """
+                            INSERT INTO project_task_dependencies (
+                                project_id, task_id, depends_on_task_id, created_at
+                            ) VALUES (?,?,?,?)
+                            """,
+                            (project_id, task_id, dep_id, now),
+                        )
+                        conn.execute("UPDATE project_tasks SET updated_at = ? WHERE id = ?", (now, task_id))
+                        _append_project_activity_log_entry(
+                            conn,
+                            project_id=project_id,
+                            actor_type=actor_type,
+                            actor_id=actor_id,
+                            actor_label=actor_label,
+                            event_type="task.dependency.added",
+                            summary=f"Task dependency added: {task_id} -> {dep_id}",
+                            payload={"task_id": task_id, "depends_on_task_id": dep_id},
+                            created_at=now,
+                        )
+                    applied.append(
+                        {
+                            "type": kind,
+                            "task_id": task_id,
+                            "depends_on_task_id": dep_id,
+                            "event": "project.task.dependency.added",
+                            "event_payload": {"task_id": task_id, "depends_on_task_id": dep_id},
+                        }
+                    )
+                elif kind == "remove_task_dependency":
+                    row = _resolve_project_action_task_row(
+                        conn,
+                        project_id=project_id,
+                        task_id=action.get("task_id") or action.get("task_ref"),
+                        task_title=action.get("task_title"),
+                        refs=refs,
+                    )
+                    dep_row = _resolve_project_action_task_row(
+                        conn,
+                        project_id=project_id,
+                        task_id=action.get("depends_on_task_id") or action.get("depends_on_task_ref"),
+                        task_title=action.get("depends_on_task_title"),
+                        refs=refs,
+                    )
+                    task_id = str(row["id"] or "")
+                    dep_id = str(dep_row["id"] or "")
+                    existing = conn.execute(
+                        """
+                        SELECT 1
+                        FROM project_task_dependencies
+                        WHERE project_id = ? AND task_id = ? AND depends_on_task_id = ?
+                        LIMIT 1
+                        """,
+                        (project_id, task_id, dep_id),
+                    ).fetchone()
+                    if not existing:
+                        raise HTTPException(404, "Dependency not found")
+                    conn.execute(
+                        "DELETE FROM project_task_dependencies WHERE project_id = ? AND task_id = ? AND depends_on_task_id = ?",
+                        (project_id, task_id, dep_id),
+                    )
+                    conn.execute("UPDATE project_tasks SET updated_at = ? WHERE id = ?", (now, task_id))
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="task.dependency.removed",
+                        summary=f"Task dependency removed: {task_id} -> {dep_id}",
+                        payload={"task_id": task_id, "depends_on_task_id": dep_id},
+                        created_at=now,
+                    )
+                    applied.append(
+                        {
+                            "type": kind,
+                            "task_id": task_id,
+                            "depends_on_task_id": dep_id,
+                            "event": "project.task.dependency.removed",
+                            "event_payload": {"task_id": task_id, "depends_on_task_id": dep_id},
+                        }
+                    )
+                elif kind == "apply_task_blueprint":
+                    blueprint_id = str(action.get("blueprint_id") or "").strip().lower()
+                    blueprint = next(
+                        (
+                            item
+                            for item in TASK_BLUEPRINTS
+                            if str(item.get("id") or "").strip().lower() == blueprint_id
+                        ),
+                        None,
+                    )
+                    if not blueprint:
+                        raise HTTPException(404, "Task blueprint not found")
+                    assignee = _project_action_assert_assignee_exists(
+                        conn,
+                        project_id=project_id,
+                        assignee_agent_id=action.get("assignee_agent_id"),
+                    )
+                    title_prefix = str(action.get("title_prefix") or "").strip()[:80]
+                    include_dependencies = bool(action.get("include_dependencies", True))
+                    created_task_ids: List[str] = []
+                    for spec_idx, spec in enumerate(blueprint.get("tasks") or []):
+                        new_task_id = new_id("tsk")
+                        base_title = str(spec.get("title") or "Task").strip()[:TASK_TITLE_MAX_CHARS]
+                        full_title = f"{title_prefix} {base_title}".strip()[:TASK_TITLE_MAX_CHARS] if title_prefix else base_title
+                        priority = _coerce_project_action_task_priority(spec.get("priority"), required=False)
+                        metadata = {
+                            "blueprint_id": str(blueprint.get("id") or ""),
+                            "blueprint_step": spec_idx + 1,
+                        }
+                        conn.execute(
+                            """
+                            INSERT INTO project_tasks (
+                                id, project_id, created_by_user_id, created_by_agent_id,
+                                title, description, status, priority, assignee_agent_id,
+                                due_at, metadata_json, created_at, updated_at, closed_at
+                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                new_task_id,
+                                project_id,
+                                actor_id if actor_type == "user" else None,
+                                actor_id if actor_type == "project_agent" else None,
+                                full_title,
+                                str(spec.get("description") or "")[:TASK_DESCRIPTION_MAX_CHARS],
+                                TASK_STATUS_TODO,
+                                priority,
+                                assignee,
+                                None,
+                                json.dumps(metadata, ensure_ascii=False),
+                                now,
+                                now,
+                                None,
+                            ),
+                        )
+                        created_task_ids.append(new_task_id)
+                    if include_dependencies:
+                        for pair in blueprint.get("dependencies") or []:
+                            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                                continue
+                            task_idx = _to_int(pair[0])
+                            dep_idx = _to_int(pair[1])
+                            if task_idx < 0 or dep_idx < 0:
+                                continue
+                            if task_idx >= len(created_task_ids) or dep_idx >= len(created_task_ids):
+                                continue
+                            conn.execute(
+                                """
+                                INSERT OR IGNORE INTO project_task_dependencies (
+                                    project_id, task_id, depends_on_task_id, created_at
+                                ) VALUES (?,?,?,?)
+                                """,
+                                (project_id, created_task_ids[task_idx], created_task_ids[dep_idx], now),
+                            )
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="task.blueprint.applied",
+                        summary=f"Task blueprint applied: {str(blueprint.get('name') or blueprint.get('id') or 'blueprint')}",
+                        payload={
+                            "blueprint_id": str(blueprint.get("id") or ""),
+                            "created_task_ids": created_task_ids,
+                            "include_dependencies": include_dependencies,
+                        },
+                        created_at=now,
+                    )
+                    applied.append(
+                        {
+                            "type": kind,
+                            "blueprint_id": str(blueprint.get("id") or ""),
+                            "created_task_ids": created_task_ids,
+                            "created_count": len(created_task_ids),
+                            "event": "project.task.blueprint.applied",
+                            "event_payload": {
+                                "blueprint_id": str(blueprint.get("id") or ""),
+                                "task_ids": created_task_ids,
+                                "created_count": len(created_task_ids),
+                            },
+                        }
+                    )
+                else:
+                    skipped.append(f"action {idx}: unsupported type `{kind}`")
+                    continue
+            except HTTPException as exc:
+                skipped.append(f"{kind}: {detail_to_text(exc.detail)}")
+            except Exception as exc:
+                skipped.append(f"{kind}: {detail_to_text(exc)}")
+        conn.commit()
+    finally:
+        conn.close()
+    return {"applied": applied[:MAX_AGENT_FILE_WRITES], "skipped": skipped[:MAX_AGENT_FILE_WRITES]}
 
 def _looks_like_artifact_request(text: str) -> bool:
     low = str(text or "").strip().lower()
@@ -2323,6 +3402,7 @@ def _build_artifact_followup_prompt(*, user_message: str, previous_response: str
         "{\n"
         "  \"chat_update\": \"one short human sentence\",\n"
         "  \"output_files\": [{\"path\":\"relative/path.ext\",\"content\":\"full file content\",\"append\":false}],\n"
+        "  \"actions\": [{\"type\":\"write_file\",\"path\":\"src/app.js\",\"content\":\"...\"}],\n"
         "  \"notes\": \"optional\",\n"
         "  \"requires_user_input\": false,\n"
         "  \"pause_reason\": \"\",\n"
@@ -2332,6 +3412,7 @@ def _build_artifact_followup_prompt(*, user_message: str, previous_response: str
         "- If you created or modified files, include all of them in output_files with full content.\n"
         "- Persist deliverables in Hivee project files; do not report done if files exist only on your own server/runtime.\n"
         "- Use project-relative paths only.\n"
+        "- If you must mutate existing project files or task-map state directly, put that in `actions`.\n"
         "- If you cannot continue without user approval/input, set requires_user_input=true and explain pause_reason.\n"
         "- If no files were produced, return output_files as [] and explain why in chat_update.\n\n"
         f"Original user message:\n{str(user_message or '').strip()[:3000]}\n\n"
@@ -2391,6 +3472,7 @@ def _build_artifact_recovery_prompt(
         "{\n"
         "  \"chat_update\": \"one short human sentence\",\n"
         "  \"output_files\": [{\"path\":\"relative/path.ext\",\"content\":\"full file content\",\"append\":false}],\n"
+        "  \"actions\": [{\"type\":\"write_file\",\"path\":\"src/app.js\",\"content\":\"...\"}],\n"
         "  \"notes\": \"optional\",\n"
         "  \"requires_user_input\": false,\n"
         "  \"pause_reason\": \"\",\n"
