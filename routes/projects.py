@@ -1,7 +1,7 @@
 from hivee_shared import *
 from email.message import EmailMessage
 import smtplib
-from services.managed_agents import _delegate_project_tasks
+from services.managed_agents import _delegate_project_tasks, _project_chat
 
 
 def _new_project_external_invite_token() -> str:
@@ -1255,6 +1255,7 @@ def register_routes(app: FastAPI) -> None:
             """
             SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.workspace_root,
                    p.plan_status, p.execution_status, p.progress_pct, p.connection_id,
+                   p.backend_mode, p.connector_id,
                    c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
             FROM projects p
             LEFT JOIN openclaw_connections c ON c.id = p.connection_id
@@ -1316,13 +1317,14 @@ def register_routes(app: FastAPI) -> None:
                 project_root=str(row["project_root"] or ""),
                 task_instruction=instruction,
             )
-            ctrl_res = await openclaw_ws_chat(
-                base_url=str(row["base_url"]),
-                api_key=connection_api_key,
-                message=scoped_message,
+            ctrl_res = await _project_chat(
+                row,
+                connection_api_key,
+                scoped_message,
                 agent_id=primary_agent_id,
                 session_key=f"{project_id}:control",
                 timeout_sec=25,
+                user_id=user_id,
             )
             if ctrl_res.get("ok"):
                 control_summary = str(ctrl_res.get("text") or control_summary)[:1000]
