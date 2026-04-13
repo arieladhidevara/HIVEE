@@ -1671,22 +1671,42 @@ async def _project_chat(
     from_label: Optional[str] = None,
     context_type: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Route a project chat exclusively through connector. Direct OpenClaw is not supported."""
-    from services.connector_dispatch import connector_chat_sync
+    """Route a project chat through the correct connector for this project/user."""
+    from services.connector_dispatch import connector_chat_sync, get_user_online_connector
+
+    backend_mode = ""
+    try:
+        backend_mode = str(row["backend_mode"] or "").strip().lower()
+    except Exception:
+        backend_mode = ""
+
+    connector_id = ""
     try:
         connector_id = str(row["connector_id"] or "").strip()
     except Exception:
         connector_id = ""
-    if not connector_id:
-        # Try connection_id as connector fallback
+
+    if not connector_id and backend_mode == "connector":
         try:
             connector_id = str(row["connection_id"] or "").strip()
         except Exception:
             connector_id = ""
+
+    # Direct OpenClaw projects still need a live Hivee Connector to deliver
+    # project-scoped prompts to the runtime agent. Do not treat connection_id
+    # from openclaw_connections as a connector id.
+    if not connector_id and user_id:
+        try:
+            online_connector = get_user_online_connector(user_id)
+        except Exception:
+            online_connector = None
+        if online_connector:
+            connector_id = str(online_connector.get("id") or "").strip()
+
     if not connector_id:
         return {
             "ok": False,
-            "error": "No connector configured for this project. All agent communication requires a connector.",
+            "error": "No live Hivee Connector is available for this project. Pair/start a connector, then retry.",
             "transport": "none",
         }
     try:

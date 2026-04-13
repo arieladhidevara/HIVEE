@@ -1028,8 +1028,8 @@ function renderProjectInviteUI() {
       const opt = document.createElement("option");
       opt.value = "";
       opt.textContent = hasSession
-        ? "No OpenClaw connection found for this account"
-        : "Login first to load your OpenClaw connections";
+        ? "No paired connector found for this account"
+        : "Login first to load your paired connectors";
       connectionSelect.appendChild(opt);
     } else {
       for (const item of rows) {
@@ -1290,7 +1290,7 @@ async function openProjectInviteAgentModal() {
   if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
 
   const connectionId = String($("invite_connection_id")?.value || "").trim();
-  if (!connectionId) throw new Error("Choose one of your OpenClaw connections first.");
+  if (!connectionId) throw new Error("Choose one of your paired connectors first.");
 
   const info = projectInviteContext.info || {};
   const requiresCode = Boolean(info?.requires_invite_code);
@@ -1352,7 +1352,7 @@ async function acceptProjectInviteFromUI({ connectionId: overrideConnectionId = 
   if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
 
   const connectionId = String(overrideConnectionId || $("invite_connection_id")?.value || "").trim();
-  if (!connectionId) throw new Error("Choose one of your OpenClaw connections first.");
+  if (!connectionId) throw new Error("Choose one of your paired connectors first.");
 
   const info = projectInviteContext.info || {};
   const requiresCode = Boolean(info?.requires_invite_code);
@@ -2788,7 +2788,7 @@ function renderConfigConnectionDetails() {
   const conn = connectionsCache.find((x) => x.id === activeConnectionId) || null;
   const nameEl = $("config_conn_name");
   const urlEl = $("config_conn_url");
-  if (nameEl) nameEl.textContent = conn?.name || "OpenClaw";
+  if (nameEl) nameEl.textContent = conn?.name || "Connector";
   if (urlEl) urlEl.textContent = conn?.base_url || "-";
   setMessage("config_msg", conn ? "Connection loaded." : "No connection selected.");
   applyConnectionStatus();
@@ -2971,9 +2971,7 @@ function renderConnections(connections) {
     for (const c of connectionsCache) {
       const opt = document.createElement("option");
       opt.value = c.id;
-      opt.textContent = c.mode === "connector"
-        ? `${c.name || "Connector"} (Cloud Connector)`
-        : `${c.name || "OpenClaw"} - ${c.base_url}`;
+      opt.textContent = `${c.name || "Connector"} (Connector)`;
       sel.appendChild(opt);
     }
   }
@@ -5033,7 +5031,7 @@ async function sendChatPrototype() {
   const input = $("chat_input");
   if (!input) return;
   const raw = input.value.trim();
-  if (!activeConnectionId) throw new Error("OpenClaw connection not selected");
+  if (!activeConnectionId) throw new Error("Connector not selected");
   if (!raw) throw new Error("Type message first");
 
   syncChatContextControls();
@@ -7087,7 +7085,7 @@ async function loadSavedConnectionsList({ silent = false } = {}) {
     const data = await api("/api/openclaw/connections");
     savedConnectionsList = Array.isArray(data) ? data : [];
     if (msg) {
-      msg.textContent = savedConnectionsList.length ? `${savedConnectionsList.length} saved connection(s)` : "No saved connections yet.";
+      msg.textContent = savedConnectionsList.length ? `${savedConnectionsList.length} paired connector(s)` : "No paired connectors yet.";
       msg.className = "helper";
     }
     renderSavedConnectionsList();
@@ -7133,14 +7131,14 @@ function renderSavedConnectionsList() {
   const list = $("saved_connections_list");
   if (!list) return;
   if (!savedConnectionsList.length) {
-    list.innerHTML = '<p class="helper">No saved connections yet.</p>';
+    list.innerHTML = '<p class="helper">No paired connectors yet.</p>';
     return;
   }
   list.innerHTML = savedConnectionsList.map((c) => {
-    const mode = String(c.mode || "direct").trim().toLowerCase();
-    const typeLabel = mode === "connector" ? "Connector" : "Direct";
+    const mode = String(c.mode || "connector").trim().toLowerCase();
+    const typeLabel = mode === "connector" ? "Connector" : "Legacy Direct";
     const activeBadge = String(activeConnectionId || "").trim() === String(c.id || "").trim() ? " | active" : "";
-    const displayName = c.name || (mode === "connector" ? "Connector" : "OpenClaw");
+    const displayName = c.name || (mode === "connector" ? "Connector" : "Legacy Direct");
     return `
       <div class="connector-card">
         <div class="connector-card-header">
@@ -8103,7 +8101,7 @@ function setWizardMode(mode) {
 }
 
 async function sendWizardSetupChat({ autoStart = false } = {}) {
-  if (!activeConnectionId) throw new Error("OpenClaw connection not selected");
+  if (!activeConnectionId) throw new Error("Connector not selected");
   if (wizardChatPending) return;
   const input = $("wizard_chat_input");
   if (!input) return;
@@ -8802,7 +8800,7 @@ function buildWizardSetupHistoryText() {
 }
 
 async function createProjectRecord({ title, brief, goal, setupDetails, setupChatHistory }) {
-  if (!activeConnectionId) throw new Error("OpenClaw connection not selected");
+  if (!activeConnectionId) throw new Error("Connector not selected");
   if (!title || !brief || !goal) throw new Error("title, brief, and goal are required");
 
   const created = await api("/api/projects", "POST", {
@@ -9355,7 +9353,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     showEmptyProject();
     setView("home");
     applyConnectionStatus();
-    setMessage("chat_hint", "No connection saved yet. Go to Settings > Connectors to pair or manage your runtime.", "");
+    setMessage("chat_hint", "No connector paired yet. Go to Settings > Connectors to pair or manage your runtime.", "");
     await loadAccountProfile({ silent: true }).catch(() => {});
     setNavTab("dashboard");
     return;

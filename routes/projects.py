@@ -67,6 +67,44 @@ def _project_actor_from_access(access: Dict[str, Any]) -> Dict[str, Optional[str
     return {"type": "user", "id": uid or None, "label": mode or "user"}
 
 
+def _resolve_connector_selection(conn, *, user_id: str, connection_id: Any) -> Dict[str, Any]:
+    requested_id = str(connection_id or "").strip()
+    if not requested_id:
+        return {"ok": False, "status": 400, "error": "connection_id is required"}
+
+    connector_row = conn.execute(
+        """
+        SELECT id, user_id, name, status, openclaw_base_url
+        FROM connectors
+        WHERE id = ? AND user_id = ?
+        LIMIT 1
+        """,
+        (requested_id, user_id),
+    ).fetchone()
+    if connector_row:
+        return {
+            "ok": True,
+            "connection_id": str(connector_row["id"] or "").strip() or requested_id,
+            "connector": dict(connector_row),
+        }
+
+    legacy_direct = conn.execute(
+        "SELECT id FROM openclaw_connections WHERE id = ? AND user_id = ? LIMIT 1",
+        (requested_id, user_id),
+    ).fetchone()
+    if legacy_direct:
+        return {
+            "ok": False,
+            "status": 410,
+            "error": (
+                "Direct OpenClaw connections are no longer supported for projects. "
+                "Pair a Hivee Connector and retry."
+            ),
+        }
+
+    return {"ok": False, "status": 404, "error": "Connector not found for this user"}
+
+
 def _invite_email_settings() -> Dict[str, Any]:
     host = str(os.getenv("INVITE_EMAIL_SMTP_HOST") or "").strip()
     username = str(os.getenv("INVITE_EMAIL_SMTP_USERNAME") or "").strip()
@@ -458,24 +496,16 @@ def register_routes(app: FastAPI) -> None:
         from services.connector_dispatch import connector_chat_sync as _connector_chat_sync
         user_id = get_session_user(request)
         conn = db()
-        row = conn.execute(
-            "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
-            (payload.connection_id, user_id),
-        ).fetchone()
-        connector_row = None
-        if not row:
-            connector_row = conn.execute(
-                "SELECT id FROM connectors WHERE id = ? AND user_id = ?",
-                (payload.connection_id, user_id),
-            ).fetchone()
-        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
+        selection = _resolve_connector_selection(conn, user_id=user_id, connection_id=payload.connection_id)
+        if not selection.get("ok"):
+            conn.close()
+            raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
+        resolved_connection_id = str(selection.get("connection_id") or "").strip()
         policy = conn.execute(
             "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
-            (payload.connection_id, user_id),
+            (resolved_connection_id, user_id),
         ).fetchone()
         conn.close()
-        if not row and not connector_row:
-            raise HTTPException(404, "Connection not found")
 
         workspace = _ensure_user_workspace(user_id)
         workspace_root = str(workspace["workspace_root"])
@@ -490,17 +520,8 @@ def register_routes(app: FastAPI) -> None:
         )
         session_key = (payload.session_key or "new-project").strip() or "new-project"
         timeout = max(10, min(payload.timeout_sec, 45 if payload.optimize_tokens else 90))
-        # Resolve connector_id: prefer explicit connector_row, else look up user's online connector
-        if connector_row:
-            resolved_connector_id = str(payload.connection_id)
-        else:
-            from services.connector_dispatch import get_user_online_connector as _get_user_online_connector
-            online = _get_user_online_connector(user_id)
-            if not online:
-                raise HTTPException(400, "No connector available. Please connect a Hivee Connector to use setup chat.")
-            resolved_connector_id = str(online["id"])
         res = await _connector_chat_sync(
-            connector_id=resolved_connector_id,
+            connector_id=resolved_connection_id,
             message=instruction,
             agent_id=effective_agent_id,
             session_key=f"project-setup:{session_key}",
@@ -521,24 +542,16 @@ def register_routes(app: FastAPI) -> None:
         from services.connector_dispatch import connector_chat_sync as _connector_chat_sync
         user_id = get_session_user(request)
         conn = db()
-        row = conn.execute(
-            "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
-            (payload.connection_id, user_id),
-        ).fetchone()
-        connector_row = None
-        if not row:
-            connector_row = conn.execute(
-                "SELECT id FROM connectors WHERE id = ? AND user_id = ?",
-                (payload.connection_id, user_id),
-            ).fetchone()
-        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
+        selection = _resolve_connector_selection(conn, user_id=user_id, connection_id=payload.connection_id)
+        if not selection.get("ok"):
+            conn.close()
+            raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
+        resolved_connection_id = str(selection.get("connection_id") or "").strip()
         policy = conn.execute(
             "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
-            (payload.connection_id, user_id),
+            (resolved_connection_id, user_id),
         ).fetchone()
         conn.close()
-        if not row and not connector_row:
-            raise HTTPException(404, "Connection not found")
     
         workspace = _ensure_user_workspace(user_id)
         workspace_root = str(workspace["workspace_root"])
@@ -566,17 +579,8 @@ def register_routes(app: FastAPI) -> None:
             workspace_root=workspace_root,
         )
         session_key = (payload.session_key or "new-project").strip() or "new-project"
-        # Resolve connector_id: prefer explicit connector_row, else look up user's online connector
-        if connector_row:
-            resolved_connector_id = str(payload.connection_id)
-        else:
-            from services.connector_dispatch import get_user_online_connector as _get_user_online_connector
-            online = _get_user_online_connector(user_id)
-            if not online:
-                raise HTTPException(400, "No connector available. Please connect a Hivee Connector to use setup draft.")
-            resolved_connector_id = str(online["id"])
         res = await _connector_chat_sync(
-            connector_id=resolved_connector_id,
+            connector_id=resolved_connection_id,
             message=instruction,
             agent_id=effective_agent_id,
             session_key=f"project-setup-draft:{session_key}",
@@ -636,26 +640,15 @@ def register_routes(app: FastAPI) -> None:
         env_id = str(primary_env.get("id") or "").strip() or None
     
         conn = db()
-        c = conn.execute(
-            "SELECT id FROM openclaw_connections WHERE id = ? AND user_id = ?",
-            (payload.connection_id, user_id),
-        ).fetchone()
-        # Also accept connector IDs as a valid connection source
-        is_connector_mode = False
-        connector_c = None
-        if not c:
-            connector_c = conn.execute(
-                "SELECT id FROM connectors WHERE id = ? AND user_id = ?",
-                (payload.connection_id, user_id),
-            ).fetchone()
-            if not connector_c:
-                conn.close()
-                raise HTTPException(400, "Invalid connection_id (not found for this user)")
-            is_connector_mode = True
+        selection = _resolve_connector_selection(conn, user_id=user_id, connection_id=payload.connection_id)
+        if not selection.get("ok"):
+            conn.close()
+            raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
+        resolved_connection_id = str(selection.get("connection_id") or "").strip()
 
         policy_row = conn.execute(
             "SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1",
-            (payload.connection_id, user_id),
+            (resolved_connection_id, user_id),
         ).fetchone()
         main_agent_id = str(policy_row["main_agent_id"] or "").strip() if policy_row else ""
         main_agent_name = str(policy_row["main_agent_name"] or "").strip() if policy_row else ""
@@ -672,7 +665,7 @@ def register_routes(app: FastAPI) -> None:
             WHERE user_id = ? AND connection_id = ? AND agent_id = ?
             LIMIT 1
             """,
-            (user_id, payload.connection_id, main_agent_id),
+            (user_id, resolved_connection_id, main_agent_id),
         ).fetchone()
         if not managed_primary:
             conn.close()
@@ -734,13 +727,13 @@ def register_routes(app: FastAPI) -> None:
                 0,
                 0,
                 int(time.time()),
-                payload.connection_id,
+                resolved_connection_id,
                 workspace_root,
                 project_root,
                 1,
                 now,
-                "connector" if is_connector_mode else "direct_openclaw",
-                payload.connection_id if is_connector_mode else None,
+                "connector",
+                resolved_connection_id,
             ),
         )
         conn.execute(
@@ -750,7 +743,7 @@ def register_routes(app: FastAPI) -> None:
                 source_type, source_user_id, source_connection_id, joined_via_invite_id, added_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?)
             """,
-            (pid, main_agent_id, main_agent_name, 1, "Primary owner agent", "owner", user_id, payload.connection_id, None, now),
+            (pid, main_agent_id, main_agent_name, 1, "Primary owner agent", "owner", user_id, resolved_connection_id, None, now),
         )
         initial_project_agent_token = _new_agent_access_token()
         conn.execute(
@@ -823,7 +816,7 @@ def register_routes(app: FastAPI) -> None:
             title=payload.title,
             brief=payload.brief,
             goal=payload.goal,
-            connection_id=payload.connection_id,
+            connection_id=resolved_connection_id,
             created_at=now,
             workspace_root=workspace_root,
             project_root=project_root,
@@ -2772,13 +2765,11 @@ def register_routes(app: FastAPI) -> None:
         if not connection_id:
             conn.close()
             raise HTTPException(400, "connection_id is required")
-        conn_row = conn.execute(
-            "SELECT id FROM openclaw_connections WHERE id = ? AND user_id = ?",
-            (connection_id, member_user_id),
-        ).fetchone()
-        if not conn_row:
+        selection = _resolve_connector_selection(conn, user_id=member_user_id, connection_id=connection_id)
+        if not selection.get("ok"):
             conn.close()
-            raise HTTPException(404, "Connection not found for this user")
+            raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
+        connection_id = str(selection.get("connection_id") or "").strip() or connection_id
 
         policy_row = conn.execute(
             "SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1",

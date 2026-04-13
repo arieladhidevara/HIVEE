@@ -49,25 +49,29 @@ def enqueue_connector_command(
 
 
 def get_project_connector(project_id: str) -> Optional[Dict[str, Any]]:
-    """Return connector row if project uses connector backend mode, else None."""
+    """Return the best connector row for a project, with legacy fallback."""
     conn = db()
     project = conn.execute(
-        "SELECT backend_mode, connector_id FROM projects WHERE id = ?",
+        "SELECT user_id, backend_mode, connector_id FROM projects WHERE id = ?",
         (project_id,),
     ).fetchone()
-    if not project or str(project["backend_mode"] or "direct_openclaw") != "connector":
+    if not project:
         conn.close()
         return None
     connector_id = str(project["connector_id"] or "").strip()
-    if not connector_id:
-        conn.close()
-        return None
-    row = conn.execute(
-        "SELECT * FROM connectors WHERE id = ?",
-        (connector_id,),
-    ).fetchone()
+    row = None
+    if connector_id:
+        row = conn.execute(
+            "SELECT * FROM connectors WHERE id = ?",
+            (connector_id,),
+        ).fetchone()
+    user_id = str(project["user_id"] or "").strip()
     conn.close()
-    return dict(row) if row else None
+    if row:
+        return dict(row)
+    if not user_id:
+        return None
+    return get_user_online_connector(user_id)
 
 
 def latest_connector_result(command_id: str) -> Optional[Dict[str, Any]]:

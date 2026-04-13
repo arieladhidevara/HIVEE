@@ -93,6 +93,10 @@ def _delete_connection_secret_rows(conn, *, user_id: str, secret_id: Optional[st
 def register_routes(app: FastAPI) -> None:
     @app.post("/api/openclaw/connect")
     async def connect_openclaw(request: Request, payload: ConnectIn):
+        raise HTTPException(
+            410,
+            "Direct OpenClaw connections are retired. Pair a Hivee Connector instead.",
+        )
         user_id = get_session_user(request)
         primary_env = _ensure_primary_environment_for_user(user_id)
         env_id = str(primary_env.get("id") or "").strip() or None
@@ -275,16 +279,17 @@ def register_routes(app: FastAPI) -> None:
     async def list_connections(request: Request):
         user_id = get_session_user(request)
         conn = db()
-        rows = conn.execute(
-            "SELECT id, base_url, name FROM openclaw_connections WHERE user_id = ? ORDER BY created_at DESC",
-            (user_id,),
-        ).fetchall()
         connector_rows = conn.execute(
-            "SELECT id, name, openclaw_base_url, status FROM connectors WHERE user_id = ? ORDER BY last_seen_at DESC",
+            """
+            SELECT id, name, openclaw_base_url, status
+            FROM connectors
+            WHERE user_id = ?
+            ORDER BY CASE WHEN status = 'online' THEN 0 ELSE 1 END, last_seen_at DESC
+            """,
             (user_id,),
         ).fetchall()
         conn.close()
-        result: List[ConnectionOut] = [ConnectionOut(id=r["id"], base_url=r["base_url"], name=r["name"]) for r in rows]
+        result: List[ConnectionOut] = []
         for r in connector_rows:
             result.append(ConnectionOut(
                 id=r["id"],

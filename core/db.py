@@ -752,7 +752,7 @@ def init_db() -> None:
     if "workspace_tree" not in policy_cols:
         cur.execute("ALTER TABLE connection_policies ADD COLUMN workspace_tree TEXT")
     if "backend_mode" not in project_cols:
-        cur.execute("ALTER TABLE projects ADD COLUMN backend_mode TEXT NOT NULL DEFAULT 'direct_openclaw'")
+        cur.execute("ALTER TABLE projects ADD COLUMN backend_mode TEXT NOT NULL DEFAULT 'connector'")
     if "connector_id" not in project_cols:
         cur.execute("ALTER TABLE projects ADD COLUMN connector_id TEXT")
     conn.commit()
