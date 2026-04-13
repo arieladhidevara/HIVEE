@@ -246,10 +246,11 @@ Hivee will automatically create a BLOCKED task card visible to the owner in the 
 
 ## 7. File Access (Read via HTTP)
 
-All project files are readable via HTTP using your session token:
+All project files are readable via HTTP using your agent credentials:
 ```
 GET {hivee_api_base}/files/{file_path}
-Authorization: Bearer {your_session_token}
+X-Project-Agent-Id: <your_hivee_agent_id>
+X-Project-Agent-Token: <your_hivee_project_token>
 ```
 
 ### Key files to read at session start:
@@ -322,15 +323,18 @@ def _fundamentals_markdown(
 ---
 
 ## Your Session Context
-You receive three things in your prompt:
-1. **Session token** — a short-lived plaintext token for this session only
-2. **This file URL** — `{base}/files/fundamentals.md`
-3. **Your task** — what you must do this session
+You receive these in your prompt:
+1. **hivee_agent_id** — your agent ID for this project
+2. **hivee_project_token** — a short-lived token for this session only
+3. **This file URL** — `{base}/files/fundamentals.md`
+4. **Your task** — what you must do this session
 
-**Always authenticate with:**
+**Always authenticate ALL Hivee API requests with both headers:**
 ```
-Authorization: Bearer <your_session_token>
+X-Project-Agent-Id: <your_hivee_agent_id>
+X-Project-Agent-Token: <your_hivee_project_token>
 ```
+Do NOT use `Authorization: Bearer` — it will return 401.
 
 ---
 
@@ -395,13 +399,15 @@ Full details (session keys, connector info): `GET {base}/files/agents.md`
 ### Read a file
 ```
 GET {base}/files/<path>
-Authorization: Bearer <token>
+X-Project-Agent-Id: <your_hivee_agent_id>
+X-Project-Agent-Token: <your_hivee_project_token>
 ```
 
 ### Write/mutate (via agent-ops)
 ```
 POST {base}/agent-ops
-Authorization: Bearer <token>
+X-Project-Agent-Id: <your_hivee_agent_id>
+X-Project-Agent-Token: <your_hivee_project_token>
 Content-Type: application/json
 
 {{"ops": [
@@ -739,7 +745,8 @@ def _credentials_markdown(*, project_id: str, hivee_api_base: str) -> str:
 
 ```
 GET {base}/secrets/<secret_name>
-Authorization: Bearer <your_session_token>
+X-Project-Agent-Id: <your_hivee_agent_id>
+X-Project-Agent-Token: <your_hivee_project_token>
 ```
 
 The response will contain the decrypted value. **Never log or include secret values in `chat_update` or file outputs.**
@@ -2612,6 +2619,7 @@ def _plan_prompt_from_project(
 def _delegate_prompt_from_project(
     *,
     project_id: str,
+    agent_id: str,
     role_rows: List[Dict[str, Any]],
     agent_token: str,
     hivee_api_base: str,
@@ -2661,6 +2669,7 @@ def _delegate_prompt_from_project(
     return _build_fundamentals_session_prompt(
         task=task,
         project_id=project_id,
+        agent_id=agent_id,
         agent_token=agent_token,
         hivee_api_base=hivee_api_base,
     )
@@ -4983,18 +4992,25 @@ def _build_fundamentals_session_prompt(
     *,
     task: str,
     project_id: str,
+    agent_id: str,
     agent_token: str,
     hivee_api_base: str,
 ) -> str:
     """
-    Minimal session injection: token + fundamentals URL + task.
+    Minimal session injection: agent identity + token + fundamentals URL + task.
     Agent fetches all context it needs from fundamentals.md on-demand.
+    All Hivee API calls must use X-Project-Agent-Id and X-Project-Agent-Token headers.
     """
     fundamentals_url = f"{hivee_api_base.rstrip('/')}/files/{FUNDAMENTALS_FILE}"
     return (
+        f"hivee_agent_id: {agent_id}\n"
         f"hivee_project_token: {agent_token}\n"
         f"fundamentals: GET {fundamentals_url}\n"
-        f"  (Authorization: Bearer {agent_token})\n\n"
+        f"  Headers: X-Project-Agent-Id: {agent_id}\n"
+        f"           X-Project-Agent-Token: {agent_token}\n\n"
+        f"All Hivee API requests must include these two headers:\n"
+        f"  X-Project-Agent-Id: {agent_id}\n"
+        f"  X-Project-Agent-Token: {agent_token}\n\n"
         f"Task:\n{task.strip()}"
     )
 

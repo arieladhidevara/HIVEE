@@ -1995,6 +1995,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
     instruction = _build_fundamentals_session_prompt(
         task=task,
         project_id=project_id,
+        agent_id=primary_agent_id or "",
         agent_token=agent_token,
         hivee_api_base=hivee_api_base,
     )
@@ -2145,6 +2146,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
     agent_token = _issue_agent_session_token(project_id, primary_agent_id or "")
     instruction = _delegate_prompt_from_project(
         project_id=project_id,
+        agent_id=primary_agent_id or "",
         role_rows=role_rows,
         agent_token=agent_token,
         hivee_api_base=hivee_api_base,
