@@ -4742,6 +4742,25 @@ function applyMention(alias) {
   input.focus();
 }
 
+function _normalizeDiscoveredAgent(item, { connectionId = "", status = "active" } = {}) {
+  const source = item && typeof item === "object" ? item : {};
+  const raw = source.raw && typeof source.raw === "object" ? source.raw : source;
+  const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
+  if (!id) return null;
+  const name = String(source.name || source.title || raw.name || raw.title || id).trim() || id;
+  return {
+    id,
+    name,
+    raw,
+    connection_id: String(source.connection_id || connectionId || "").trim(),
+    status: String(source.status || status || "").trim() || "active",
+  };
+}
+
+function _summaryAgentLookupKey(agentId, connectionId = "") {
+  return `${String(connectionId || "").trim()}::${String(agentId || "").trim()}`.toLowerCase();
+}
+
 function renderChatAgents(agents) {
   const list = $("chat_agent_list");
   if (list) list.innerHTML = "";
@@ -4828,12 +4847,16 @@ async function loadChatAgents() {
     const rawAgents = Array.isArray(listed?.agents) ? listed.agents : [];
     workspaceAgents = rawAgents
       .map((item) => {
-        const source = (item && typeof item === "object") ? item : {};
-        const raw = (source.raw && typeof source.raw === "object") ? source.raw : source;
-        const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
-        const name = String(source.name || source.title || raw.name || id).trim() || id;
-        if (!id) return null;
-        return { id, name: isModelFallback ? `${name} (model)` : name, role: isModelFallback ? "model" : "workspace", is_primary: false };
+        const normalized = _normalizeDiscoveredAgent(item, { connectionId: activeConnectionId });
+        if (!normalized) return null;
+        return {
+          id: normalized.id,
+          name: isModelFallback ? `${normalized.name} (model)` : normalized.name,
+          role: isModelFallback ? "model" : "workspace",
+          is_primary: false,
+          raw: normalized.raw,
+          connection_id: normalized.connection_id,
+        };
       })
       .filter(Boolean);
   } catch (e) {
@@ -5473,30 +5496,107 @@ function _formatSummaryCapabilityLabel(raw) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function _extractSummaryAgentCapabilities(card) {
+function _pushSummaryCapabilityTag(tags, seen, rawLabel, prefix = "") {
+  const label = _formatSummaryCapabilityLabel(rawLabel);
+  if (!label) return;
+  const fullLabel = prefix ? `${prefix}: ${label}` : label;
+  const low = fullLabel.toLowerCase();
+  if (seen.has(low)) return;
+  seen.add(low);
+  tags.push(fullLabel);
+}
+
+function _pushSummaryFreeformTag(tags, seen, rawText, prefix = "Focus") {
+  const text = String(rawText || "").replace(/\s+/g, " ").trim();
+  if (!text) return;
+  const compact = `${prefix}: ${text.slice(0, 72)}`;
+  const low = compact.toLowerCase();
+  if (seen.has(low)) return;
+  seen.add(low);
+  tags.push(compact);
+}
+
+function _appendSummaryCapabilitySource(tags, seen, source) {
+  if (!source) return;
+  if (Array.isArray(source)) {
+    for (const item of source) {
+      if (item && typeof item === "object") {
+        _pushSummaryCapabilityTag(tags, seen, item.name || item.id || item.title || item.label || "");
+      } else {
+        _pushSummaryCapabilityTag(tags, seen, item);
+      }
+    }
+    return;
+  }
+  if (source && typeof source === "object") {
+    for (const [key, value] of Object.entries(source)) {
+      const enabled = value === true
+        || (typeof value === "number" && value > 0)
+        || (typeof value === "string" && value.trim())
+        || (Array.isArray(value) && value.length)
+        || (value && typeof value === "object");
+      if (!enabled) continue;
+      _pushSummaryCapabilityTag(tags, seen, key);
+    }
+    return;
+  }
+  _pushSummaryCapabilityTag(tags, seen, source);
+}
+
+function _extractAgentModelLabel(card, rawAgent = null) {
+  const metadata = card && typeof card.metadata === "object" ? card.metadata : {};
+  const candidates = [
+    rawAgent?.model,
+    rawAgent?.adapter_type,
+    rawAgent?.adapterType,
+    card?.model,
+    card?.adapter_type,
+    metadata?.agentModel,
+    metadata?.model,
+  ];
+  for (const candidate of candidates) {
+    const text = String(candidate || "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function _extractAgentDescription(card, rawAgent = null) {
+  const candidates = [
+    rawAgent?.description,
+    rawAgent?.summary,
+    rawAgent?.specialization,
+    rawAgent?.specialty,
+    rawAgent?.role,
+    card?.description,
+  ];
+  for (const candidate of candidates) {
+    const text = String(candidate || "").replace(/\s+/g, " ").trim();
+    if (text) return text.slice(0, 220);
+  }
+  return "";
+}
+
+function _extractSummaryAgentCapabilities(card, rawAgent = null) {
   const tags = [];
   const seen = new Set();
-  const capObj = card && typeof card.capabilities === "object" ? card.capabilities : {};
-  for (const [key, value] of Object.entries(capObj)) {
-    const enabled = value === true || (typeof value === "number" && value > 0) || (value && typeof value === "object");
-    if (!enabled) continue;
-    const label = _formatSummaryCapabilityLabel(key);
-    const low = label.toLowerCase();
-    if (!label || seen.has(low)) continue;
-    seen.add(low);
-    tags.push(label);
+  _appendSummaryCapabilitySource(tags, seen, card?.capabilities);
+  _appendSummaryCapabilitySource(tags, seen, rawAgent?.capabilities);
+  _appendSummaryCapabilitySource(tags, seen, rawAgent?.tags);
+
+  const skills = [
+    ...(Array.isArray(card?.skills) ? card.skills : []),
+    ...(Array.isArray(rawAgent?.skills) ? rawAgent.skills : []),
+  ];
+  for (const skill of skills) {
+    const skillName = String(skill?.name || skill?.id || skill || "").trim();
+    if (!skillName) continue;
+    _pushSummaryCapabilityTag(tags, seen, skillName, "Skill");
+    if (tags.length >= 8) break;
   }
 
-  const skills = Array.isArray(card?.skills) ? card.skills : [];
-  for (const skill of skills) {
-    const skillName = String(skill?.name || skill?.id || "").trim();
-    if (!skillName) continue;
-    const label = `Skill: ${skillName}`;
-    const low = label.toLowerCase();
-    if (seen.has(low)) continue;
-    seen.add(low);
-    tags.push(label);
-    if (tags.length >= 8) break;
+  if (!tags.length) {
+    _pushSummaryFreeformTag(tags, seen, rawAgent?.specialty || rawAgent?.specialization || rawAgent?.role || card?.description || rawAgent?.description || "");
   }
 
   return tags.slice(0, 8);
@@ -7097,8 +7197,10 @@ function openAgentDetailModal(agent) {
 
   // Detail fields
   const setField = (id, val) => { const el = $(id); if (el) el.textContent = val || "—"; };
+  const connectionId = String(agent.connection_id || "").trim();
+  const connectionRow = connectionsCache.find((row) => String(row?.id || "").trim() === connectionId);
   setField("modal_agent_id", agent.agent_id);
-  setField("modal_agent_connection", agent.connection_id);
+  setField("modal_agent_connection", connectionRow ? `${connectionRow.name || connectionId} (${connectionId})` : connectionId);
   setField("modal_agent_model", agent.model || agent.adapter_type || "—");
 
   // Current activity (live log)
@@ -7176,50 +7278,52 @@ async function loadSummaryAgents({ force = false } = {}) {
   try {
     const activeConn = String(activeConnectionId || "").trim();
     let liveListed = null;
+    const liveSourceByKey = new Map();
 
     // Keep the managed-agent index fresh for the active connection so the
     // Agents tab stays in sync with Chat/Manage Agents live discovery.
     if (activeConn) {
       try {
         liveListed = await api(`/api/openclaw/${encodeURIComponent(activeConn)}/agents`);
+        const liveAgents = Array.isArray(liveListed?.agents) ? liveListed.agents : [];
+        for (const item of liveAgents) {
+          const normalized = _normalizeDiscoveredAgent(item, { connectionId: activeConn });
+          if (!normalized) continue;
+          liveSourceByKey.set(_summaryAgentLookupKey(normalized.id, normalized.connection_id), normalized);
+        }
       } catch {
         // Non-fatal: fallback to currently indexed managed agents below.
       }
     }
 
-    const listed = await api("/api/a2a/agents");
-    const allItems = Array.isArray(listed?.agents) ? listed.agents : [];
-    let items = allItems;
-    if (activeConn) {
-      const scoped = allItems.filter((item) => String(item?.connection_id || "").trim() === activeConn);
-      // Always scope to the active connection — if nothing matches yet (e.g. before first
-      // bootstrap) fall through to the live-discovery fallback below rather than showing
-      // stale agents from other connections.
-      items = scoped;
-    }
+    const listPath = activeConn
+      ? `/api/a2a/agents?connection_id=${encodeURIComponent(activeConn)}`
+      : "/api/a2a/agents";
+    const listed = await api(listPath);
+    let items = Array.isArray(listed?.agents) ? listed.agents : [];
+
     // If managed index is still empty for this connection, render cards from
     // live discovery so the Agents tab is not blank.
     if (!items.length && activeConn) {
-      const liveAgents = Array.isArray(liveListed?.agents) ? liveListed.agents : [];
+      const liveAgents = [...liveSourceByKey.values()];
       if (liveAgents.length) {
-        items = liveAgents.map((item) => {
-          const src = (item && typeof item === "object") ? item : {};
-          const raw = (src.raw && typeof src.raw === "object") ? src.raw : src;
-          const aid = String(src.id || src.agent_id || src.name || raw.id || raw.agent_id || "").trim();
-          const aname = String(src.name || src.title || raw.name || aid).trim() || aid;
-          return {
-            agent_id: aid,
-            agent_name: aname,
-            connection_id: activeConn,
-            status: "active",
-          };
-        }).filter((row) => Boolean(String(row.agent_id || "").trim()));
+        items = liveAgents.map((item) => ({
+          agent_id: item.id,
+          agent_name: item.name,
+          connection_id: item.connection_id || activeConn,
+          status: item.status,
+          raw: item.raw,
+        }));
       }
     }
 
     const enriched = await Promise.all(items.map(async (agent) => {
-      const agentId = String(agent?.agent_id || "").trim();
-      const connectionId = String(agent?.connection_id || "").trim();
+      const agentId = String(agent?.agent_id || agent?.id || "").trim();
+      const connectionId = String(agent?.connection_id || activeConn || "").trim();
+      const liveSource = liveSourceByKey.get(_summaryAgentLookupKey(agentId, connectionId)) || null;
+      const rawSource = (liveSource?.raw && typeof liveSource.raw === "object")
+        ? liveSource.raw
+        : (agent?.raw && typeof agent.raw === "object" ? agent.raw : null);
       let card = {};
       if (agentId) {
         const q = connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : "";
@@ -7230,12 +7334,19 @@ async function loadSummaryAgents({ force = false } = {}) {
           card = {};
         }
       }
+      if ((!card || !Object.keys(card).length) && rawSource?.card && typeof rawSource.card === "object") {
+        card = rawSource.card;
+      }
       return {
         agent_id: agentId,
-        agent_name: String(agent?.agent_name || agentId || "agent").trim(),
+        agent_name: String(agent?.agent_name || liveSource?.name || agentId || "agent").trim(),
         connection_id: connectionId,
         status: String(agent?.status || "active").trim() || "active",
-        capabilities: _extractSummaryAgentCapabilities(card),
+        capabilities: _extractSummaryAgentCapabilities(card, rawSource),
+        model: _extractAgentModelLabel(card, rawSource),
+        adapter_type: String(rawSource?.adapter_type || rawSource?.adapterType || "").trim(),
+        description: _extractAgentDescription(card, rawSource),
+        raw: rawSource || null,
       };
     }));
 
@@ -7469,12 +7580,9 @@ async function loadAgentsForWizard() {
   const rawAgents = Array.isArray(res?.agents) ? res.agents : [];
   currentAgents = rawAgents
     .map((item) => {
-      const source = item && typeof item === "object" ? item : {};
-      const raw = (source.raw && typeof source.raw === "object") ? source.raw : source;
-      const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
-      const name = String(source.name || source.title || raw.name || id).trim() || id;
-      if (!id) return null;
-      return { id, name, raw };
+      const normalized = _normalizeDiscoveredAgent(item, { connectionId: activeConnectionId });
+      if (!normalized) return null;
+      return { id: normalized.id, name: normalized.name, raw: normalized.raw, connection_id: normalized.connection_id };
     })
     .filter(Boolean);
   renderWizardOwnerAgents();
@@ -7483,10 +7591,19 @@ async function loadAgentsForWizard() {
 function _formatAgentSpecialization(agent) {
   const source = agent && typeof agent === "object" ? agent : {};
   const raw = source.raw && typeof source.raw === "object" ? source.raw : source;
-  const summary = summaryAgents.find((s) => String(s.agent_id || "").trim() === String(source.id || "").trim());
+  const sourceId = String(source.id || source.agent_id || "").trim();
+  const sourceConnectionId = String(source.connection_id || activeConnectionId || "").trim();
+  const summary = summaryAgents.find((s) => {
+    const sameId = String(s.agent_id || "").trim() === sourceId;
+    if (!sameId) return false;
+    const summaryConnectionId = String(s.connection_id || "").trim();
+    return !sourceConnectionId || !summaryConnectionId || summaryConnectionId === sourceConnectionId;
+  });
   if (summary && Array.isArray(summary.capabilities) && summary.capabilities.length) {
     return summary.capabilities.slice(0, 2).join(" | ");
   }
+  if (summary?.description) return summary.description;
+  if (summary?.model) return `Model: ${summary.model}`;
 
   const direct = [
     raw.specialty,

@@ -149,17 +149,19 @@ def _normalize_managed_agent_candidates(
     *,
     fallback_agent_id: Optional[str] = None,
     fallback_agent_name: Optional[str] = None,
-) -> List[Dict[str, str]]:
-    cleaned: List[Dict[str, str]] = []
+) -> List[Dict[str, Any]]:
+    cleaned: List[Dict[str, Any]] = []
     seen: set[str] = set()
     candidates = raw_agents if isinstance(raw_agents, list) else []
     for row in candidates:
         if isinstance(row, str):
             aid = str(row).strip()
             nm = aid
+            raw = None
         elif isinstance(row, dict):
             aid = str(row.get("id") or row.get("agent_id") or row.get("name") or "").strip()
             nm = str(row.get("name") or row.get("title") or aid).strip()
+            raw = row
         else:
             continue
         if not aid:
@@ -167,16 +169,119 @@ def _normalize_managed_agent_candidates(
         if aid in seen:
             continue
         seen.add(aid)
-        cleaned.append({"id": aid[:180], "name": (nm or aid)[:220]})
+        cleaned.append({"id": aid[:180], "name": (nm or aid)[:220], "raw": raw})
     fallback_id = str(fallback_agent_id or "").strip()
     if fallback_id and fallback_id not in seen:
         cleaned.append(
             {
                 "id": fallback_id[:180],
                 "name": (str(fallback_agent_name or fallback_id).strip() or fallback_id)[:220],
+                "raw": None,
             }
         )
     return cleaned
+
+def _managed_agent_capability_key(raw_label: Any) -> str:
+    label = str(raw_label or "").strip()
+    if not label:
+        return ""
+    label = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", label)
+    label = re.sub(r"[^a-zA-Z0-9]+", "_", label).strip("_").lower()
+    return label[:80]
+
+def _merge_managed_agent_capabilities(target: Dict[str, Any], source: Any) -> None:
+    if not isinstance(target, dict) or source is None:
+        return
+    if isinstance(source, dict):
+        for raw_key, raw_value in source.items():
+            key = _managed_agent_capability_key(raw_key)
+            if not key:
+                continue
+            if isinstance(raw_value, bool):
+                target[key] = raw_value
+            elif isinstance(raw_value, (int, float)):
+                target[key] = raw_value
+            elif isinstance(raw_value, dict):
+                target[key] = dict(raw_value)
+            elif isinstance(raw_value, list):
+                target[key] = [str(item).strip() for item in raw_value if str(item).strip()]
+            else:
+                target[key] = bool(str(raw_value).strip())
+        return
+    if isinstance(source, (list, tuple, set)):
+        for item in source:
+            if isinstance(item, dict):
+                label = item.get("name") or item.get("id") or item.get("title") or item.get("label")
+            else:
+                label = item
+            key = _managed_agent_capability_key(label)
+            if key:
+                target[key] = True
+        return
+    key = _managed_agent_capability_key(source)
+    if key:
+        target[key] = True
+
+def _normalize_managed_agent_skills(*sources: Any) -> List[Dict[str, Any]]:
+    output: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in sources:
+        if isinstance(source, (list, tuple, set)):
+            candidates = list(source)
+        elif isinstance(source, (dict, str)):
+            candidates = [source]
+        else:
+            candidates = []
+        for item in candidates:
+            if isinstance(item, str):
+                skill_name = str(item).strip()
+                if not skill_name:
+                    continue
+                skill_id = _managed_agent_capability_key(skill_name) or "skill"
+                skill_payload: Dict[str, Any] = {"id": skill_id, "name": skill_name}
+            elif isinstance(item, dict):
+                skill_name = str(item.get("name") or item.get("title") or item.get("id") or "").strip()
+                if not skill_name:
+                    continue
+                skill_id = str(item.get("id") or _managed_agent_capability_key(skill_name) or "skill").strip()
+                skill_payload = {"id": skill_id[:120], "name": skill_name[:220]}
+                skill_desc = str(item.get("description") or item.get("summary") or "").strip()
+                if skill_desc:
+                    skill_payload["description"] = skill_desc[:320]
+                tags = item.get("tags")
+                if isinstance(tags, list):
+                    skill_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+                    if skill_tags:
+                        skill_payload["tags"] = skill_tags[:12]
+            else:
+                continue
+            dedupe_key = str(skill_payload.get("name") or skill_payload.get("id") or "").strip().lower()
+            if not dedupe_key or dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            output.append(skill_payload)
+    return output[:12]
+
+def _select_managed_agent_description(
+    *,
+    agent_id: str,
+    raw_agent: Optional[Dict[str, Any]],
+    existing_card: Optional[Dict[str, Any]],
+) -> str:
+    raw = raw_agent if isinstance(raw_agent, dict) else {}
+    existing = existing_card if isinstance(existing_card, dict) else {}
+    candidates = [
+        raw.get("description"),
+        raw.get("summary"),
+        raw.get("role"),
+        existing.get("description"),
+        f"Hivee managed profile for agent `{agent_id}`.",
+    ]
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if text:
+            return text[:600]
+    return f"Hivee managed profile for agent `{agent_id}`."
 
 def _build_managed_agent_card(
     *,
@@ -186,15 +291,73 @@ def _build_managed_agent_card(
     connection_id: str,
     env_id: Optional[str],
     root_path: str,
+    raw_agent: Optional[Dict[str, Any]] = None,
+    existing_card: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     now = int(time.time())
     safe_skill_id = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(agent_id or "").strip()).strip("-") or "agent"
-    return {
+    raw = raw_agent if isinstance(raw_agent, dict) else {}
+    existing = existing_card if isinstance(existing_card, dict) else {}
+    provider = dict(existing.get("provider") or {}) if isinstance(existing.get("provider"), dict) else {}
+    provider.setdefault("organization", "Hivee")
+
+    capabilities: Dict[str, Any] = {}
+    _merge_managed_agent_capabilities(capabilities, existing.get("capabilities"))
+    _merge_managed_agent_capabilities(capabilities, raw.get("capabilities"))
+    _merge_managed_agent_capabilities(capabilities, raw.get("tools"))
+    _merge_managed_agent_capabilities(capabilities, raw.get("tags"))
+    capabilities.setdefault("streaming", True)
+    capabilities.setdefault("push_notifications", False)
+    capabilities.setdefault("state_transition_history", True)
+
+    skills = _normalize_managed_agent_skills(
+        raw.get("skills"),
+        existing.get("skills"),
+    )
+    if not skills:
+        skills = [
+            {
+                "id": f"{safe_skill_id}.execute",
+                "name": "Project Execution",
+                "description": "Executes scoped project tasks and reports progress.",
+                "tags": ["execution", "workflow", "collaboration"],
+            }
+        ]
+
+    metadata = dict(existing.get("metadata") or {}) if isinstance(existing.get("metadata"), dict) else {}
+    metadata.update(
+        {
+            "managedBy": "hivee",
+            "connectionId": connection_id,
+            "environmentId": env_id,
+            "rootPath": root_path,
+            "provisionedAt": now,
+        }
+    )
+    model_hint = str(
+        raw.get("model")
+        or raw.get("adapter_type")
+        or metadata.get("agentModel")
+        or ""
+    ).strip()
+    if model_hint:
+        metadata["agentModel"] = model_hint[:180]
+    source_role = str(raw.get("role") or "").strip()
+    if source_role:
+        metadata["sourceRole"] = source_role[:180]
+
+    card_payload = dict(existing)
+    card_payload.update(
+        {
         "schemaVersion": MANAGED_AGENT_CARD_VERSION,
         "name": str(agent_name or agent_id),
-        "description": f"Hivee managed profile for agent `{agent_id}`.",
-        "version": "1.0.0",
-        "provider": {"organization": "Hivee"},
+        "description": _select_managed_agent_description(
+            agent_id=agent_id,
+            raw_agent=raw,
+            existing_card=existing,
+        ),
+        "version": str(existing.get("version") or "1.0.0"),
+        "provider": provider,
         "supportedInterfaces": [
             {
                 "url": str(base_url or "").rstrip("/"),
@@ -202,30 +365,27 @@ def _build_managed_agent_card(
                 "protocolVersion": "1.0",
             }
         ],
-        "capabilities": {
-            "streaming": True,
-            "pushNotifications": False,
-            "stateTransitionHistory": True,
-        },
-        "defaultInputModes": ["text"],
-        "defaultOutputModes": ["text"],
-        "skills": [
-            {
-                "id": f"{safe_skill_id}.execute",
-                "name": "Project Execution",
-                "description": "Executes scoped project tasks and reports progress.",
-                "tags": ["execution", "workflow", "collaboration"],
-            }
-        ],
-        "securityRequirements": [{"type": "bearer", "scopes": ["env.read"]}],
-        "metadata": {
-            "managedBy": "hivee",
-            "connectionId": connection_id,
-            "environmentId": env_id,
-            "rootPath": root_path,
-            "provisionedAt": now,
-        },
-    }
+        "capabilities": capabilities,
+        "defaultInputModes": (
+            list(existing.get("defaultInputModes"))
+            if isinstance(existing.get("defaultInputModes"), list) and existing.get("defaultInputModes")
+            else ["text"]
+        ),
+        "defaultOutputModes": (
+            list(existing.get("defaultOutputModes"))
+            if isinstance(existing.get("defaultOutputModes"), list) and existing.get("defaultOutputModes")
+            else ["text"]
+        ),
+        "skills": skills,
+        "securityRequirements": (
+            list(existing.get("securityRequirements"))
+            if isinstance(existing.get("securityRequirements"), list) and existing.get("securityRequirements")
+            else [{"type": "bearer", "scopes": ["env.read"]}]
+        ),
+        "metadata": metadata,
+        }
+    )
+    return card_payload
 
 def _append_managed_agent_history_record(
     conn: sqlite3.Connection,
@@ -337,6 +497,7 @@ def _provision_managed_agents_for_connection(
     for agent in normalized_agents:
         agent_id = str(agent.get("id") or "").strip()
         agent_name = str(agent.get("name") or agent_id).strip() or agent_id
+        raw_agent = agent.get("raw") if isinstance(agent.get("raw"), dict) else None
         if not agent_id:
             failed += 1
             errors.append("Missing agent id in candidate entry")
@@ -350,14 +511,6 @@ def _provision_managed_agents_for_connection(
                 pass  # Filesystem may be ephemeral (e.g. Railway) — don't block DB provisioning
 
             root_path = str(parts["root"].resolve()) if parts["root"].exists() else str(parts["root"])
-            card_payload = _build_managed_agent_card(
-                agent_id=agent_id,
-                agent_name=agent_name,
-                base_url=base_url,
-                connection_id=connection_id,
-                env_id=env_id,
-                root_path=root_path,
-            )
             memory_payloads = {
                 "working": {
                     "scope": "working",
@@ -425,9 +578,25 @@ def _provision_managed_agents_for_connection(
             }
 
             existing = conn.execute(
-                "SELECT id FROM managed_agents WHERE user_id = ? AND connection_id = ? AND agent_id = ?",
+                "SELECT id, card_json FROM managed_agents WHERE user_id = ? AND connection_id = ? AND agent_id = ?",
                 (user_id, connection_id, agent_id),
             ).fetchone()
+            existing_card: Dict[str, Any] = {}
+            if existing:
+                try:
+                    existing_card = json.loads(str(existing["card_json"] or "{}"))
+                except Exception:
+                    existing_card = {}
+            card_payload = _build_managed_agent_card(
+                agent_id=agent_id,
+                agent_name=agent_name,
+                base_url=base_url,
+                connection_id=connection_id,
+                env_id=env_id,
+                root_path=root_path,
+                raw_agent=raw_agent,
+                existing_card=existing_card,
+            )
             card_json = json.dumps(card_payload, ensure_ascii=False)
             if existing:
                 conn.execute(

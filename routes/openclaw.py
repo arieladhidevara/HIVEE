@@ -251,6 +251,16 @@ def register_routes(app: FastAPI) -> None:
                 conn.close()
                 raise HTTPException(404, "Connection not found")
             agents = _get_connector_agents(connection_id, conn)
+            if agents:
+                _provision_managed_agents_for_connection(
+                    user_id=user_id,
+                    env_id=None,
+                    connection_id=connection_id,
+                    base_url=str(connector_row.get("openclaw_base_url") or ""),
+                    raw_agents=agents,
+                    fallback_agent_id=str(agents[0].get("id") or "").strip() or None,
+                    fallback_agent_name=str(agents[0].get("name") or "").strip() or None,
+                )
             # Also merge any previously provisioned managed_agents for this connector
             saved_rows = conn.execute(
                 "SELECT agent_id, agent_name FROM managed_agents WHERE user_id = ? AND connection_id = ? AND status = 'active' ORDER BY agent_name ASC",
@@ -280,7 +290,6 @@ def register_routes(app: FastAPI) -> None:
         ).fetchall()
         conn.close()
         saved_agents = [{"id": r["agent_id"], "name": r["agent_name"], "source": "saved"} for r in saved_rows]
-        saved_ids = {r["agent_id"] for r in saved_rows}
 
         res = await openclaw_list_agents(row["base_url"], connection_api_key)
         if not res.get("ok"):
@@ -298,19 +307,17 @@ def register_routes(app: FastAPI) -> None:
                 "hint": res.get("hint") or "Enable gateway.http.endpoints.chatCompletions.enabled=true in OpenClaw to allow HTTP agent listing.",
             }
 
-        # Provision any newly discovered targets into the DB so they appear in managed agents view.
-        # This includes model-fallback targets returned from /v1/models when dedicated agent endpoints
-        # are not exposed by the gateway.
+        # Refresh the managed-agent index from the active connection so card
+        # metadata stays in sync even when an agent id is unchanged.
         live_agents = [a for a in (res.get("agents") or []) if isinstance(a, dict)]
-        new_agents = [a for a in live_agents if str(a.get("id") or "").strip() not in saved_ids]
-        if new_agents:
+        if live_agents:
             env_id = str(row["env_id"] or "").strip() or None
             _provision_managed_agents_for_connection(
                 user_id=user_id,
                 env_id=env_id,
                 connection_id=connection_id,
                 base_url=row["base_url"],
-                raw_agents=new_agents,
+                raw_agents=live_agents,
             )
 
         return res
