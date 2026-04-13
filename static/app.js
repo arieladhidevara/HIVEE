@@ -5054,14 +5054,14 @@ async function sendChatPrototype() {
     throw new Error(msg);
   }
   if (contextMode === "workspace" && !resolved.agent) {
-    setMessage("chat_hint", "No agent selected. Sending via default OpenClaw route.", "");
+    setMessage("chat_hint", "No agent selected. Sending via default connector route.", "");
   }
 
   $("btn_chat_send").disabled = true;
   try {
     const targetName = resolved.agent
       ? `${resolved.agent.name} (${resolved.agent.id})`
-      : (usingProjectContext ? "project auto route" : "default OpenClaw route");
+      : (usingProjectContext ? "project auto route" : "default connector route");
     let outboundMessage = resolved.message;
     if (usingProjectContext) {
       const posted = await api(`/api/projects/${encodeURIComponent(projectId)}/chat/messages`, "POST", {
@@ -5103,7 +5103,7 @@ async function sendChatPrototype() {
           appendChatMessage("agent", shown, meta, { agentId: resolvedAgentId });
         });
       } else {
-        const meta = `${res.transport || "http"} via ${res.path || "gateway"}`;
+        const meta = `${res.transport || "connector"} via ${res.path || "gateway"}`;
         appendChatMessage("assistant", shown, meta, { agentId: resolvedAgentId });
       }
     }
@@ -7274,7 +7274,7 @@ function renderSummaryAgents() {
   }
 
   if (!summaryAgents.length) {
-    msg.textContent = "No managed agents found yet. Bootstrap OpenClaw first.";
+    msg.textContent = "No managed agents found yet. Bootstrap the paired connector first.";
     return;
   }
 

@@ -159,7 +159,7 @@ def register_routes(app: FastAPI) -> None:
             (user_id,),
         ).fetchone()
         connection_count_row = conn.execute(
-            "SELECT COUNT(1) AS c FROM openclaw_connections WHERE user_id = ?",
+            "SELECT COUNT(1) AS c FROM connectors WHERE user_id = ?",
             (user_id,),
         ).fetchone()
         conn.close()

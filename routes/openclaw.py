@@ -11,6 +11,21 @@ def _get_connector_row(connection_id: str, user_id: str, conn) -> Optional[Dict]
     return dict(row) if row else None
 
 
+def _is_retired_direct_connection(connection_id: str, user_id: str, conn) -> bool:
+    row = conn.execute(
+        "SELECT id FROM openclaw_connections WHERE id = ? AND user_id = ? LIMIT 1",
+        (connection_id, user_id),
+    ).fetchone()
+    return bool(row)
+
+
+def _raise_direct_connection_retired() -> None:
+    raise HTTPException(
+        410,
+        "Direct OpenClaw connections are retired. Pair/start a Hivee Connector instead.",
+    )
+
+
 def _get_connector_agents(connector_id: str, conn) -> List[Dict]:
     """Return agents list from the latest connector snapshot."""
     snap = conn.execute(
@@ -191,10 +206,51 @@ def register_routes(app: FastAPI) -> None:
     async def bootstrap_openclaw_connection(request: Request, connection_id: str):
         user_id = get_session_user(request)
         conn = db()
+        connector_row = _get_connector_row(connection_id, user_id, conn)
+        if connector_row:
+            agents = _get_connector_agents(connection_id, conn)
+            first = agents[0] if agents else None
+            main_agent_id = first["id"] if first else None
+            main_agent_name = first["name"] if first else None
+            workspace = _ensure_user_workspace(user_id)
+            if agents:
+                _provision_managed_agents_for_connection(
+                    user_id=user_id,
+                    env_id=None,
+                    connection_id=connection_id,
+                    base_url=str(connector_row.get("openclaw_base_url") or ""),
+                    raw_agents=agents,
+                    fallback_agent_id=main_agent_id,
+                    fallback_agent_name=main_agent_name,
+                )
+            _upsert_connection_policy(
+                connection_id,
+                user_id,
+                main_agent_id=main_agent_id,
+                main_agent_name=main_agent_name,
+                bootstrap_status="ok" if agents else "no_agents",
+                bootstrap_error=None if agents else "No agents found in connector snapshot",
+                workspace_tree=workspace.get("workspace_tree"),
+                workspace_root=workspace["workspace_root"],
+                templates_root=workspace["templates_root"],
+            )
+            conn.close()
+            return {
+                "ok": True,
+                "agents": agents,
+                "main_agent_id": main_agent_id,
+                "main_agent_name": main_agent_name,
+                "workspace_root": workspace["workspace_root"],
+                "transport": "connector",
+                "mode": "connector",
+            }
         row = conn.execute(
             "SELECT base_url, api_key, api_key_secret_id, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
+        if row:
+            conn.close()
+            _raise_direct_connection_retired()
 
         # ── Connector mode ────────────────────────────────────────────────
         if not row:
@@ -366,10 +422,44 @@ def register_routes(app: FastAPI) -> None:
     async def list_agents(request: Request, connection_id: str):
         user_id = get_session_user(request)
         conn = db()
+        connector_row = _get_connector_row(connection_id, user_id, conn)
+        if connector_row:
+            agents = _get_connector_agents(connection_id, conn)
+            if agents:
+                _provision_managed_agents_for_connection(
+                    user_id=user_id,
+                    env_id=None,
+                    connection_id=connection_id,
+                    base_url=str(connector_row.get("openclaw_base_url") or ""),
+                    raw_agents=agents,
+                    fallback_agent_id=str(agents[0].get("id") or "").strip() or None,
+                    fallback_agent_name=str(agents[0].get("name") or "").strip() or None,
+                )
+            saved_rows = conn.execute(
+                "SELECT agent_id, agent_name FROM managed_agents WHERE user_id = ? AND connection_id = ? AND status = 'active' ORDER BY agent_name ASC",
+                (user_id, connection_id),
+            ).fetchall()
+            conn.close()
+            snap_ids = {a["id"] for a in agents}
+            for r in saved_rows:
+                if str(r["agent_id"]) not in snap_ids:
+                    agents.append({"id": str(r["agent_id"]), "name": str(r["agent_name"]), "source": "saved"})
+            connector_status = str(connector_row.get("status") or "offline")
+            conn_state = "healthy_connection" if connector_status == "online" else "agent_discovery_failed"
+            return {
+                "ok": True,
+                "agents": agents,
+                "agents_source": "connector" if agents else ("saved" if saved_rows else "none"),
+                "transport": "connector",
+                "connection_state": conn_state,
+            }
         row = conn.execute(
             "SELECT base_url, api_key, api_key_secret_id, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
+        if row:
+            conn.close()
+            _raise_direct_connection_retired()
 
         # ── Connector mode ────────────────────────────────────────────────
         if not row:
@@ -454,6 +544,16 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         workspace = _ensure_user_workspace(user_id)
         conn = db()
+        connector_exists = conn.execute(
+            "SELECT id FROM connectors WHERE id = ? AND user_id = ?",
+            (connection_id, user_id),
+        ).fetchone()
+        if not connector_exists:
+            if _is_retired_direct_connection(connection_id, user_id, conn):
+                conn.close()
+                _raise_direct_connection_retired()
+            conn.close()
+            raise HTTPException(404, "Connection not found")
         exists = conn.execute(
             "SELECT id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
@@ -502,10 +602,48 @@ def register_routes(app: FastAPI) -> None:
     async def chat_openclaw(request: Request, connection_id: str, payload: OpenClawChatIn):
         user_id = get_session_user(request)
         conn = db()
+        connector_row = _get_connector_row(connection_id, user_id, conn)
+        if connector_row:
+            policy = conn.execute(
+                "SELECT main_agent_id, workspace_root FROM connection_policies WHERE connection_id = ? AND user_id = ?",
+                (connection_id, user_id),
+            ).fetchone()
+            conn.close()
+
+            workspace_root = str(policy["workspace_root"]) if (policy and policy["workspace_root"]) else HIVEE_ROOT
+            main_agent_id = str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else ""
+            main_agent_id = main_agent_id.strip() or None
+            if payload.agent_id:
+                if not main_agent_id:
+                    raise HTTPException(400, "Main workspace agent is not configured. Re-run connector bootstrap.")
+                if payload.agent_id != main_agent_id:
+                    raise HTTPException(403, "Workspace chat can only target your main user agent")
+            effective_agent_id = main_agent_id
+            if not effective_agent_id:
+                raise HTTPException(400, "Main workspace agent is not configured. Re-run connector bootstrap.")
+            scoped_message = _compose_guardrailed_message(payload.message.strip(), workspace_root=workspace_root)
+            res = await _connector_chat_sync(
+                connector_id=connection_id,
+                message=scoped_message,
+                agent_id=effective_agent_id,
+                session_key="workspace-chat",
+                timeout_sec=90,
+                from_agent_id="hivee",
+                from_label="Hivee Workspace",
+                context_type="message",
+            )
+            if not res.get("ok"):
+                raise HTTPException(400, res)
+            res["resolved_agent_id"] = effective_agent_id
+            res["workspace_root"] = workspace_root
+            return res
         row = conn.execute(
             "SELECT base_url, api_key, api_key_secret_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
+        if row:
+            conn.close()
+            _raise_direct_connection_retired()
         connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=row) if row else ""
         policy = conn.execute(
             "SELECT main_agent_id, workspace_root FROM connection_policies WHERE connection_id = ? AND user_id = ?",
@@ -567,6 +705,9 @@ def register_routes(app: FastAPI) -> None:
             "SELECT base_url, api_key, api_key_secret_id, env_id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
+        if row:
+            conn.close()
+            _raise_direct_connection_retired()
         connector_row: Optional[Dict] = None
         if not row:
             connector_row = _get_connector_row(connection_id, user_id, conn)
