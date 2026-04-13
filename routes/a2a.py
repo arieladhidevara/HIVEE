@@ -980,11 +980,12 @@ def register_routes(app: FastAPI) -> None:
             ),
         )
         runtime_ttl = max(60, min(int(payload.session_ttl_sec or ENV_AGENT_RUNTIME_SESSION_TTL_SEC), 60 * 60))
+        runtime_scopes = ["env.read", "project.read", "project.write", "project.chat", "project.state.write"]
         session_token, session_expires_at = _issue_environment_agent_session(
             conn,
             env_id=env_id,
             agent_id=agent_id,
-            scopes=["env.read"],
+            scopes=runtime_scopes,
             ttl_sec=runtime_ttl,
         )
         conn.execute(
@@ -999,7 +1000,7 @@ def register_routes(app: FastAPI) -> None:
             agent_id=agent_id,
             session_token=session_token,
             session_expires_at=session_expires_at,
-            scopes=["env.read"],
+            scopes=runtime_scopes,
         )
     
     def _json_loads_or(raw: Any, fallback: Any) -> Any:

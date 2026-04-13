@@ -287,6 +287,37 @@ def init_db() -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_project_activity_log_project ON project_activity_log(project_id, created_at DESC)")
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS project_chat_messages (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            author_type TEXT NOT NULL,
+            author_id TEXT,
+            author_label TEXT,
+            text TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_chat_messages_project ON project_chat_messages(project_id, created_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS project_chat_mentions (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            mention_target TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(project_id) REFERENCES projects(id),
+            FOREIGN KEY(message_id) REFERENCES project_chat_messages(id)
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_chat_mentions_project ON project_chat_mentions(project_id, created_at DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_project_chat_mentions_target ON project_chat_mentions(project_id, mention_target, created_at DESC)")
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS user_secrets (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,

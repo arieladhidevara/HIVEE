@@ -54,6 +54,19 @@ def _mask_invite_code(raw_code: Any) -> str:
     return f"{code[:2]}{'*' * (len(code) - 4)}{code[-2:]}"
 
 
+def _project_actor_from_access(access: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    mode = str(access.get("mode") or "").strip().lower()
+    if mode == "owner":
+        uid = str(access.get("user_id") or "").strip()
+        return {"type": "user", "id": uid or None, "label": "owner"}
+    aid = str(access.get("agent_id") or "").strip()
+    if aid:
+        label_prefix = "member" if mode == "member" else "agent"
+        return {"type": "project_agent", "id": aid, "label": f"{label_prefix}:{aid}"}
+    uid = str(access.get("user_id") or "").strip()
+    return {"type": "user", "id": uid or None, "label": mode or "user"}
+
+
 def _invite_email_settings() -> Dict[str, Any]:
     host = str(os.getenv("INVITE_EMAIL_SMTP_HOST") or "").strip()
     username = str(os.getenv("INVITE_EMAIL_SMTP_USERNAME") or "").strip()
@@ -1030,7 +1043,7 @@ def register_routes(app: FastAPI) -> None:
     
     @app.get("/api/projects/{project_id}/workspace/tree", response_model=ProjectWorkspaceTreeOut)
     async def get_project_workspace_tree(request: Request, project_id: str):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_project_read_access(access)
         project = access["project"]
         owner_user_id = str(project["user_id"])
@@ -1046,7 +1059,7 @@ def register_routes(app: FastAPI) -> None:
     
     @app.get("/api/projects/{project_id}/files", response_model=ProjectFilesOut)
     async def list_project_files(request: Request, project_id: str, path: str = ""):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_project_read_access(access)
         project = access["project"]
         owner_user_id = str(project["user_id"])
@@ -1092,7 +1105,7 @@ def register_routes(app: FastAPI) -> None:
     
     @app.get("/api/projects/{project_id}/files/content", response_model=ProjectFileContentOut)
     async def read_project_file(request: Request, project_id: str, path: str):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_project_read_access(access)
         project = access["project"]
         owner_user_id = str(project["user_id"])
@@ -1126,7 +1139,7 @@ def register_routes(app: FastAPI) -> None:
     
     @app.get("/api/projects/{project_id}/files/raw")
     async def read_project_file_raw(request: Request, project_id: str, path: str):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_project_read_access(access)
         project = access["project"]
         owner_user_id = str(project["user_id"])
@@ -1146,7 +1159,7 @@ def register_routes(app: FastAPI) -> None:
     
     @app.get("/api/projects/{project_id}/preview/{path:path}")
     async def preview_project_file(request: Request, project_id: str, path: str):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_project_read_access(access)
         project = access["project"]
         owner_user_id = str(project["user_id"])
@@ -1166,7 +1179,7 @@ def register_routes(app: FastAPI) -> None:
     
     @app.post("/api/projects/{project_id}/files/write")
     async def write_project_file(request: Request, project_id: str, payload: ProjectFileWriteIn):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         project = access["project"]
         owner_user_id = str(project["user_id"])
         project_root = str(project.get("project_root") or "")
@@ -1201,6 +1214,134 @@ def register_routes(app: FastAPI) -> None:
             {"path": rel, "mode": mode, "bytes": len(content.encode("utf-8")), "actor": actor},
         )
         return {"ok": True, "path": rel, "mode": mode, "bytes": len(content.encode("utf-8"))}
+
+    @app.get("/api/projects/{project_id}/chat/messages", response_model=List[ProjectChatMessageOut])
+    async def list_project_chat_messages(
+        request: Request,
+        project_id: str,
+        limit: int = 80,
+        before: Optional[int] = None,
+        mention_target: Optional[str] = None,
+    ):
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.chat")
+        _require_project_chat_access(access)
+        messages = _list_project_chat_messages(
+            project_id,
+            limit=limit,
+            before=before,
+            mention_target=mention_target,
+        )
+        return [ProjectChatMessageOut(**item) for item in messages]
+
+    @app.post("/api/projects/{project_id}/chat/messages", response_model=ProjectChatMessageOut)
+    async def create_project_chat_message(request: Request, project_id: str, payload: ProjectChatMessageCreateIn):
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.chat")
+        _require_project_chat_access(access)
+        actor = _project_actor_from_access(access)
+
+        conn = db()
+        try:
+            message = _create_project_chat_message(
+                conn,
+                project_id=project_id,
+                author_type=str(actor.get("type") or "user"),
+                author_id=actor.get("id"),
+                author_label=actor.get("label"),
+                text=str(payload.text or ""),
+                metadata=payload.metadata if isinstance(payload.metadata, dict) else {},
+                mentions=payload.mentions,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        await emit(project_id, "project.chat.message", message)
+        for target in (message.get("mentions") or [])[:PROJECT_CHAT_MENTION_MAX]:
+            await emit(
+                project_id,
+                "project.chat.mention",
+                {
+                    "message_id": str(message.get("id") or ""),
+                    "project_id": project_id,
+                    "target": target,
+                    "author_type": str(message.get("author_type") or ""),
+                    "author_id": message.get("author_id"),
+                    "author_label": message.get("author_label"),
+                    "text": str(message.get("text") or "")[:500],
+                    "created_at": int(message.get("created_at") or 0),
+                },
+            )
+        return ProjectChatMessageOut(**message)
+
+    @app.post("/api/projects/{project_id}/agent-ops", response_model=ProjectAgentOpsOut)
+    async def apply_project_agent_ops(request: Request, project_id: str, payload: ProjectAgentOpsIn):
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
+        project = access["project"]
+        actor = _project_actor_from_access(access)
+        ops = payload.ops if isinstance(payload.ops, list) else []
+        if not ops:
+            return ProjectAgentOpsOut(ok=True, project_id=project_id, applied=[], skipped=[])
+
+        if any(
+            _normalize_agent_action_kind(
+                (item or {}).get("type")
+                or (item or {}).get("method")
+                or (item or {}).get("action")
+                or (item or {}).get("name")
+            ) == "post_chat_message"
+            for item in ops
+            if isinstance(item, dict)
+        ):
+            _require_project_chat_access(access)
+
+        allow_paths: Optional[List[str]]
+        if str(access.get("mode") or "").strip().lower() == "owner":
+            allow_paths = None
+        else:
+            perms = access.get("permissions") or {}
+            allow_paths = _normalize_permission_write_paths(perms.get("write_paths") or [], fallback=[])
+
+        action_result = _apply_project_actions(
+            owner_user_id=str(project["user_id"] or ""),
+            project_id=project_id,
+            project_root=str(project.get("project_root") or ""),
+            actions=[item for item in ops if isinstance(item, dict)],
+            allow_paths=allow_paths,
+            actor_type=str(actor.get("type") or "user"),
+            actor_id=actor.get("id"),
+            actor_label=actor.get("label"),
+        )
+        applied = action_result.get("applied") or []
+        skipped = action_result.get("skipped") or []
+
+        if any(_normalize_agent_action_kind(item.get("type")) == "update_execution" for item in applied if isinstance(item, dict)):
+            _refresh_project_documents(project_id)
+
+        _append_project_daily_log(
+            owner_user_id=str(project["user_id"] or ""),
+            project_root=str(project.get("project_root") or ""),
+            kind="project.agent_ops",
+            text=(
+                f"{actor.get('label') or actor.get('type')}: applied {len(applied)} op(s), "
+                f"skipped {len(skipped)} op(s)."
+            ),
+            payload={"applied": applied[:20], "skipped": skipped[:10]},
+        )
+
+        for item in applied:
+            event_name = str(item.get("event") or "").strip()
+            event_payload = item.get("event_payload") if isinstance(item.get("event_payload"), dict) else {}
+            if event_name:
+                await emit(project_id, event_name, event_payload)
+            for extra in (item.get("extra_events") or []):
+                if not isinstance(extra, dict):
+                    continue
+                extra_event_name = str(extra.get("event") or "").strip()
+                extra_event_payload = extra.get("event_payload") if isinstance(extra.get("event_payload"), dict) else {}
+                if extra_event_name:
+                    await emit(project_id, extra_event_name, extra_event_payload)
+
+        return ProjectAgentOpsOut(ok=True, project_id=project_id, applied=applied[:MAX_AGENT_FILE_WRITES], skipped=skipped[:MAX_AGENT_FILE_WRITES])
     
     @app.get("/api/projects/{project_id}/usage", response_model=ProjectUsageOut)
     async def get_project_usage(request: Request, project_id: str):

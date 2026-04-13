@@ -545,7 +545,7 @@ def register_routes(app: FastAPI) -> None:
             if not str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip():
                 raise
             session_user = None
-        a2a_access = _resolve_optional_a2a_agent_session(request, required_scope="env.read")
+        a2a_access = _resolve_optional_a2a_agent_session(request, required_scope="project.write")
         user_id = str(session_user or (a2a_access.get("user_id") if a2a_access else "") or "").strip()
         if not user_id:
             raise HTTPException(401, "Missing authorization. Login first or use A2A agent session headers.")
@@ -795,6 +795,9 @@ def register_routes(app: FastAPI) -> None:
             task_snapshot = _build_project_task_snapshot(session_key)
             if task_snapshot:
                 sections.append(task_snapshot)
+            chat_snapshot = _build_project_chat_snapshot(session_key)
+            if chat_snapshot:
+                sections.append(chat_snapshot)
             project_instruction = "\n\n".join([s for s in sections if str(s or "").strip()])
             if bool(selected_agent_permissions.get("can_write_files")):
                 write_allow_paths = _normalize_permission_write_paths(
@@ -1196,6 +1199,54 @@ def register_routes(app: FastAPI) -> None:
                         text="Execution resumed after user continue message in chat.",
                     )
             _refresh_project_documents(session_key)
+            auto_chat_message = None
+            has_explicit_chat_action = any(
+                _normalize_agent_action_kind(
+                    (item or {}).get("type")
+                    or (item or {}).get("method")
+                    or (item or {}).get("action")
+                    or (item or {}).get("name")
+                ) == "post_chat_message"
+                for item in applied_actions
+                if isinstance(item, dict)
+            )
+            if str(res.get("text") or "").strip() and not has_explicit_chat_action:
+                chat_conn = db()
+                try:
+                    auto_chat_message = _create_project_chat_message(
+                        chat_conn,
+                        project_id=session_key,
+                        author_type="project_agent",
+                        author_id=str(effective_agent_id or "").strip() or None,
+                        author_label=next((str(r.get("agent_name") or r.get("agent_id") or "") for r in role_rows if str(r.get("agent_id") or "") == str(effective_agent_id or "")), "") or f"agent:{effective_agent_id or 'unknown'}",
+                        text=str(res.get("text") or "").strip(),
+                        metadata={
+                            "source": "openclaw.chat_runtime",
+                            "requires_user_input": bool(res.get("requires_user_input")),
+                            "saved_files": len(saved_writes),
+                            "applied_actions": len(applied_actions),
+                        },
+                    )
+                    chat_conn.commit()
+                finally:
+                    chat_conn.close()
+            if isinstance(auto_chat_message, dict):
+                await emit(session_key, "project.chat.message", auto_chat_message)
+                for target in (auto_chat_message.get("mentions") or [])[:PROJECT_CHAT_MENTION_MAX]:
+                    await emit(
+                        session_key,
+                        "project.chat.mention",
+                        {
+                            "message_id": str(auto_chat_message.get("id") or ""),
+                            "project_id": session_key,
+                            "target": target,
+                            "author_type": str(auto_chat_message.get("author_type") or ""),
+                            "author_id": auto_chat_message.get("author_id"),
+                            "author_label": auto_chat_message.get("author_label"),
+                            "text": str(auto_chat_message.get("text") or "")[:500],
+                            "created_at": int(auto_chat_message.get("created_at") or 0),
+                        },
+                    )
             await emit(
                 session_key,
                 "agent.chat.update",
@@ -1223,6 +1274,13 @@ def register_routes(app: FastAPI) -> None:
                 event_payload = item.get("event_payload") if isinstance(item.get("event_payload"), dict) else {}
                 if event_name:
                     await emit(session_key, event_name, event_payload)
+                for extra in (item.get("extra_events") or []):
+                    if not isinstance(extra, dict):
+                        continue
+                    extra_event_name = str(extra.get("event") or "").strip()
+                    extra_event_payload = extra.get("event_payload") if isinstance(extra.get("event_payload"), dict) else {}
+                    if extra_event_name:
+                        await emit(session_key, extra_event_name, extra_event_payload)
             if saved_writes:
                 await emit(
                     session_key,

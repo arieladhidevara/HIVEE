@@ -306,7 +306,20 @@ def _require_project_write_access(access: Dict[str, Any], rel_path: str) -> None
         raise HTTPException(403, "Path is outside allowed write paths for this project agent")
 
 
-def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict[str, Any]:
+def _require_project_chat_access(access: Dict[str, Any]) -> None:
+    if str(access.get("mode") or "") == "owner":
+        return
+    perms = access.get("permissions") or {}
+    if not bool(perms.get("can_chat_project")):
+        raise HTTPException(403, "This project agent cannot use project chat")
+
+
+def _resolve_project_workspace_access(
+    request: Request,
+    project_id: str,
+    *,
+    required_scope: Optional[str] = None,
+) -> Dict[str, Any]:
     session_user: Optional[str] = None
     try:
         session_user = get_optional_session_user(request)
@@ -314,7 +327,7 @@ def _resolve_project_workspace_access(request: Request, project_id: str) -> Dict
         if not str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip():
             raise
         session_user = None
-    a2a_access = _resolve_optional_a2a_agent_session(request, required_scope="env.read")
+    a2a_access = _resolve_optional_a2a_agent_session(request, required_scope=required_scope or "env.read")
     conn = db()
     project = conn.execute(
         "SELECT id, user_id, project_root, workspace_root FROM projects WHERE id = ?",

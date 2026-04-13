@@ -332,6 +332,24 @@ def _build_managed_agent_card(
             "environmentId": env_id,
             "rootPath": root_path,
             "provisionedAt": now,
+            "hiveeProjectOps": [
+                "write_file",
+                "append_file",
+                "upload_file",
+                "delete_file",
+                "move_file",
+                "create_dir",
+                "delete_dir",
+                "create_task",
+                "update_task",
+                "delete_task",
+                "add_task_dependency",
+                "remove_task_dependency",
+                "apply_task_blueprint",
+                "update_execution",
+                "post_chat_message",
+            ],
+            "hiveeRealtime": ["project.chat.message", "project.chat.mention", "project.execution.updated"],
         }
     )
     model_hint = str(
@@ -380,7 +398,7 @@ def _build_managed_agent_card(
         "securityRequirements": (
             list(existing.get("securityRequirements"))
             if isinstance(existing.get("securityRequirements"), list) and existing.get("securityRequirements")
-            else [{"type": "bearer", "scopes": ["env.read"]}]
+            else [{"type": "bearer", "scopes": ["env.read", "project.read", "project.write", "project.chat", "project.state.write"]}]
         ),
         "metadata": metadata,
         }
@@ -538,8 +556,8 @@ def _provision_managed_agents_for_connection(
                 "updated_at": now,
             }
             permissions_payload = {
-                "scopes": ["env.read", "project.read", "project.write"],
-                "tools": ["workspace.read", "workspace.write", "chat.send", "project.control"],
+                "scopes": ["env.read", "project.read", "project.write", "project.chat", "project.state.write"],
+                "tools": ["workspace.read", "workspace.write", "chat.send", "project.control", "project.agent_ops", "project.chat.post"],
                 "path_allowlist": [workspace_root.as_posix(), root_path],
                 "secrets_policy": {
                     "mode": "connection-bound",
@@ -2216,7 +2234,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             f"- Follow dependency order from {PROJECT_DELEGATION_FILE}.\n"
             "- If your output unblocks another agent, mention them explicitly as @agent_id in chat_update so handoff happens in chat.\n"
             "- Save concrete artifacts into project files using output_files.\n"
-            "- Use structured actions when you must mutate real project files or task-map state directly.\n"
+            "- Use structured actions when you must mutate real project files, group chat state, or task/progress state directly.\n"
             "- Persist deliverables in Hivee project files; do not keep final-only copies on provider/local runtime server.\n"
             "- If blocked by missing user approval/input (credentials, API key, sign-off, pit stop), set requires_user_input=true with pause_reason and resume_hint.\n"
             "- If user answers SKIP, decide assumptions responsibly and continue.\n"
@@ -2345,11 +2363,13 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "\n\n"
             + _build_project_task_snapshot(project_id)
             + "\n"
+            + _build_project_chat_snapshot(project_id)
+            + "\n"
             + "Execute your assigned task and return JSON object only:\n"
             + "{\n"
             + "  \"chat_update\": \"Human-friendly update sentence to show in chat\",\n"
             + "  \"output_files\": [{\"path\":\"relative/path.ext\",\"content\":\"file content\",\"append\":false}],\n"
-            + "  \"actions\": [{\"type\":\"write_file\",\"path\":\"src/app.js\",\"content\":\"...\"}],\n"
+            + "  \"actions\": [{\"type\":\"write_file\",\"path\":\"src/app.js\",\"content\":\"...\"},{\"type\":\"post_chat_message\",\"text\":\"handoff to @qa-bot\"},{\"type\":\"update_execution\",\"progress_pct\":45}],\n"
             + "  \"notes\": \"optional technical notes\",\n"
             + "  \"requires_user_input\": false,\n"
             + "  \"pause_reason\": \"\",\n"
@@ -2358,7 +2378,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "Rules:\n"
             + "- chat_update must read like normal conversation.\n"
             + "- Put every created/updated artifact in output_files.\n"
-            + "- Use `actions` when you need to change real project files or task-map state in place.\n"
+            + "- Use `actions` when you need to change real project files, group chat state, or task/progress state in place.\n"
             + "- Persist deliverables in Hivee project files; do not keep final-only copies on provider/local runtime server.\n"
             + "- Use relative paths inside this project only.\n"
             + "- Use exact IDs from roster when mentioning other agents.\n"
@@ -2665,6 +2685,54 @@ async def _delegate_project_tasks(project_id: str) -> None:
         else:
             chat_update = _ensure_chat_handoff_mentions(chat_update, assigned_mentions_map.get(aid) or [])
 
+        auto_chat_message = None
+        has_explicit_chat_action = any(
+            _normalize_agent_action_kind(
+                (item or {}).get("type")
+                or (item or {}).get("method")
+                or (item or {}).get("action")
+                or (item or {}).get("name")
+            ) == "post_chat_message"
+            for item in applied_actions
+            if isinstance(item, dict)
+        )
+        if not has_explicit_chat_action:
+            chat_conn = db()
+            try:
+                auto_chat_message = _create_project_chat_message(
+                    chat_conn,
+                    project_id=project_id,
+                    author_type="project_agent",
+                    author_id=aid,
+                    author_label=agent_name,
+                    text=chat_update,
+                    metadata={
+                        "source": "delegation.agent_task",
+                        "output_file": f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}-latest.md",
+                        "requires_user_input": bool(pause_decision.get("pause")),
+                    },
+                )
+                chat_conn.commit()
+            finally:
+                chat_conn.close()
+        if isinstance(auto_chat_message, dict):
+            await emit(project_id, "project.chat.message", auto_chat_message)
+            for target in (auto_chat_message.get("mentions") or [])[:PROJECT_CHAT_MENTION_MAX]:
+                await emit(
+                    project_id,
+                    "project.chat.mention",
+                    {
+                        "message_id": str(auto_chat_message.get("id") or ""),
+                        "project_id": project_id,
+                        "target": target,
+                        "author_type": str(auto_chat_message.get("author_type") or ""),
+                        "author_id": auto_chat_message.get("author_id"),
+                        "author_label": auto_chat_message.get("author_label"),
+                        "text": str(auto_chat_message.get("text") or "")[:500],
+                        "created_at": int(auto_chat_message.get("created_at") or 0),
+                    },
+                )
+
         if str(aid).strip() == str(primary_agent_id or "").strip():
             primary_last_chat_update = chat_update
             primary_last_notes = report_notes
@@ -2708,6 +2776,13 @@ async def _delegate_project_tasks(project_id: str) -> None:
             event_payload = item.get("event_payload") if isinstance(item.get("event_payload"), dict) else {}
             if event_name:
                 await emit(project_id, event_name, event_payload)
+            for extra in (item.get("extra_events") or []):
+                if not isinstance(extra, dict):
+                    continue
+                extra_event_name = str(extra.get("event") or "").strip()
+                extra_event_payload = extra.get("event_payload") if isinstance(extra.get("event_payload"), dict) else {}
+                if extra_event_name:
+                    await emit(project_id, extra_event_name, extra_event_payload)
         await emit(
             project_id,
             "agent.task.reported",

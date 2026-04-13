@@ -84,6 +84,7 @@ let chatById = new Map();
 let chatAutocompleteItems = [];
 let chatAutocompleteIndex = 0;
 let chatContextMode = "workspace";
+let chatMessageKeys = new Set();
 const DEFAULT_OWNER_FILES_PATH = "";
 const SESSION_TOKEN_KEY = "hivee_session_token_v2";
 const CLAIM_ENV_PARAM = "claim_env_id";
@@ -3372,12 +3373,15 @@ function eventSummary(kind, payload) {
   if (kind === "agent.chat.actions_applied") return `${name} applied structured project actions.`;
   if (kind === "agent.task.failed") return `${name} failed: ${shortText(data.error || "", 180)}`;
   if (kind === "agent.task.live") return `${name}: ${shortText(data.note || "", 180)}`;
+  if (kind === "project.chat.message") return `${data.author_label || data.author_id || data.author_type || "actor"} posted in project chat.`;
+  if (kind === "project.chat.mention") return `${data.author_label || data.author_id || "actor"} mentioned @${data.target || "agent"}.`;
   if (kind === "project.file.written") return `${data.actor || "actor"} wrote ${data.path || "file"}.`;
   if (kind === "project.file.deleted") return `${data.actor || "actor"} deleted ${data.path || "file"}.`;
   if (kind === "project.file.moved") return `${data.actor || "actor"} moved ${data.path || "file"} to ${data.to_path || "new path"}.`;
   if (kind === "project.task.deleted") return `Task deleted: ${data.task_id || "task"}.`;
   if (kind === "project.task.blueprint.applied") return `Task blueprint applied: ${Number(data.created_count || 0)} task(s).`;
   if (kind === "project.execution.auto_paused") return `Execution paused: ${shortText(data.reason || "Waiting for user input.", 180)}`;
+  if (kind === "project.execution.updated") return `Execution updated: ${data.status || "-"} at ${Number(data.progress_pct || 0)}%.`;
   if (kind === "project.execution.resumed_after_pause") return "Execution resumed after approval.";
   if (kind.startsWith("project.execution.")) return `Execution ${kind.split(".").pop()}: ${data.status || "-"}.`;
   if (kind === "run.started") return "Run started.";
@@ -3414,10 +3418,21 @@ function eventChatMessage(kind, payload) {
     return { role: "agent", agentId: data.agent_id || name, text: `Hey team, I got my task as ${data.role || "contributor"} and I am starting now.${mentions}`, meta: `${name}` };
   }
   if (kind === "agent.task.started") return { role: "agent", agentId: data.agent_id || name, text: "I started working on my assigned task.", meta: `${name}` };
-  if (kind === "agent.task.reported") return { role: "agent", agentId: data.agent_id || name, text: data.text || "I finished this step and shared my output.", meta: `${name}` };
+  if (kind === "agent.task.reported") return null;
   if (kind === "agent.task.actions_applied") return { role: "system", text: `${name} applied structured project actions.`, meta: "workflow" };
   if (kind === "agent.chat.actions_applied") return { role: "system", text: `${name} applied structured project actions.`, meta: "workflow" };
-  if (kind === "agent.chat.update") return { role: "agent", agentId: data.agent_id || name, text: data.text || "Update posted.", meta: `${name}` };
+  if (kind === "agent.chat.update") return null;
+  if (kind === "project.chat.message") {
+    const authorType = String(data.author_type || "").trim().toLowerCase();
+    const authorName = String(data.author_label || data.author_id || data.author_type || "actor").trim();
+    if (authorType === "project_agent") {
+      return { role: "agent", agentId: data.author_id || "", text: data.text || "Project chat update.", meta: authorName, messageKey: data.id || "" };
+    }
+    if (authorType === "user") {
+      return { role: "user", text: data.text || "Project chat update.", meta: authorName, messageKey: data.id || "" };
+    }
+    return { role: "system", text: data.text || "Project chat update.", meta: authorName, messageKey: data.id || "" };
+  }
   if (kind === "project.external_agent.joined") {
     const roleText = String(data.role || "").trim();
     const roleSuffix = roleText ? ` as ${roleText}` : "";
@@ -3433,6 +3448,7 @@ function eventChatMessage(kind, payload) {
     return { role: "system", text: `${reason}\n${hint}`, meta: "approval required" };
   }
   if (kind === "project.execution.pause") return { role: "system", text: detailToText(data.summary || "Execution paused."), meta: "workflow" };
+  if (kind === "project.execution.updated") return { role: "system", text: detailToText(data.summary || `Execution updated to ${data.status || "running"} (${Number(data.progress_pct || 0)}%).`), meta: "workflow" };
   if (kind === "project.execution.resume" || kind === "project.execution.resumed_after_pause") {
     return { role: "system", text: detailToText(data.summary || "Execution resumed."), meta: "workflow" };
   }
@@ -3514,7 +3530,12 @@ function handleProjectEvent(kind, payload) {
     }
   }
   const chat = eventChatMessage(kind, payload);
-  if (chat?.text) appendChatMessage(chat.role || "assistant", chat.text, chat.meta || `live - ${kind}`, { agentId: chat.agentId || chat.agent_id || "" });
+  if (chat?.text) {
+    appendChatMessage(chat.role || "assistant", chat.text, chat.meta || `live - ${kind}`, {
+      agentId: chat.agentId || chat.agent_id || "",
+      messageKey: chat.messageKey || "",
+    });
+  }
   if (kind === "project.execution.auto_paused") {
     setMessage("chat_hint", detailToText(payload?.reason || "Execution paused. Waiting for approval/input."), "error");
   } else if (kind === "project.execution.resume" || kind === "project.execution.resumed_after_pause") {
@@ -3724,9 +3745,15 @@ function renderChatBubbleContent(bubble, text) {
 function appendChatMessage(role, text, meta = "", opts = {}) {
   const box = $("chat_messages");
   if (!box) return;
+  const messageKey = String(opts?.messageKey || "").trim();
+  if (messageKey) {
+    if (chatMessageKeys.has(messageKey)) return;
+    chatMessageKeys.add(messageKey);
+  }
   const stickToBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 36;
   const node = document.createElement("div");
   node.className = `chat-msg ${role}`;
+  if (messageKey) node.dataset.messageKey = messageKey;
   const safeMeta = meta || `${role} - ${new Date().toLocaleTimeString()}`;
   node.innerHTML = `<div class="chat-meta">${safeMeta}</div><div class="chat-bubble"></div>`;
   const bubble = node.querySelector(".chat-bubble");
@@ -3745,12 +3772,55 @@ function appendChatMessage(role, text, meta = "", opts = {}) {
   if (stickToBottom) box.scrollTop = box.scrollHeight;
 }
 
+function resetChatTranscript() {
+  const box = $("chat_messages");
+  if (box) box.innerHTML = "";
+  chatMessageKeys = new Set();
+}
+
+function appendProjectChatMessage(message) {
+  const data = message && typeof message === "object" ? message : {};
+  const authorType = String(data.author_type || "").trim().toLowerCase();
+  const authorName = String(data.author_label || data.author_id || data.author_type || "actor").trim();
+  const text = detailToText(data.text || "").trim();
+  const messageKey = String(data.id || "").trim();
+  if (!text) return;
+  if (authorType === "project_agent") {
+    appendChatMessage("agent", text, authorName, { agentId: data.author_id || "", messageKey });
+    return;
+  }
+  if (authorType === "user") {
+    appendChatMessage("user", text, authorName, { messageKey });
+    return;
+  }
+  appendChatMessage("system", text, authorName, { messageKey });
+}
+
 function clearChatIfFresh() {
   const box = $("chat_messages");
   if (!box) return;
   if (!box.children.length) {
-    appendChatMessage("system", "Connected. Mention agent using @alias.", "ready");
+    const starter = activeChatContextMode() === "project"
+      ? "Project chat ready. Mention agent using @agent_id."
+      : "Connected. Mention agent using @alias.";
+    appendChatMessage("system", starter, "ready");
   }
+}
+
+async function loadProjectChatMessages(projectId = selectedProjectId, { silent = false } = {}) {
+  if (!projectId) return [];
+  const messages = await api(`/api/projects/${encodeURIComponent(projectId)}/chat/messages?limit=80`);
+  if (selectedProjectId !== projectId || activeChatContextMode() !== "project") return messages;
+  resetChatTranscript();
+  if (Array.isArray(messages) && messages.length) {
+    for (const message of messages) appendProjectChatMessage(message);
+  } else if (activeChatContextMode() === "project") {
+    clearChatIfFresh();
+  }
+  const box = $("chat_messages");
+  if (box) box.scrollTop = box.scrollHeight;
+  if (!silent && !messages.length) clearChatIfFresh();
+  return messages;
 }
 
 function normalizeChatContextMode(mode) {
@@ -3807,6 +3877,12 @@ function setChatContextMode(mode, { silent = false } = {}) {
   syncChatContextControls();
   updateChatProjectName();
   loadChatAgents().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  if (activeChatContextMode() === "project" && selectedProjectId) {
+    loadProjectChatMessages(selectedProjectId, { silent: true }).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  } else {
+    resetChatTranscript();
+    clearChatIfFresh();
+  }
   if (!silent) {
     setMessage(
       "chat_hint",
@@ -4963,9 +5039,10 @@ async function sendChatPrototype() {
   syncChatContextControls();
   const contextMode = activeChatContextMode();
   const usingProjectContext = contextMode === "project" && Boolean(selectedProjectId);
+  const projectId = usingProjectContext ? String(selectedProjectId || "").trim() : "";
   if (usingProjectContext) {
-    if (!selectedProjectReadiness || selectedProjectReadiness.project_id !== selectedProjectId) {
-      await loadProjectReadiness(selectedProjectId).catch(() => {});
+    if (!selectedProjectReadiness || selectedProjectReadiness.project_id !== projectId) {
+      await loadProjectReadiness(projectId).catch(() => {});
     }
     if (!selectedProjectReadiness?.can_chat_project) {
       throw new Error("Project context is not ready. Open Manage Agents, invite at least one agent, and set a primary agent.");
@@ -4982,24 +5059,38 @@ async function sendChatPrototype() {
     setMessage("chat_hint", "No agent selected. Sending via default OpenClaw route.", "");
   }
 
-  const targetName = resolved.agent
-    ? `${resolved.agent.name} (${resolved.agent.id})`
-    : (usingProjectContext ? "project auto route" : "default OpenClaw route");
-  appendChatMessage("user", resolved.message, `you -> ${targetName}`);
-
-  const payload = {
-    message: resolved.message,
-    agent_id: resolved.agent ? resolved.agent.id : null,
-    context_mode: usingProjectContext ? "project" : "workspace",
-    session_key: usingProjectContext ? selectedProjectId : "main",
-    timeout_sec: 25,
-  };
-
-  input.value = "";
-  hideMentionAutocomplete();
   $("btn_chat_send").disabled = true;
-
   try {
+    const targetName = resolved.agent
+      ? `${resolved.agent.name} (${resolved.agent.id})`
+      : (usingProjectContext ? "project auto route" : "default OpenClaw route");
+    let outboundMessage = resolved.message;
+    if (usingProjectContext) {
+      const posted = await api(`/api/projects/${encodeURIComponent(projectId)}/chat/messages`, "POST", {
+        text: raw,
+        metadata: {
+          source: "owner.chat_ui",
+          route_agent_id: resolved.agent?.id || null,
+          connection_id: activeConnectionId,
+        },
+      });
+      appendProjectChatMessage(posted);
+      outboundMessage = String(posted?.text || raw).trim() || raw;
+    } else {
+      appendChatMessage("user", resolved.message, `you -> ${targetName}`);
+    }
+
+    const payload = {
+      message: outboundMessage,
+      agent_id: resolved.agent ? resolved.agent.id : null,
+      context_mode: usingProjectContext ? "project" : "workspace",
+      session_key: usingProjectContext ? projectId : "main",
+      timeout_sec: 25,
+    };
+
+    input.value = "";
+    hideMentionAutocomplete();
+
     const res = await api(`/api/openclaw/${activeConnectionId}/chat-runtime`, "POST", payload);
     const shown = res.text || detailToText(res.frames) || "(no text response yet)";
     const workspaceAgentId = workspaceMainChatAgent()?.id || "";
@@ -5008,11 +5099,15 @@ async function sendChatPrototype() {
     const resolvedAgent = chatById.get(resolvedAgentId);
     const canInlineReply = !usingProjectContext || !projectStreamConnected;
     if (canInlineReply) {
-      const role = usingProjectContext ? "agent" : "assistant";
-      const meta = usingProjectContext
-        ? (resolvedAgent ? resolvedAgent.name : (resolvedAgentId || "agent"))
-        : `${res.transport || "http"} via ${res.path || "gateway"}`;
-      appendChatMessage(role, shown, meta, { agentId: resolvedAgentId });
+      if (usingProjectContext) {
+        await loadProjectChatMessages(projectId, { silent: true }).catch(() => {
+          const meta = resolvedAgent ? resolvedAgent.name : (resolvedAgentId || "agent");
+          appendChatMessage("agent", shown, meta, { agentId: resolvedAgentId });
+        });
+      } else {
+        const meta = `${res.transport || "http"} via ${res.path || "gateway"}`;
+        appendChatMessage("assistant", shown, meta, { agentId: resolvedAgentId });
+      }
     }
     const savedFiles = Array.isArray(res?.saved_files) ? res.saved_files : [];
     if (usingProjectContext && savedFiles.length) {
@@ -7674,6 +7769,8 @@ async function selectProject(projectId) {
   renderProjectPlanInfo();
   renderProjectFiles(projectFilesPayload);
   renderLiveStatus();
+  resetChatTranscript();
+  appendChatMessage("system", "Loading project chat...", "ready");
   await loadProjectWorkspaceTree(projectId).catch(() => {});
   await loadProjectPlan(projectId).catch(() => {});
   await loadProjectReadiness(projectId).catch(() => {});
@@ -7683,6 +7780,7 @@ async function selectProject(projectId) {
     loadProjectTasks(projectId, { silent: true }).catch(() => {}),
     loadProjectActivity(projectId, { silent: true }).catch(() => {}),
   ]);
+  await loadProjectChatMessages(projectId, { silent: true }).catch(() => {});
   await loadLatestLiveArtifact({ render: activeProjectPane === "live" }).catch(() => {});
   await loadChatAgents().catch(() => {});
   restartRuntimePoll();

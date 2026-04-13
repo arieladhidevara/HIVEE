@@ -370,7 +370,7 @@ def register_routes(app: FastAPI) -> None:
         include_closed: bool = False,
         limit: int = 100,
     ):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_task_read_access(access)
 
         status_filter = str(status or "").strip().lower() or None
@@ -424,7 +424,7 @@ def register_routes(app: FastAPI) -> None:
 
     @app.post("/api/projects/{project_id}/tasks", response_model=ProjectTaskOut)
     async def create_project_task(request: Request, project_id: str, payload: ProjectTaskCreateIn):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         _require_task_write_access(access)
         actor = _actor_from_access(access)
         now = int(time.time())
@@ -485,7 +485,7 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/tasks/{task_id}", response_model=ProjectTaskOut)
     async def get_task_detail(request: Request, task_id: str):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_task_read_access(access)
 
         now = int(time.time())
@@ -507,7 +507,7 @@ def register_routes(app: FastAPI) -> None:
     @app.patch("/api/tasks/{task_id}", response_model=ProjectTaskOut)
     async def update_task_detail(request: Request, task_id: str, payload: ProjectTaskUpdateIn):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         _require_task_write_access(access)
         actor = _actor_from_access(access)
 
@@ -605,7 +605,7 @@ def register_routes(app: FastAPI) -> None:
     @app.post("/api/tasks/{task_id}/checkout", response_model=ProjectTaskOut)
     async def checkout_task(request: Request, task_id: str, payload: ProjectTaskCheckoutIn):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         _require_task_write_access(access)
         actor = _actor_from_access(access)
 
@@ -674,7 +674,7 @@ def register_routes(app: FastAPI) -> None:
     @app.post("/api/tasks/{task_id}/release", response_model=ProjectTaskOut)
     async def release_task_checkout(request: Request, task_id: str, payload: ProjectTaskReleaseIn):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         _require_task_write_access(access)
         actor = _actor_from_access(access)
         owner_mode = str(access.get("mode") or "") == "owner"
@@ -731,7 +731,7 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/tasks/{task_id}/dependencies", response_model=List[ProjectTaskDependencyOut])
     async def list_task_dependencies(request: Request, task_id: str):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_task_read_access(access)
 
         conn = db()
@@ -763,7 +763,7 @@ def register_routes(app: FastAPI) -> None:
     @app.post("/api/tasks/{task_id}/dependencies", response_model=ProjectTaskDependencyOut)
     async def add_task_dependency(request: Request, task_id: str, payload: ProjectTaskDependencyCreateIn):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         _require_task_write_access(access)
         actor = _actor_from_access(access)
 
@@ -855,7 +855,7 @@ def register_routes(app: FastAPI) -> None:
     @app.delete("/api/tasks/{task_id}/dependencies/{depends_on_task_id}")
     async def remove_task_dependency(request: Request, task_id: str, depends_on_task_id: str):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         _require_task_write_access(access)
         actor = _actor_from_access(access)
 
@@ -910,7 +910,7 @@ def register_routes(app: FastAPI) -> None:
         return {"ok": True, "task_id": task_id, "depends_on_task_id": dep_id}
     @app.get("/api/projects/{project_id}/task-blueprints", response_model=List[ProjectTaskBlueprintOut])
     async def list_task_blueprints(request: Request, project_id: str):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_task_read_access(access)
         return [
             ProjectTaskBlueprintOut(
@@ -924,7 +924,7 @@ def register_routes(app: FastAPI) -> None:
 
     @app.post("/api/projects/{project_id}/tasks/apply-blueprint", response_model=ProjectTaskBlueprintApplyOut)
     async def apply_task_blueprint(request: Request, project_id: str, payload: ProjectTaskBlueprintApplyIn):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         _require_task_write_access(access)
         actor = _actor_from_access(access)
 
@@ -1043,7 +1043,7 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/tasks/{task_id}/comments", response_model=List[ProjectTaskCommentOut])
     async def list_task_comments(request: Request, task_id: str, limit: int = 200):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_task_read_access(access)
         cap = max(1, min(int(limit or 200), 400))
 
@@ -1064,7 +1064,7 @@ def register_routes(app: FastAPI) -> None:
     @app.post("/api/tasks/{task_id}/comments", response_model=ProjectTaskCommentOut)
     async def create_task_comment(request: Request, task_id: str, payload: ProjectTaskCommentCreateIn):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         _require_task_write_access(access)
         actor = _actor_from_access(access)
         now = int(time.time())
@@ -1129,7 +1129,7 @@ def register_routes(app: FastAPI) -> None:
     @app.patch("/api/tasks/{task_id}/comments/{comment_id}", response_model=ProjectTaskCommentOut)
     async def update_task_comment(request: Request, task_id: str, comment_id: str, payload: ProjectTaskCommentUpdateIn):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         _require_task_write_access(access)
         actor = _actor_from_access(access)
         now = int(time.time())
@@ -1190,7 +1190,7 @@ def register_routes(app: FastAPI) -> None:
     @app.delete("/api/tasks/{task_id}/comments/{comment_id}")
     async def delete_task_comment(request: Request, task_id: str, comment_id: str):
         project_id = _resolve_task_project_id(task_id)
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.write")
         _require_task_write_access(access)
         actor = _actor_from_access(access)
         now = int(time.time())
@@ -1239,7 +1239,7 @@ def register_routes(app: FastAPI) -> None:
         before: Optional[int] = None,
         event_type: Optional[str] = None,
     ):
-        access = _resolve_project_workspace_access(request, project_id)
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
         _require_task_read_access(access)
 
         cap = max(1, min(int(limit or 60), PROJECT_ACTIVITY_MAX_LIMIT))

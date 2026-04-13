@@ -251,6 +251,31 @@ class ProjectFileWriteIn(BaseModel):
     content: str = ""
     append: bool = False
 
+class ProjectAgentOpsIn(BaseModel):
+    ops: List[Dict[str, Any]] = Field(default_factory=list)
+
+class ProjectAgentOpsOut(BaseModel):
+    ok: bool
+    project_id: str
+    applied: List[Dict[str, Any]] = Field(default_factory=list)
+    skipped: List[str] = Field(default_factory=list)
+
+class ProjectChatMessageCreateIn(BaseModel):
+    text: str = Field(..., min_length=1, max_length=PROJECT_CHAT_MESSAGE_MAX_CHARS)
+    mentions: List[str] = Field(default_factory=list)
+    metadata: Optional[Dict[str, Any]] = None
+
+class ProjectChatMessageOut(BaseModel):
+    id: str
+    project_id: str
+    author_type: str
+    author_id: Optional[str] = None
+    author_label: Optional[str] = None
+    text: str
+    mentions: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: int
+
 class A2AEnvironmentBootstrapIn(BaseModel):
     agent_id: Optional[str] = Field(None, min_length=1)
     display_name: Optional[str] = None

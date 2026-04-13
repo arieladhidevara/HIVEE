@@ -203,8 +203,15 @@ def _project_protocol_markdown(*, title: str, brief: str, goal: str) -> str:
         "## Agent Output Contract",
         "- Return JSON with `chat_update`, `output_files`, optional `actions`, optional `notes`, and pause fields.",
         "- Persist every deliverable/handoff artifact through `output_files` using project-relative paths.",
-        "- Use `actions` for explicit project mutations like editing real project files, deleting files, moving files, or updating the task map.",
+        "- Use `actions` for explicit project mutations like editing real project files, deleting files, moving files, posting team chat messages, or updating task/progress state.",
         "- Do not mark work done if artifacts only exist outside Hivee project files.",
+        "",
+        "## Hivee Direct Action Surface",
+        "- Treat JSON `actions` as the direct Hivee mutation API for this project.",
+        "- Storage ops: `write_file`, `append_file`, `upload_file`, `delete_file`, `move_file`, `create_dir`, `delete_dir`.",
+        "- Team sync ops: `post_chat_message` with exact `@agent_id` mentions for delegation/handoff.",
+        "- Graph/state ops: `create_task`, `update_task`, `delete_task`, dependency ops, blueprint ops, and `update_execution`.",
+        "- Successful actions update project DB state and emit realtime UI events automatically.",
         "",
         "## Task And Issue Update Expectations",
         "- Keep chat_update explicit about current status and blockers for downstream UI clarity.",
@@ -225,7 +232,7 @@ def _artifact_sync_rule_lines(*, project_root: Optional[str] = None) -> List[str
     lines = [
         "Artifact sync policy:",
         "- Persist every deliverable and handoff artifact into Hivee project files via `output_files`.",
-        "- Use structured `actions` when you must mutate real project files or task-map state in place.",
+        "- Use structured `actions` when you must mutate real project files, team chat state, or task/progress state in place.",
         "- Use project-relative paths only (no absolute machine/server paths).",
         "- Do not mark work as done if files exist only on provider/local agent server.",
         "- If external tools/runtime produce artifacts, copy full final content back into `output_files`.",
@@ -285,10 +292,12 @@ def _project_context_instruction(
     )
     sections.append(
         "- For explicit project mutations, you may also return JSON `actions` "
-        "such as `write_file`, `append_file`, `upload_file`, `delete_file`, `move_file`, "
-        "`create_task`, `update_task`, `delete_task`, `add_task_dependency`, `remove_task_dependency`, and `apply_task_blueprint`."
+        "such as `write_file`, `append_file`, `upload_file`, `delete_file`, `move_file`, `create_dir`, `delete_dir`, "
+        "`create_task`, `update_task`, `delete_task`, `add_task_dependency`, `remove_task_dependency`, "
+        "`apply_task_blueprint`, `update_execution`, and `post_chat_message`."
     )
-    sections.append("- Use `output_files` for synced deliverables, and use `actions` when you must modify real project files or task-map state.")
+    sections.append("- Treat `actions` as Hivee's direct project API: successful file/chat/task/execution actions sync storage, group chat, graph state, and realtime UI automatically.")
+    sections.append("- Use `output_files` for synced deliverables, and use `actions` when you must modify real project files, group chat state, or task/progress state.")
     sections.append("- Keep continuity with previous conversation turns in this same project session.")
     return "\n".join(sections)
 
@@ -340,6 +349,224 @@ def _build_project_task_snapshot(project_id: str, *, max_tasks: int = 24) -> str
             f" | priority={str(row['priority'] or '').strip() or TASK_PRIORITY_MEDIUM}"
             f"{assignee_part}{dep_part}"
         )
+    return "\n".join(lines)
+
+
+def _normalize_project_chat_mentions(raw_mentions: Any, *, fallback_text: str = "") -> List[str]:
+    items: List[str] = []
+    if isinstance(raw_mentions, list):
+        items = [str(item or "").strip() for item in raw_mentions]
+    elif isinstance(raw_mentions, tuple):
+        items = [str(item or "").strip() for item in raw_mentions]
+    elif isinstance(raw_mentions, str):
+        items = [raw_mentions.strip()]
+
+    extracted = re.findall(r"@([a-zA-Z0-9._-]+)", str(fallback_text or ""))
+    items.extend([str(item or "").strip() for item in extracted])
+
+    out: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        clean = str(item or "").strip().lstrip("@")
+        if not clean:
+            continue
+        key = clean.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(clean[:120])
+        if len(out) >= PROJECT_CHAT_MENTION_MAX:
+            break
+    return out
+
+
+def _parse_json_dict(raw_value: Any) -> Dict[str, Any]:
+    if isinstance(raw_value, dict):
+        return dict(raw_value)
+    text = str(raw_value or "").strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _project_chat_message_payload_from_row(
+    row: sqlite3.Row,
+    *,
+    mentions: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    return {
+        "id": str(row["id"] or ""),
+        "project_id": str(row["project_id"] or ""),
+        "author_type": str(row["author_type"] or ""),
+        "author_id": str(row["author_id"] or "").strip() or None,
+        "author_label": str(row["author_label"] or "").strip() or None,
+        "text": str(row["text"] or ""),
+        "mentions": _normalize_project_chat_mentions(mentions or []),
+        "metadata": _parse_json_dict(row["metadata_json"]),
+        "created_at": _to_int(row["created_at"]),
+    }
+
+
+def _create_project_chat_message(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    author_type: str,
+    author_id: Optional[str],
+    author_label: Optional[str],
+    text: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    mentions: Optional[List[str]] = None,
+    created_at: Optional[int] = None,
+) -> Dict[str, Any]:
+    body = str(text or "").strip()
+    if not body:
+        raise HTTPException(400, "text is required")
+    ts = int(time.time()) if created_at is None else int(created_at)
+    message_id = new_id("pcm")
+    normalized_mentions = _normalize_project_chat_mentions(mentions, fallback_text=body)
+    payload = metadata if isinstance(metadata, dict) else {}
+    conn.execute(
+        """
+        INSERT INTO project_chat_messages (
+            id, project_id, author_type, author_id, author_label, text, metadata_json, created_at
+        ) VALUES (?,?,?,?,?,?,?,?)
+        """,
+        (
+            message_id,
+            str(project_id or "").strip(),
+            str(author_type or "").strip() or "unknown",
+            str(author_id or "").strip() or None,
+            str(author_label or "").strip() or None,
+            body[:PROJECT_CHAT_MESSAGE_MAX_CHARS],
+            json.dumps(payload, ensure_ascii=False),
+            ts,
+        ),
+    )
+    for mention in normalized_mentions:
+        conn.execute(
+            """
+            INSERT INTO project_chat_mentions (
+                id, project_id, message_id, mention_target, created_at
+            ) VALUES (?,?,?,?,?)
+            """,
+            (
+                new_id("pcn"),
+                str(project_id or "").strip(),
+                message_id,
+                mention[:120],
+                ts,
+            ),
+        )
+    row = conn.execute(
+        """
+        SELECT id, project_id, author_type, author_id, author_label, text, metadata_json, created_at
+        FROM project_chat_messages
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (message_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(500, "Failed to create project chat message")
+    _append_project_activity_log_entry(
+        conn,
+        project_id=project_id,
+        actor_type=str(author_type or "").strip() or "unknown",
+        actor_id=str(author_id or "").strip() or None,
+        actor_label=str(author_label or "").strip() or None,
+        event_type="chat.message",
+        summary=body[:220],
+        payload={"message_id": message_id, "mentions": normalized_mentions[:PROJECT_CHAT_MENTION_MAX]},
+        created_at=ts,
+    )
+    return _project_chat_message_payload_from_row(row, mentions=normalized_mentions)
+
+
+def _list_project_chat_messages(
+    project_id: str,
+    *,
+    limit: int = PROJECT_CHAT_MAX_LIMIT,
+    before: Optional[int] = None,
+    mention_target: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    cap = max(1, min(int(limit or PROJECT_CHAT_MAX_LIMIT), PROJECT_CHAT_MAX_LIMIT))
+    before_ts = _to_int(before) if before is not None else 0
+    mention_filter = str(mention_target or "").strip().lstrip("@").lower()
+
+    conn = db()
+    try:
+        sql = (
+            """
+            SELECT pcm.id, pcm.project_id, pcm.author_type, pcm.author_id, pcm.author_label,
+                   pcm.text, pcm.metadata_json, pcm.created_at
+            FROM project_chat_messages pcm
+            """
+        )
+        params: List[Any] = []
+        if mention_filter:
+            sql += (
+                """
+                JOIN project_chat_mentions pcn
+                    ON pcn.project_id = pcm.project_id AND pcn.message_id = pcm.id
+                """
+            )
+        sql += " WHERE pcm.project_id = ?"
+        params.append(project_id)
+        if before_ts > 0:
+            sql += " AND pcm.created_at < ?"
+            params.append(before_ts)
+        if mention_filter:
+            sql += " AND LOWER(COALESCE(pcn.mention_target, '')) = ?"
+            params.append(mention_filter)
+        sql += " ORDER BY pcm.created_at DESC LIMIT ?"
+        params.append(cap)
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        message_ids = [str(row["id"] or "").strip() for row in rows if str(row["id"] or "").strip()]
+        mention_map: Dict[str, List[str]] = {}
+        if message_ids:
+            placeholders = ",".join("?" for _ in message_ids)
+            mention_rows = conn.execute(
+                f"""
+                SELECT message_id, mention_target
+                FROM project_chat_mentions
+                WHERE project_id = ? AND message_id IN ({placeholders})
+                ORDER BY created_at ASC
+                """,
+                (project_id, *message_ids),
+            ).fetchall()
+            for mention_row in mention_rows:
+                mid = str(mention_row["message_id"] or "").strip()
+                target = str(mention_row["mention_target"] or "").strip()
+                if not mid or not target:
+                    continue
+                mention_map.setdefault(mid, [])
+                if target not in mention_map[mid]:
+                    mention_map[mid].append(target)
+        payloads = [
+            _project_chat_message_payload_from_row(row, mentions=mention_map.get(str(row["id"] or "").strip(), []))
+            for row in reversed(rows)
+        ]
+        return payloads
+    finally:
+        conn.close()
+
+
+def _build_project_chat_snapshot(project_id: str, *, max_messages: int = PROJECT_CHAT_SNAPSHOT_MAX_MESSAGES) -> str:
+    messages = _list_project_chat_messages(project_id, limit=max_messages)
+    if not messages:
+        return "Recent project chat:\n- no chat messages yet"
+    lines = ["Recent project chat (use exact @agent_id mentions for handoff):"]
+    for item in messages[-max(1, min(int(max_messages), PROJECT_CHAT_SNAPSHOT_MAX_MESSAGES)):]:
+        author = str(item.get("author_label") or item.get("author_id") or item.get("author_type") or "actor").strip()
+        text = re.sub(r"\s+", " ", str(item.get("text") or "").strip())
+        if not text:
+            continue
+        lines.append(f"- {author}: {text[:220]}")
     return "\n".join(lines)
 
 def _agent_roster_markdown(role_rows: List[Dict[str, Any]]) -> str:
@@ -2163,6 +2390,16 @@ def _normalize_agent_action_kind(raw_kind: Any) -> str:
         "rename_file": "move_file",
         "file_move": "move_file",
         "file.move": "move_file",
+        "mkdir": "create_dir",
+        "make_dir": "create_dir",
+        "create_dir": "create_dir",
+        "directory_create": "create_dir",
+        "dir.create": "create_dir",
+        "rmdir": "delete_dir",
+        "remove_dir": "delete_dir",
+        "delete_dir": "delete_dir",
+        "directory_delete": "delete_dir",
+        "dir.delete": "delete_dir",
         "create_task": "create_task",
         "task_create": "create_task",
         "task.create": "create_task",
@@ -2185,6 +2422,22 @@ def _normalize_agent_action_kind(raw_kind: Any) -> str:
         "apply_task_blueprint": "apply_task_blueprint",
         "task_blueprint_apply": "apply_task_blueprint",
         "task.blueprint.apply": "apply_task_blueprint",
+        "update_execution": "update_execution",
+        "set_execution": "update_execution",
+        "set_execution_state": "update_execution",
+        "execution_update": "update_execution",
+        "execution.update": "update_execution",
+        "update_progress": "update_execution",
+        "set_progress": "update_execution",
+        "progress_update": "update_execution",
+        "progress.update": "update_execution",
+        "post_chat_message": "post_chat_message",
+        "send_chat_message": "post_chat_message",
+        "chat_message": "post_chat_message",
+        "chat_send": "post_chat_message",
+        "chat.send": "post_chat_message",
+        "message_post": "post_chat_message",
+        "message.post": "post_chat_message",
     }
     return alias_map.get(key, key)
 
@@ -2884,6 +3137,74 @@ def _apply_project_actions(
                         payload={"path": src_rel, "to_path": dst_rel},
                         created_at=now,
                     )
+                elif kind == "create_dir":
+                    rel, target = _resolve_project_action_target(
+                        owner_user_id=owner_user_id,
+                        project_root=project_root,
+                        raw_path=action.get("path") or action.get("target_path"),
+                        allow_paths=allow_paths,
+                        require_exists=False,
+                    )
+                    if target.exists() and not target.is_dir():
+                        raise HTTPException(400, "target path is a file")
+                    target.mkdir(parents=True, exist_ok=True)
+                    applied.append(
+                        {
+                            "type": kind,
+                            "path": rel,
+                            "event": "project.dir.created",
+                            "event_payload": {"path": rel, "actor": f"agent:{actor_id or 'unknown'}"},
+                        }
+                    )
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="dir.created",
+                        summary=f"Directory created: {rel}",
+                        payload={"path": rel},
+                        created_at=now,
+                    )
+                elif kind == "delete_dir":
+                    rel, target = _resolve_project_action_target(
+                        owner_user_id=owner_user_id,
+                        project_root=project_root,
+                        raw_path=action.get("path") or action.get("target_path"),
+                        allow_paths=allow_paths,
+                        require_exists=True,
+                    )
+                    if not target.is_dir():
+                        raise HTTPException(400, "delete_dir only supports directories")
+                    if bool(action.get("recursive")):
+                        shutil.rmtree(target)
+                    else:
+                        target.rmdir()
+                    applied.append(
+                        {
+                            "type": kind,
+                            "path": rel,
+                            "recursive": bool(action.get("recursive")),
+                            "event": "project.dir.deleted",
+                            "event_payload": {
+                                "path": rel,
+                                "recursive": bool(action.get("recursive")),
+                                "actor": f"agent:{actor_id or 'unknown'}",
+                            },
+                        }
+                    )
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="dir.deleted",
+                        summary=f"Directory deleted: {rel}",
+                        payload={"path": rel, "recursive": bool(action.get("recursive"))},
+                        created_at=now,
+                    )
                 elif kind == "create_task":
                     title = str(action.get("title") or "").strip()
                     if not title:
@@ -3302,6 +3623,97 @@ def _apply_project_actions(
                             },
                         }
                     )
+                elif kind == "update_execution":
+                    next_status = action.get("status")
+                    next_progress = action.get("progress_pct")
+                    if next_progress is None and action.get("progress") is not None:
+                        next_progress = action.get("progress")
+                    if next_status is None and next_progress is None:
+                        raise HTTPException(400, "status or progress_pct is required")
+                    state = _set_project_execution_state(
+                        project_id,
+                        status=next_status if next_status is not None else None,
+                        progress_pct=_to_int(next_progress) if next_progress is not None else None,
+                    )
+                    if not state:
+                        raise HTTPException(404, "Project not found")
+                    summary = str(action.get("summary") or action.get("note") or action.get("text") or "").strip()
+                    payload = {
+                        "status": str(state.get("status") or ""),
+                        "progress_pct": _to_int(state.get("progress_pct")),
+                        "updated_at": _to_int(state.get("updated_at")),
+                        "summary": summary[:500] or None,
+                        "actor": f"agent:{actor_id or 'unknown'}",
+                    }
+                    applied.append(
+                        {
+                            "type": kind,
+                            "status": payload["status"],
+                            "progress_pct": payload["progress_pct"],
+                            "summary": summary[:500],
+                            "event": "project.execution.updated",
+                            "event_payload": payload,
+                        }
+                    )
+                    _append_project_activity_log_entry(
+                        conn,
+                        project_id=project_id,
+                        actor_type=actor_type,
+                        actor_id=actor_id,
+                        actor_label=actor_label,
+                        event_type="project.execution.updated",
+                        summary=summary[:220] or f"Execution updated to {payload['status']}",
+                        payload=payload,
+                        created_at=now,
+                    )
+                elif kind == "post_chat_message":
+                    body = str(
+                        action.get("text")
+                        or action.get("body")
+                        or action.get("message")
+                        or ""
+                    ).strip()
+                    if not body:
+                        raise HTTPException(400, "text is required")
+                    metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+                    message_payload = _create_project_chat_message(
+                        conn,
+                        project_id=project_id,
+                        author_type=actor_type,
+                        author_id=actor_id,
+                        author_label=actor_label,
+                        text=body,
+                        metadata=metadata,
+                        mentions=action.get("mentions") if isinstance(action.get("mentions"), list) else None,
+                        created_at=now,
+                    )
+                    extra_events = [
+                        {
+                            "event": "project.chat.mention",
+                            "event_payload": {
+                                "message_id": str(message_payload.get("id") or ""),
+                                "project_id": project_id,
+                                "target": mention,
+                                "author_type": actor_type,
+                                "author_id": actor_id,
+                                "author_label": actor_label,
+                                "text": str(message_payload.get("text") or "")[:500],
+                                "created_at": now,
+                            },
+                        }
+                        for mention in (message_payload.get("mentions") or [])[:PROJECT_CHAT_MENTION_MAX]
+                    ]
+                    applied.append(
+                        {
+                            "type": kind,
+                            "message_id": str(message_payload.get("id") or ""),
+                            "text": str(message_payload.get("text") or ""),
+                            "mentions": list(message_payload.get("mentions") or []),
+                            "event": "project.chat.message",
+                            "event_payload": message_payload,
+                            "extra_events": extra_events,
+                        }
+                    )
                 else:
                     skipped.append(f"action {idx}: unsupported type `{kind}`")
                     continue
@@ -3412,7 +3824,7 @@ def _build_artifact_followup_prompt(*, user_message: str, previous_response: str
         "- If you created or modified files, include all of them in output_files with full content.\n"
         "- Persist deliverables in Hivee project files; do not report done if files exist only on your own server/runtime.\n"
         "- Use project-relative paths only.\n"
-        "- If you must mutate existing project files or task-map state directly, put that in `actions`.\n"
+        "- If you must mutate existing project files, team chat state, or task/progress state directly, put that in `actions`.\n"
         "- If you cannot continue without user approval/input, set requires_user_input=true and explain pause_reason.\n"
         "- If no files were produced, return output_files as [] and explain why in chat_update.\n\n"
         f"Original user message:\n{str(user_message or '').strip()[:3000]}\n\n"
