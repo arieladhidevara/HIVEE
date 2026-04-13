@@ -343,13 +343,13 @@ def _provision_managed_agents_for_connection(
             continue
         try:
             parts = _agent_component_paths(user_id, connection_id, agent_id)
-            for path in parts.values():
-                if path == parts["root"]:
+            try:
+                for path in parts.values():
                     path.mkdir(parents=True, exist_ok=True)
-                    continue
-                path.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass  # Filesystem may be ephemeral (e.g. Railway) — don't block DB provisioning
 
-            root_path = parts["root"].resolve().as_posix()
+            root_path = str(parts["root"].resolve()) if parts["root"].exists() else str(parts["root"])
             card_payload = _build_managed_agent_card(
                 agent_id=agent_id,
                 agent_name=agent_name,
