@@ -1,6 +1,7 @@
 import base64
 
 from core.workspace_paths import *
+from core.security_auth import _new_agent_access_token, _hash_access_token
 
 def _parse_setup_json(raw: Any) -> Dict[str, Any]:
     if isinstance(raw, dict):
@@ -87,6 +88,896 @@ def _setup_value_markdown(value: Any) -> str:
         return "\n".join(lines)
     text = str(value).strip()
     return text
+
+def _protocol_markdown() -> str:
+    return r"""# Hivee Agent Protocol
+> Hivee universal rules. Apply to EVERY project, EVERY session. Never override or ignore these rules.
+> This file is READ-ONLY — system-managed. Do not write to it.
+
+---
+
+## 1. Mandatory Response Format
+
+**Every single response MUST be valid JSON in this exact shape:**
+```json
+{
+  "chat_update": "Short human-readable status. ALWAYS required.",
+  "output_files": [],
+  "actions": [],
+  "requires_user_input": false,
+  "pause_reason": "",
+  "resume_hint": "",
+  "notes": ""
+}
+```
+
+### Field Rules
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `chat_update` | string | **YES, always** | What you did / status / handoff message |
+| `output_files` | array | No | Files to write to project storage |
+| `actions` | array | No | Explicit Hivee mutations (tasks, chat, files) |
+| `requires_user_input` | boolean | No | Set true if you are blocked waiting for owner |
+| `pause_reason` | string | When blocked | Clear description of what you need from owner |
+| `resume_hint` | string | When blocked | What owner should say/do to unblock you |
+| `notes` | string | No | Internal notes for your own record |
+
+**If you cannot produce valid JSON, wrap your text in a fallback:**
+```json
+{"chat_update": "FALLBACK: <your message here>", "output_files": [], "actions": []}
+```
+
+---
+
+## 2. Chat & Mention Rules (STRICTLY ENFORCED)
+
+These rules exist so users and other agents can always follow project progress by reading the chat.
+
+### Required mentions for each situation:
+| Situation | Required chat_update content |
+|---|---|
+| Starting a task | `"Starting [task name]. @owner notified."` |
+| Completing a task | `"Completed [task name]. Output at Outputs/[file]. Handing off to @next_agent_id."` |
+| Blocked / waiting | `"Blocked on [reason]. @owner input needed. Pausing until resolved."` |
+| Handoff ready | `"@target_agent_id your work is ready. Handoff doc: Outputs/handoffs/[your_id]→[target_id].md"` |
+| Long task progress | Post intermediate `post_chat_message` actions at each major milestone |
+| Raising issue | `"Issue: [description]. Tagging @owner and affected @agent_id."` |
+| Decision made | `"Decision: [what]. Logged to decisions.md."` |
+
+### Rules:
+- **Every time you take an action → include an `@mention` in `chat_update`.**
+- **Never go silent.** If you are working on something long, post a progress update every major step.
+- **Always mention `@owner` when:** you are blocked, you have finished your phase, or a decision affects the project scope.
+- Use **exact agent IDs** from `agents.md` in mentions (e.g., `@dev`, `@qa`, `@planner`).
+- Use `@owner` to address the human project owner.
+- Mentions in `chat_update` are **not** routed automatically — to actively ping an agent, use an `actions: post_chat_message` entry.
+
+### Posting to chat via actions:
+```json
+{
+  "type": "post_chat_message",
+  "text": "@dev your subtask is ready. Handoff at Outputs/handoffs/planner→dev.md",
+  "mentions": ["dev"]
+}
+```
+
+---
+
+## 3. Output Files — Writing Deliverables
+
+Use `output_files` for any content you produce:
+```json
+{
+  "path": "Outputs/{your_agent_id}/{filename}.md",
+  "content": "...",
+  "append": false
+}
+```
+- Always write to paths under `Outputs/{your_agent_id}/` unless told otherwise in `scope.md`.
+- For handoff files: `Outputs/handoffs/{your_id}→{target_id}.md`
+- Append to decisions log: `{"path": "decisions.md", "content": "\n---\n...", "append": true}`
+
+---
+
+## 4. Actions — Hivee Mutation API
+
+Use `actions` array for structured Hivee mutations:
+
+### File operations:
+```json
+{"type": "write_file",   "path": "Outputs/agent/file.md", "content": "..."}
+{"type": "append_file",  "path": "decisions.md",          "content": "\n---\n..."}
+{"type": "delete_file",  "path": "Outputs/agent/old.md"}
+{"type": "move_file",    "src":  "Outputs/agent/a.md",    "dst": "Outputs/agent/b.md"}
+```
+
+### Task operations:
+```json
+{"type": "create_task", "title": "...", "status": "todo", "priority": "medium", "description": "...", "assignee_agent_id": "dev"}
+{"type": "update_task", "task_id": "task_xxx", "status": "done", "notes": "Completed"}
+{"type": "delete_task", "task_id": "task_xxx"}
+```
+
+### Chat:
+```json
+{"type": "post_chat_message", "text": "@dev handoff ready.", "mentions": ["dev"]}
+```
+
+### Execution control:
+```json
+{"type": "update_execution", "status": "running",  "progress_pct": 40, "summary": "Phase 2 started"}
+{"type": "update_execution", "status": "completed", "progress_pct": 100, "summary": "All done"}
+{"type": "update_execution", "status": "paused",    "progress_pct": 60, "summary": "Waiting for owner input"}
+```
+
+---
+
+## 5. Handoff Protocol
+
+Before triggering another agent to start work:
+1. **Write a handoff file:**
+   ```
+   Outputs/handoffs/{your_agent_id}→{target_agent_id}.md
+   ```
+   Include: what you finished, list of output files, what the target must do next, any context they need.
+2. **Post to chat:**
+   ```
+   "@target_agent_id handoff ready. Read Outputs/handoffs/{your_id}→{target_id}.md before starting."
+   ```
+3. **Create or update a task** if there is a tracked task card for this work.
+4. The **receiving agent MUST read the handoff file** before starting. It contains the full context.
+
+---
+
+## 6. Blocked / Needs User Input
+
+When you cannot continue without human input:
+```json
+{
+  "chat_update": "Blocked on [reason]. @owner input needed. Pausing.",
+  "requires_user_input": true,
+  "pause_reason": "Need the API key for XYZ service before I can proceed.",
+  "resume_hint": "Reply with the API key or add it to credentials.md."
+}
+```
+Hivee will automatically create a BLOCKED task card visible to the owner in the UI.
+
+---
+
+## 7. File Access (Read via HTTP)
+
+All project files are readable via HTTP using your session token:
+```
+GET {hivee_api_base}/files/{file_path}
+Authorization: Bearer {your_session_token}
+```
+
+### Key files to read at session start:
+| File URL | Read when |
+|---|---|
+| `{hivee_api_base}/files/fundamentals.md` | **Every session, first thing** |
+| `{hivee_api_base}/files/protocol.md` | First session or when in doubt |
+| `{hivee_api_base}/files/scope.md` | First session — confirms your permissions |
+| `{hivee_api_base}/files/context.md` | Every session — living project understanding |
+| `{hivee_api_base}/files/plan.md` | When starting work — approved execution plan |
+| `{hivee_api_base}/files/delegation.md` | When starting work — your assigned tasks |
+| `{hivee_api_base}/files/agents.md` | When you need to address another agent |
+| `{hivee_api_base}/files/state.md` | When checking overall project progress |
+| `{hivee_api_base}/files/decisions.md` | When reviewing past decisions |
+| `{hivee_api_base}/files/setup-chat.md` | First session — original project requirements |
+
+---
+
+## 8. Absolute Rules (Never Violate)
+
+1. **Always return valid JSON.** No exceptions.
+2. **Always populate `chat_update`.** Even a brief status is required.
+3. **Never store final deliverables only on your local runtime.** Push everything via `output_files` or `actions: write_file`.
+4. **Never assume missing information silently.** Ask via `requires_user_input` or state assumptions in `chat_update`.
+5. **Never edit system files:** `plan.md`, `delegation.md`, `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`.
+6. **Never write outside your assigned paths** (defined in `scope.md`).
+7. **Never skip `@mentions`** when handing off work or when blocked.
+8. **Never hallucinate agent IDs.** Read `agents.md` and use exact IDs.
+""".strip() + "\n"
+
+
+def _fundamentals_markdown(
+    *,
+    project_id: str,
+    title: str,
+    phase: str,
+    plan_status: str,
+    execution_status: str,
+    hivee_api_base: str,
+    role_rows: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    agents_lines = []
+    if role_rows:
+        for row in role_rows:
+            aid = str(row.get("agent_id") or "").strip()
+            name = str(row.get("agent_name") or aid).strip()
+            role = str(row.get("role") or "").strip() or "Contributor"
+            primary = bool(row.get("is_primary"))
+            marker = " **(primary/orchestrator)**" if primary else ""
+            agents_lines.append(f"| `@{aid}` | {name}{marker} | {role} |")
+    agents_table = "\n".join(agents_lines) if agents_lines else "| *(none yet)* | — | — |"
+
+    base = hivee_api_base.rstrip("/")
+    return f"""# Project Fundamentals
+> **READ THIS FIRST.** Auto-generated by Hivee. Do not edit manually — it is overwritten on project events.
+> Every new session starts here. Read top-to-bottom before doing anything.
+
+---
+
+## Project Identity
+| Field | Value |
+|---|---|
+| **Project** | {title} |
+| **Project ID** | `{project_id}` |
+| **Current Phase** | `{phase}` |
+| **Plan Status** | `{plan_status}` |
+| **Execution Status** | `{execution_status}` |
+| **API Base** | `{base}` |
+
+---
+
+## Your Session Context
+You receive three things in your prompt:
+1. **Session token** — a short-lived plaintext token for this session only
+2. **This file URL** — `{base}/files/fundamentals.md`
+3. **Your task** — what you must do this session
+
+**Always authenticate with:**
+```
+Authorization: Bearer <your_session_token>
+```
+
+---
+
+## Mandatory First Steps (Every Session)
+
+**Do NOT skip any of these:**
+
+1. **Read `protocol.md`** — universal rules you MUST follow
+   `GET {base}/files/protocol.md`
+
+2. **Read `scope.md`** — your exact permissions for this project
+   `GET {base}/files/scope.md`
+
+3. **Read `context.md`** — living project understanding (requirements, constraints, decisions)
+   `GET {base}/files/context.md`
+
+4. **Read `delegation.md`** — your assigned tasks and handoff conditions
+   `GET {base}/files/delegation.md`
+
+5. **Read `agents.md`** — all agents, their @mention IDs, and their roles
+   `GET {base}/files/agents.md`
+
+6. **Check `state.md`** — current project progress and any open blockers
+   `GET {base}/files/state.md`
+
+---
+
+## Complete File Index
+
+| File | URL | Purpose | Editable by agents? |
+|---|---|---|---|
+| `protocol.md` | `{base}/files/protocol.md` | Universal rules, response format, mention/handoff protocol | No — system-managed |
+| `scope.md` | `{base}/files/scope.md` | Your permissions: writable paths, allowed actions | No — system-managed |
+| `fundamentals.md` | `{base}/files/fundamentals.md` | **This file** — entry point, project snapshot | No — system-managed |
+| `context.md` | `{base}/files/context.md` | Full project understanding, requirements, constraints | Yes — update via `write_file` action |
+| `plan.md` | `{base}/files/plan.md` | Approved execution plan (created by primary agent, approved by owner) | No — owner approves, system-managed |
+| `delegation.md` | `{base}/files/delegation.md` | Task assignments per agent with handoff triggers | No — system-managed |
+| `agents.md` | `{base}/files/agents.md` | Agent roster: IDs, roles, session key patterns | No — system-managed |
+| `state.md` | `{base}/files/state.md` | Live project status, progress %, active blockers | No — system-managed |
+| `credentials.md` | `{base}/files/credentials.md` | Pointers to external credentials (values NOT stored here) | No — owner-managed |
+| `setup-chat.md` | `{base}/files/setup-chat.md` | Original setup conversation (immutable reference) | No — immutable |
+| `decisions.md` | `{base}/files/decisions.md` | Append-only decisions log | Yes — append only via `append_file` |
+| `Project Info/` | `{base}/files/Project Info/` | Legacy project info directory | Read-only for agents |
+| `Outputs/` | `{base}/files/Outputs/` | All agent work outputs | Yes — write under `Outputs/<your_agent_id>/` |
+| `Outputs/handoffs/` | `{base}/files/Outputs/handoffs/` | Handoff files between agents | Yes — write `from→to.md` files |
+| `reference/` | `{base}/files/reference/` | User-uploaded reference documents | Read-only for agents |
+
+---
+
+## Agents in This Project
+
+| @mention | Name | Role |
+|---|---|---|
+{agents_table}
+
+Full details (session keys, connector info): `GET {base}/files/agents.md`
+
+---
+
+## Quick API Reference
+
+### Read a file
+```
+GET {base}/files/<path>
+Authorization: Bearer <token>
+```
+
+### Write/mutate (via agent-ops)
+```
+POST {base}/agent-ops
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{{"ops": [
+  {{"type": "write_file", "path": "Outputs/<agent_id>/output.md", "content": "..."}},
+  {{"type": "post_chat_message", "text": "@owner work complete.", "mentions": ["owner"]}},
+  {{"type": "create_task", "title": "...", "status": "todo", "priority": "medium"}}
+]}}
+```
+
+### All valid action types
+`write_file` · `append_file` · `delete_file` · `move_file` · `create_dir`
+`post_chat_message` · `create_task` · `update_task` · `delete_task` · `update_execution`
+
+---
+
+## What To Do If You're Unsure
+
+1. Re-read `protocol.md` — the answer is usually there
+2. Re-read `context.md` — check requirements and constraints
+3. Post to chat with `@owner` using `requires_user_input: true` — never guess silently
+""".strip() + "\n"
+
+
+def _state_markdown(
+    *,
+    phase: str,
+    plan_status: str,
+    execution_status: str,
+    progress_pct: int = 0,
+    agents: Optional[List[Dict[str, Any]]] = None,
+    pending_inputs: Optional[List[str]] = None,
+    updated_at: Optional[int] = None,
+    hivee_api_base: str = "",
+) -> str:
+    import time as _time
+    ts = updated_at or int(_time.time())
+    from datetime import datetime, timezone
+    dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    base = (hivee_api_base or "").rstrip("/")
+
+    agent_rows = []
+    if agents:
+        for a in agents:
+            aid = str(a.get("agent_id") or "").strip()
+            name = str(a.get("agent_name") or aid).strip()
+            primary = bool(a.get("is_primary"))
+            role = str(a.get("role") or "").strip() or "Contributor"
+            agent_rows.append(f"| `@{aid}` | {name} | {role} | {'Yes' if primary else 'No'} |")
+    agent_table = "\n".join(agent_rows) if agent_rows else "| *(none yet)* | — | — | — |"
+
+    inputs_list = "\n".join(f"- {i}" for i in (pending_inputs or [])) or "- None."
+
+    # Phase descriptions
+    phase_desc = {
+        "setup": "Owner is answering setup questions. No agents active yet.",
+        "planning": "Primary agent is generating the project plan.",
+        "execution": "Agents are executing delegated tasks.",
+        "completed": "All tasks completed. Project finished.",
+        "paused": "Project paused — waiting for owner input.",
+    }.get(str(phase or "").lower(), f"Phase: {phase}")
+
+    exec_desc = {
+        "idle": "No tasks running.",
+        "running": "Agents are actively working.",
+        "paused": "Execution paused — blocked on user input.",
+        "stopped": "Execution stopped by owner.",
+        "completed": "All tasks done.",
+    }.get(str(execution_status or "").lower(), execution_status)
+
+    return f"""# Project State
+> Maintained by Hivee. Do not edit manually.
+> Last updated: **{dt}**
+
+---
+
+## Current Status
+
+| Field | Value |
+|---|---|
+| **Phase** | `{phase}` — {phase_desc} |
+| **Plan** | `{plan_status}` |
+| **Execution** | `{execution_status}` — {exec_desc} |
+| **Overall Progress** | **{progress_pct}%** |
+
+---
+
+## Active Agents
+
+| @mention | Name | Role | Primary? |
+|---|---|---|---|
+{agent_table}
+
+Full agent details (session keys, how to address): `GET {base}/files/agents.md`
+
+---
+
+## Pending Owner Input
+
+{inputs_list}
+
+If you are blocked and need owner input, set `requires_user_input: true` in your response.
+Hivee will create a BLOCKED task card visible in the owner's UI.
+
+---
+
+## Related Files
+
+| What | URL |
+|---|---|
+| Execution plan | `GET {base}/files/plan.md` |
+| Task assignments | `GET {base}/files/delegation.md` |
+| Agent roster | `GET {base}/files/agents.md` |
+| Project context | `GET {base}/files/context.md` |
+| Decisions log | `GET {base}/files/decisions.md` |
+""".strip() + "\n"
+
+
+def _agents_markdown(
+    role_rows: Optional[List[Dict[str, Any]]] = None,
+    *,
+    project_id: str = "",
+    hivee_api_base: str = "",
+) -> str:
+    base = (hivee_api_base or "").rstrip("/")
+    lines = [
+        "# Agent Roster",
+        "> Maintained by Hivee. Do not edit manually — overwritten when agents join or leave.",
+        "> Use exact `@agent_id` values from this file in mentions. Never guess agent IDs.",
+        "",
+    ]
+    if not role_rows:
+        lines += [
+            "No agents invited yet.",
+            "",
+            "## How Agents Join",
+            f"The project owner sends an invitation from the Hivee UI. Once accepted, this file is updated.",
+        ]
+        return "\n".join(lines).strip() + "\n"
+
+    # Summary table
+    lines += ["## Quick Reference", "", "| @mention | Name | Role | Primary? |", "|---|---|---|---|"]
+    for row in role_rows:
+        aid = str(row.get("agent_id") or "").strip()
+        name = str(row.get("agent_name") or aid).strip()
+        role = str(row.get("role") or "").strip() or "Contributor"
+        primary = bool(row.get("is_primary"))
+        lines.append(f"| `@{aid}` | {name} | {role} | {'Yes' if primary else 'No'} |")
+    lines.append("")
+
+    # Detailed section per agent
+    lines.append("---")
+    lines.append("")
+    for row in role_rows:
+        aid = str(row.get("agent_id") or "").strip()
+        name = str(row.get("agent_name") or aid).strip()
+        role = str(row.get("role") or "").strip() or "Contributor"
+        primary = bool(row.get("is_primary"))
+        source = str(row.get("source_type") or "").strip()
+        lines += [
+            f"## {name}{' (Primary / Orchestrator)' if primary else ''}",
+            f"- **Agent ID (use in @mentions):** `@{aid}`",
+            f"- **Role:** {role}",
+            f"- **Primary agent:** {'Yes — orchestrates the project and delegates to other agents' if primary else 'No — executes delegated tasks'}",
+            f"- **Source:** {source or 'invited'}",
+        ]
+        if base:
+            lines += [
+                f"- **Session key pattern:** `{project_id}:<phase>` (e.g., `{project_id}:execution`)",
+                f"- **Scope file:** `GET {base}/files/scope.md` (each agent receives their own scoped version)",
+            ]
+        lines += [
+            "",
+            f"### How to address `@{aid}`",
+            f"In `chat_update` or `post_chat_message` action:",
+            f'```',
+            f'"@{aid} [your message here]"',
+            f'```',
+            f"In an action entry:",
+            f'```json',
+            f'{{"type": "post_chat_message", "text": "@{aid} your task is ready.", "mentions": ["{aid}"]}}',
+            f'```',
+            "",
+        ]
+    lines += [
+        "---",
+        "",
+        "## Special Mentions",
+        "| @mention | Who it reaches |",
+        "|---|---|",
+        "| `@owner` | The human project owner (shown in UI, not routed to connector) |",
+        "| `@all` | All agents (broadcast — each connector receives the message) |",
+        "",
+        "## Mention Routing",
+        "When you include `@agent_id` in a `post_chat_message` action, Hivee automatically:",
+        "1. Records the mention in the project chat DB",
+        "2. Emits a realtime UI event",
+        "3. **Forwards the message to that agent's connector** so the agent receives it as a new task/message",
+        "",
+        "This means `post_chat_message` with `@mentions` is the correct way to trigger another agent.",
+    ]
+    return "\n".join(lines).strip() + "\n"
+
+
+def _scope_markdown(
+    *,
+    agent_id: str,
+    agent_name: str,
+    is_primary: bool,
+    can_write_files: bool = True,
+    write_paths: Optional[List[str]] = None,
+    can_post_chat: bool = True,
+    can_create_tasks: bool = False,
+    can_update_tasks: bool = True,
+    hivee_api_base: str = "",
+    project_id: str = "",
+) -> str:
+    base = (hivee_api_base or "").rstrip("/")
+    writable = write_paths or [f"Outputs/{agent_id}/", "Outputs/handoffs/"]
+    writable_rows = "\n".join(f"| `{p}` | Write allowed |" for p in writable)
+    create_tasks_val = "Yes — primary agent can create and assign tasks to any agent" if is_primary else ("Yes" if can_create_tasks else "No — request primary agent to create tasks")
+    role_desc = "Primary agent (orchestrator) — you generate the plan, delegate tasks, and coordinate all other agents" if is_primary else "Contributor — you execute tasks delegated to you by the primary agent"
+
+    return f"""# Scope — {agent_name}
+> Your personal permission file. Do not edit manually — system-managed.
+> **This file is scoped to you (`@{agent_id}`).** Other agents have different scope files.
+
+---
+
+## Your Identity
+
+| Field | Value |
+|---|---|
+| **Agent ID** | `{agent_id}` |
+| **Name** | {agent_name} |
+| **Role** | {role_desc} |
+| **Project ID** | `{project_id}` |
+
+---
+
+## What You Are Allowed To Do
+
+### File Access
+| Action | Allowed? |
+|---|---|
+| Read any project file | **Yes** — `GET {base}/files/<path>` |
+| Write files | {"Yes — see paths below" if can_write_files else "No"} |
+| Append to `decisions.md` | **Yes** — use `append_file` action only |
+
+### Writable Paths
+| Path | Permission |
+|---|---|
+{writable_rows}
+
+### Project Mutations
+| Action | Allowed? |
+|---|---|
+| `post_chat_message` (with @mentions) | {"Yes" if can_post_chat else "No"} |
+| `create_task` | {create_tasks_val} |
+| `update_task` (your assigned tasks) | {"Yes" if can_update_tasks else "No"} |
+| `delete_task` | {"Yes — primary agent only" if is_primary else "No"} |
+| `update_execution` | {"Yes — primary agent only" if is_primary else "No — report progress via chat instead"} |
+
+---
+
+## What You Are NOT Allowed To Do
+
+- Write to paths not listed above
+- Edit system-managed files: `plan.md`, `delegation.md`, `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`
+- {"" if is_primary else "Assign or delegate tasks to other agents (primary agent only)"}
+- Approve the project plan (owner only)
+- Modify `credentials.md` (owner only)
+
+---
+
+## Your Session Key Pattern
+
+Your sessions use the key: `{project_id}:<phase>`
+
+Examples:
+- `{project_id}:planning` — planning phase session
+- `{project_id}:execution` — execution phase session
+- `{project_id}:mention` — when you receive a @mention from another agent
+
+Hivee may send you messages with `contextType` values:
+| contextType | Meaning |
+|---|---|
+| `plan_generation` | You are asked to create the project plan |
+| `delegation` | You are asked to assign tasks to agents |
+| `task_execution` | You are asked to execute a specific task |
+| `mention` | Another agent @mentioned you in chat |
+| `control` | Hivee system message (e.g., setup, approval) |
+| `message` | General message |
+
+---
+
+## Quick Action Reference
+
+```json
+// Write a file
+{{"type": "write_file", "path": "Outputs/{agent_id}/report.md", "content": "..."}}
+
+// Append to decisions log
+{{"type": "append_file", "path": "decisions.md", "content": "\\n---\\n**[DATE] Decision by @{agent_id}**\\nWhat: ...\\nWhy: ...\\n"}}
+
+// Post to chat with mention
+{{"type": "post_chat_message", "text": "@owner work complete. Output at Outputs/{agent_id}/report.md", "mentions": ["owner"]}}
+
+// Create a task ({"primary only" if is_primary else "primary agent only"})
+{{"type": "create_task", "title": "...", "status": "todo", "priority": "medium", "assignee_agent_id": "target_agent_id"}}
+
+// Update execution status ({"primary only" if is_primary else "primary agent only"})
+{{"type": "update_execution", "status": "running", "progress_pct": 50, "summary": "Phase 2 in progress"}}
+```
+
+---
+
+## When in Doubt
+
+1. Re-read `GET {base}/files/protocol.md`
+2. Re-read `GET {base}/files/context.md`
+3. Post to chat: `{{"type": "post_chat_message", "text": "@owner I need clarification on X", "mentions": ["owner"]}}`
+   and set `requires_user_input: true` in your response.
+""".strip() + "\n"
+
+
+def _credentials_markdown(*, project_id: str, hivee_api_base: str) -> str:
+    base = (hivee_api_base or "").rstrip("/")
+    return f"""# Credentials
+> Managed by project owner. Do not edit manually.
+> **Secret values are NEVER stored in this file.** This file only lists what credentials exist and how to fetch them.
+
+---
+
+## How to Fetch a Secret at Runtime
+
+```
+GET {base}/secrets/<secret_name>
+Authorization: Bearer <your_session_token>
+```
+
+The response will contain the decrypted value. **Never log or include secret values in `chat_update` or file outputs.**
+
+---
+
+## Available Credentials
+
+*(No credentials configured yet.)*
+
+If you need a credential that is not listed here:
+1. Set `requires_user_input: true` in your response
+2. In `pause_reason`, specify: `"Need credential: <name> — <what it's for>"`
+3. Mention `@owner` in `chat_update`
+
+The owner will add it via the Hivee UI, and this file will be updated.
+
+---
+
+## Credential Entry Format (owner-managed)
+
+When the owner adds a credential, it appears here as:
+
+```
+### <credential_name>
+- **Purpose:** <what it is used for>
+- **Fetch URL:** GET {base}/secrets/<credential_name>
+- **Used by:** @<agent_id>
+- **Added:** <date>
+```
+
+---
+
+## Security Rules for Agents
+
+1. **Never write secret values into any project file.**
+2. **Never include secrets in `chat_update`.**
+3. Fetch secrets only when needed, use them, do not cache beyond the session.
+4. If a secret fetch fails (401/404), set `requires_user_input: true` and notify `@owner`.
+
+---
+
+## Related
+
+- Agent permissions: `GET {base}/files/scope.md`
+- Project context (where secrets are used): `GET {base}/files/context.md`
+""".strip() + "\n"
+
+
+def _decisions_markdown() -> str:
+    return """# Decisions Log
+> **Append-only.** Never rewrite or delete existing entries.
+> Use `actions: append_file` to add new entries. This is the authoritative record of all key decisions.
+
+---
+
+## How to Add an Entry
+
+In your `actions` array:
+```json
+{
+  "type": "append_file",
+  "path": "decisions.md",
+  "content": "\\n---\\n**[YYYY-MM-DD] Decision by @your_agent_id**\\nWhat was decided: ...\\nWhy: ...\\nImpact on project: ...\\nAlternatives considered: ...\\n"
+}
+```
+
+Also mention the decision in `chat_update`:
+```
+"Decision made: [brief summary]. Logged to decisions.md. @owner informed."
+```
+
+---
+
+## Entry Template
+
+```
+---
+**[YYYY-MM-DD HH:MM UTC] Decision by @agent_id**
+What was decided: <clear statement of the decision>
+Why: <rationale — what drove this choice>
+Impact on project: <what changes as a result>
+Alternatives considered: <other options that were rejected and why>
+Owner approved: <yes / no / pending>
+---
+```
+
+---
+
+## Log
+
+*(No decisions recorded yet.)*
+
+---
+
+## Types of Decisions to Log
+
+- Architecture or technology choices
+- Scope changes (in-scope vs out-of-scope)
+- Agent role changes or re-delegation
+- Timeline or priority changes
+- Any decision that would be confusing without context later
+""".strip() + "\n"
+
+
+def _context_seed_markdown(*, title: str, brief: str, goal: str, hivee_api_base: str = "") -> str:
+    base = (hivee_api_base or "").rstrip("/")
+    return f"""# Project Context
+> **Written and maintained by the primary agent.** This is a living document.
+> Update this file whenever significant new understanding, decisions, or constraints emerge.
+> Use `actions: write_file` with path `context.md` to update.
+> Read this file at the start of every session: `GET {base}/files/context.md`
+
+**Status:** seed — pending primary agent enrichment after reading `setup-chat.md`
+
+---
+
+## Project Overview
+
+**Title:** {title or "—"}
+
+**Brief:**
+{brief.strip() or "*(to be filled by primary agent after reading setup-chat.md)*"}
+
+**Goal:**
+{goal.strip() or "*(to be filled by primary agent after reading setup-chat.md)*"}
+
+---
+
+## Requirements
+
+*(Primary agent: read `setup-chat.md` and extract all functional and non-functional requirements here)*
+
+### Functional Requirements
+- (what the project must do)
+
+### Non-Functional Requirements
+- Performance:
+- Security:
+- Scalability:
+- Compatibility:
+
+---
+
+## Constraints
+
+| Type | Constraint |
+|---|---|
+| Timeline | *(extract from setup-chat.md)* |
+| Budget | *(extract from setup-chat.md)* |
+| Technology | *(extract from setup-chat.md)* |
+| Compliance / Legal | *(extract from setup-chat.md)* |
+
+---
+
+## Scope
+
+**In Scope:**
+- *(extract from setup-chat.md)*
+
+**Out of Scope:**
+- *(extract from setup-chat.md)*
+
+---
+
+## Assumptions
+
+*(List every assumption made where the user did not provide explicit information)*
+- *(assumption 1)*
+
+---
+
+## Open Questions
+
+*(List unresolved questions that need owner input)*
+- *(question 1 — mention `@owner` in chat to get answer)*
+
+---
+
+## Team Responsibilities
+
+*(Primary agent: read agents.md and summarize who owns what area of the project)*
+
+| Agent | Responsibility |
+|---|---|
+| *(read agents.md)* | *(summarize role)* |
+
+---
+
+## Key Decisions
+
+See `decisions.md` for the full log. Summary of major decisions:
+- *(add key decision summaries here as they are made)*
+
+---
+
+## Technical Context
+
+*(Architecture, stack, tools, integrations — fill in after reading setup-chat.md)*
+
+---
+
+## How to Update This File
+
+In your `actions` array:
+```json
+{{"type": "write_file", "path": "context.md", "content": "<full updated content>"}}
+```
+
+After updating, post to chat:
+```
+"Updated context.md with [what changed]. @owner please review if significant scope changes."
+```
+""".strip() + "\n"
+
+
+def _setup_chat_markdown(*, transcript_text: str) -> str:
+    return f"""# Setup Chat History
+> **Immutable.** This is the verbatim original conversation between the owner and the setup agent.
+> This file is the authoritative source of the project's original requirements and intent.
+> Do not edit. Do not delete. Reference it to understand what the owner originally asked for.
+
+---
+
+## How to Use This File
+
+- **Primary agent:** Read this file first when generating `context.md` and `plan.md`.
+  Extract: goals, requirements, constraints, scope, timeline, stack, and any open questions.
+- **All agents:** Reference this file when there is ambiguity about the project intent.
+- If information here conflicts with a later decision in `decisions.md`, the newer decision takes precedence.
+
+---
+
+## Original Setup Conversation
+
+{transcript_text.strip() or "*(No setup chat history was captured for this project.)*"}
+""".strip() + "\n"
+
 
 def _setup_details_markdown(setup_details: Dict[str, Any]) -> str:
     if not setup_details:
@@ -485,6 +1376,59 @@ def _create_project_chat_message(
         created_at=ts,
     )
     return _project_chat_message_payload_from_row(row, mentions=normalized_mentions)
+
+
+async def _dispatch_chat_mention_to_connector(
+    project_id: str,
+    mention_target: str,
+    message_text: str,
+    *,
+    from_agent_id: str = "hivee",
+    from_label: str = "Hivee",
+    hivee_api_base: str = "",
+) -> None:
+    """Forward a @mention to the mentioned agent's connector (fire-and-forget).
+    Skips 'owner' mentions (those are for humans, not agent connectors).
+    """
+    import asyncio
+    from services.connector_dispatch import get_project_connector, connector_chat_sync
+
+    target = str(mention_target or "").strip().lstrip("@")
+    if not target or target in ("owner", "user"):
+        return  # Human-directed mentions don't go to connectors
+
+    connector = get_project_connector(project_id)
+    if not connector:
+        return  # No connector configured for this project
+
+    connector_id = str(connector.get("id") or "").strip()
+    if not connector_id:
+        return
+
+    # Build a notification message to deliver to the mentioned agent
+    notification = (
+        f"[MENTION from @{from_agent_id}]\n\n"
+        f"{message_text}\n\n"
+        f"---\n"
+        f"This message was addressed to you (@{target}) in the project chat. "
+        f"Respond via `post_chat_message` action if action is needed."
+    )
+
+    try:
+        await connector_chat_sync(
+            connector_id=connector_id,
+            message=notification,
+            agent_id=target,
+            session_key=f"{project_id}:mention",
+            timeout_sec=30,
+            from_agent_id=from_agent_id,
+            from_label=from_label,
+            context_type="mention",
+            project_id=project_id,
+            hivee_api_base=hivee_api_base,
+        )
+    except Exception as exc:
+        print(f"[mention_dispatch] Failed to dispatch @{target} in project {project_id}: {exc}", flush=True)
 
 
 def _list_project_chat_messages(
@@ -1350,6 +2294,8 @@ def _refresh_project_documents(project_id: str) -> None:
             str(row["brief"] or ""),
             str(row["goal"] or ""),
             setup_details=_normalize_setup_details(_parse_setup_json(row["setup_json"])),
+            project_id=str(row["id"] or ""),
+            hivee_api_base=_get_hivee_api_base(str(row["id"] or "")),
         )
     except Exception:
         pass
@@ -1475,6 +2421,8 @@ def _initialize_project_folder(
     *,
     setup_details: Optional[Dict[str, Any]] = None,
     setup_chat_history_text: Optional[str] = None,
+    project_id: str = "",
+    hivee_api_base: str = "",
 ) -> None:
     project_dir.mkdir(parents=True, exist_ok=True)
     info_dir = _project_info_dir(project_dir)
@@ -1486,82 +2434,105 @@ def _initialize_project_folder(
     info_dir.mkdir(parents=True, exist_ok=True)
     meta_dir.mkdir(parents=True, exist_ok=True)
     (meta_dir / Path(PROJECT_CHECKPOINTS_DIR).name).mkdir(parents=True, exist_ok=True)
-    (project_dir / "agents").mkdir(parents=True, exist_ok=True)
     (project_dir / USER_OUTPUTS_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (project_dir / USER_OUTPUTS_DIRNAME / HANDOFFS_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (project_dir / REFERENCE_DIRNAME).mkdir(parents=True, exist_ok=True)
     (project_dir / "logs").mkdir(parents=True, exist_ok=True)
+
     details = _normalize_setup_details(setup_details or {})
+
+    # protocol.md — universal rules, always overwrite to keep up to date
+    (project_dir / PROTOCOL_FILE).write_text(_protocol_markdown(), encoding="utf-8")
+
+    # context.md — seed only, agent will replace
+    context_file = project_dir / CONTEXT_FILE
+    if not context_file.exists():
+        context_file.write_text(
+            _context_seed_markdown(title=title, brief=brief, goal=goal, hivee_api_base=hivee_api_base),
+            encoding="utf-8",
+        )
+
+    # setup-chat.md — immutable transcript
+    explicit_history_text = str(setup_chat_history_text or "").replace("\r", "").strip()
+    if not explicit_history_text:
+        explicit_history_text = _fallback_setup_chat_history_text(details)
+    (project_dir / SETUP_CHAT_MD_FILE).write_text(
+        _setup_chat_markdown(transcript_text=explicit_history_text), encoding="utf-8"
+    )
+
+    # decisions.md — append-only log, seed only
+    decisions_file = project_dir / DECISIONS_MD_FILE
+    if not decisions_file.exists():
+        decisions_file.write_text(_decisions_markdown(), encoding="utf-8")
+
+    # credentials.md — seed only (no secrets yet)
+    creds_file = project_dir / CREDENTIALS_FILE
+    if not creds_file.exists():
+        creds_file.write_text(
+            _credentials_markdown(project_id=project_id, hivee_api_base=hivee_api_base),
+            encoding="utf-8",
+        )
+
+    # state.md — Hivee maintains, seed here
+    state_file = project_dir / STATE_FILE
+    if not state_file.exists():
+        state_file.write_text(
+            _state_markdown(
+                phase="setup",
+                plan_status=PLAN_STATUS_PENDING,
+                execution_status=EXEC_STATUS_IDLE,
+                progress_pct=0,
+                hivee_api_base=hivee_api_base,
+            ),
+            encoding="utf-8",
+        )
+
+    # agents.md — seed, will be rewritten by _write_project_agents_file
+    agents_file = project_dir / AGENTS_FILE
+    if not agents_file.exists():
+        agents_file.write_text(
+            _agents_markdown(project_id=project_id, hivee_api_base=hivee_api_base),
+            encoding="utf-8",
+        )
+
+    # Legacy Project Info dir files — keep for backward compat with existing sessions
     readme = info_dir / "README.md"
     readme.write_text(
-        _project_readme_markdown(
-            title=title,
-            brief=brief,
-            goal=goal,
-            setup_details=details,
-        ),
+        _project_readme_markdown(title=title, brief=brief, goal=goal, setup_details=details),
         encoding="utf-8",
     )
-    brief_file = info_dir / "brief.md"
-    brief_file.write_text(
-        _project_brief_markdown(brief=brief, setup_details=details),
-        encoding="utf-8",
+    (info_dir / "brief.md").write_text(
+        _project_brief_markdown(brief=brief, setup_details=details), encoding="utf-8"
     )
-    goal_file = info_dir / "goal.md"
-    goal_file.write_text(goal.strip() + "\n", encoding="utf-8")
-    setup_file = info_dir / "project-setup.md"
-    setup_file.write_text(_setup_details_markdown(details), encoding="utf-8")
-    protocol_file = info_dir / "project-protocol.md"
-    if not protocol_file.exists():
-        protocol_file.write_text(
-            _project_protocol_markdown(title=title, brief=brief, goal=goal),
-            encoding="utf-8",
-        )
-    explicit_history_text = str(setup_chat_history_text or "").replace("\r", "").strip()
-    history_text = explicit_history_text
-    if not history_text:
-        history_text = _fallback_setup_chat_history_text(details)
+    (info_dir / "goal.md").write_text(goal.strip() + "\n", encoding="utf-8")
+    (info_dir / "project-setup.md").write_text(_setup_details_markdown(details), encoding="utf-8")
+    protocol_legacy = info_dir / "project-protocol.md"
+    if not protocol_legacy.exists():
+        protocol_legacy.write_text(_protocol_markdown(), encoding="utf-8")
+
+    # Legacy setup chat history
     history_file = info_dir / "setup-chat-history.txt"
     history_compat_file = info_dir / "SETUP-CHAT.txt"
-    if explicit_history_text:
-        payload = history_text.strip() + "\n"
-        history_file.write_text(payload, encoding="utf-8")
-        history_compat_file.write_text(payload, encoding="utf-8")
-    else:
-        if history_text and (not history_file.exists()):
-            history_file.write_text(history_text.strip() + "\n", encoding="utf-8")
-        if not history_file.exists():
-            history_file.write_text("No setup chat history captured.\n", encoding="utf-8")
-        if not history_compat_file.exists():
-            try:
-                history_compat_file.write_text(history_file.read_text(encoding="utf-8"), encoding="utf-8")
-            except Exception:
-                history_compat_file.write_text("No setup chat history captured.\n", encoding="utf-8")
+    payload = explicit_history_text.strip() + "\n" if explicit_history_text else "No setup chat history captured.\n"
+    history_file.write_text(payload, encoding="utf-8")
+    history_compat_file.write_text(payload, encoding="utf-8")
+
+    # Legacy PROJECT-INFO.MD seed
     project_info = info_dir / "PROJECT-INFO.MD"
     if not project_info.exists():
-        project_info.write_text(
-            _seed_project_info_markdown(title=title, brief=brief, goal=goal),
-            encoding="utf-8",
-        )
-    agent_roles = project_dir / "agents" / "ROLES.md"
-    if not agent_roles.exists():
-        agent_roles.write_text(
-            "# Agent Roles\n\nDefine each invited agent role for this project.\n",
-            encoding="utf-8",
-        )
-    chat_file = info_dir / "chat-hivee.md"
-    if not chat_file.exists():
-        chat_file.write_text(
-            "# Chat Hivee\n\nDaily conversation and event logs are saved in `logs/YYYY-MM-DD-chat.md` and `logs/YYYY-MM-DD-events.jsonl`.\n",
-            encoding="utf-8",
-        )
-    history_file = meta_dir / Path(PROJECT_HISTORY_FILE).name
-    if not history_file.exists():
-        history_file.touch()
-    decisions_file = meta_dir / Path(PROJECT_DECISIONS_FILE).name
-    if not decisions_file.exists():
-        decisions_file.touch()
-    handoff_file = meta_dir / Path(PROJECT_HANDOFF_FILE).name
-    if not handoff_file.exists():
-        handoff_file.write_text("# Handoff\n\nNo handoff summary generated yet.\n", encoding="utf-8")
+        project_info.write_text(_seed_project_info_markdown(title=title, brief=brief, goal=goal), encoding="utf-8")
+
+    # Meta files
+    history_meta = meta_dir / Path(PROJECT_HISTORY_FILE).name
+    if not history_meta.exists():
+        history_meta.touch()
+    decisions_meta = meta_dir / Path(PROJECT_DECISIONS_FILE).name
+    if not decisions_meta.exists():
+        decisions_meta.touch()
+    handoff_meta = meta_dir / Path(PROJECT_HANDOFF_FILE).name
+    if not handoff_meta.exists():
+        handoff_meta.write_text("# Handoff\n\nNo handoff summary generated yet.\n", encoding="utf-8")
+
     for legacy in _legacy_project_doc_paths(project_dir):
         if not legacy.exists():
             continue
@@ -1640,55 +2611,58 @@ def _plan_prompt_from_project(
 
 def _delegate_prompt_from_project(
     *,
-    title: str,
-    brief: str,
-    goal: str,
-    setup_details: Dict[str, Any],
+    project_id: str,
     role_rows: List[Dict[str, Any]],
-    plan_text: str,
-    project_root: Optional[str] = None,
-    project_info_excerpt: str = "",
+    agent_token: str,
+    hivee_api_base: str,
 ) -> str:
-    context = _project_context_instruction(
-        title=title,
-        brief=brief,
-        goal=goal,
-        setup_details=setup_details,
-        role_rows=role_rows,
-        project_root=project_root,
-        plan_status=PLAN_STATUS_APPROVED,
-    )
-    roster_text = _agent_roster_markdown(role_rows)
     roster = []
     for row in role_rows:
         aid = str(row.get("agent_id") or "").strip()
+        name = str(row.get("agent_name") or aid).strip()
         role = str(row.get("role") or "").strip()
+        primary = bool(row.get("is_primary"))
         if aid:
-            roster.append({"agent_id": aid, "role": role})
-    return (
-        f"{context}\n\n"
-        f"{roster_text}\n\n"
-        f"Plan approved by user. Read `{PROJECT_INFO_FILE}` and `{PROJECT_PROTOCOL_FILE}` first, then delegate tasks into Markdown documents.\n"
-        "Return JSON object only:\n"
+            roster.append({"agent_id": aid, "agent_name": name, "role": role, "is_primary": primary})
+
+    task = (
+        "Plan has been approved by user. Your job now:\n\n"
+        "1. Read `plan.md` from Hivee storage to get the full approved plan.\n"
+        "2. Read `agents.md` to get the exact `@agent_id` for each team member.\n"
+        "3. Break the plan into concrete tasks per agent. For each task:\n"
+        "   - Clear title and description\n"
+        "   - Which agent is responsible\n"
+        "   - Prerequisites and start trigger\n"
+        "   - Expected output files\n"
+        "   - Handoff trigger: who to @mention when done\n"
+        "   - Pit-stop: what user approval is needed (if any)\n"
+        "4. Save the full delegation doc to `delegation.md` via output_files.\n"
+        "5. Create a task card in Hivee for EACH task via actions (create_task).\n"
+        "6. Post ONE chat message per agent via actions (post_chat_message) with @mention "
+        "so they know their tasks are ready — e.g. '@design_agent your tasks are assigned, check delegation.md'.\n"
+        "7. Post a final summary to @owner: how many tasks created, who does what, what needs approval.\n"
+        "8. If any task has a blocker or missing credential, create it with status=blocked "
+        "and include the blocker in the description.\n\n"
+        "Return JSON:\n"
         "{\n"
-        "  \"project_delegation_md\": \"...\",\n"
-        "  \"agent_tasks\": [{\"agent_id\":\"...\",\"task_md\":\"...\"}],\n"
-        "  \"notes\": \"...\"\n"
-        "}\n"
-        "Rules:\n"
-        "- Use only invited agent IDs.\n"
-        "- task_md should be concrete next actions + expected outputs + dependencies.\n"
-        "- Every task_md must explicitly state `Responsible Agent: <agent_id>` using the same invited ID.\n"
-        "- Every dependency handoff must include `Trigger Mention: @<agent_id>` for the next responsible agent.\n"
-        "- Each task_md must include: prerequisites, start trigger, handoff trigger with @agent_id, expected files, and pit-stop approval gates.\n"
-        f"- `project_delegation_md` should become `{PROJECT_DELEGATION_FILE}` and must summarize approved plan, sequencing, and coordination protocol.\n"
-        "- Include an execution order showing which agent must finish first and what event triggers the next agent.\n"
-        "- If an agent reaches a pit stop or missing credential, they must return requires_user_input=true with pause_reason and resume_hint.\n"
-        "- Every deliverable/handoff artifact must be persisted into Hivee project files, not only on provider/local runtime server.\n"
-        "- If user chooses to skip missing details, primary agent can decide assumptions and continue; record assumptions.\n"
-        f"Invited agents: {json.dumps(roster, ensure_ascii=False)}\n"
-        f"Approved plan:\n{(plan_text or '').strip()[:MAX_TEMPLATE_PAYLOAD_BYTES]}\n"
-        + (f"\n{PROJECT_INFO_FILE} excerpt:\n{project_info_excerpt[:5000]}\n" if str(project_info_excerpt).strip() else "")
+        "  \"chat_update\": \"Summary for @owner...\",\n"
+        "  \"output_files\": [{\"path\": \"delegation.md\", \"content\": \"...\", \"append\": false}],\n"
+        "  \"actions\": [\n"
+        "    {\"type\": \"write_file\", \"path\": \"delegation.md\", \"content\": \"...\"},\n"
+        "    {\"type\": \"create_task\", \"title\": \"...\", \"description\": \"...\", "
+        "\"assignee_agent_id\": \"...\", \"status\": \"todo\", \"priority\": \"high\"},\n"
+        "    {\"type\": \"post_chat_message\", \"text\": \"@agent_id your tasks are assigned...\", "
+        "\"mentions\": [\"agent_id\"]},\n"
+        "    ...\n"
+        "  ]\n"
+        "}\n\n"
+        f"Invited agents: {json.dumps(roster, ensure_ascii=False)}"
+    )
+    return _build_fundamentals_session_prompt(
+        task=task,
+        project_id=project_id,
+        agent_token=agent_token,
+        hivee_api_base=hivee_api_base,
     )
 
 def _project_agent_rows(conn: sqlite3.Connection, project_id: str) -> List[Dict[str, Any]]:
@@ -1697,6 +2671,14 @@ def _project_agent_rows(conn: sqlite3.Connection, project_id: str) -> List[Dict[
         (project_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _project_agent_rows_from_id(project_id: str) -> List[Dict[str, Any]]:
+    conn = db()
+    try:
+        return _project_agent_rows(conn, project_id)
+    finally:
+        conn.close()
 
 def _parse_delegation_payload(text: str) -> Dict[str, Any]:
     parsed = _extract_json_object(text or "")
@@ -3996,6 +4978,144 @@ def _workspace_policy_lines(workspace_root: str, project_root: Optional[str] = N
         )
     lines.append("- If permission is needed, ask a clear question first and wait for confirmation.")
     return lines
+
+def _build_fundamentals_session_prompt(
+    *,
+    task: str,
+    project_id: str,
+    agent_token: str,
+    hivee_api_base: str,
+) -> str:
+    """
+    Minimal session injection: token + fundamentals URL + task.
+    Agent fetches all context it needs from fundamentals.md on-demand.
+    """
+    fundamentals_url = f"{hivee_api_base.rstrip('/')}/files/{FUNDAMENTALS_FILE}"
+    return (
+        f"hivee_project_token: {agent_token}\n"
+        f"fundamentals: GET {fundamentals_url}\n"
+        f"  (Authorization: Bearer {agent_token})\n\n"
+        f"Task:\n{task.strip()}"
+    )
+
+
+def _write_project_agents_file(
+    project_dir: Path,
+    role_rows: List[Dict[str, Any]],
+    *,
+    project_id: str = "",
+    hivee_api_base: str = "",
+) -> None:
+    agents_file = project_dir / AGENTS_FILE
+    agents_file.write_text(
+        _agents_markdown(role_rows, project_id=project_id, hivee_api_base=hivee_api_base),
+        encoding="utf-8",
+    )
+
+
+def _write_project_state_file(
+    project_dir: Path,
+    *,
+    phase: str,
+    plan_status: str,
+    execution_status: str,
+    progress_pct: int = 0,
+    agents: Optional[List[Dict[str, Any]]] = None,
+    pending_inputs: Optional[List[str]] = None,
+    hivee_api_base: str = "",
+) -> None:
+    state_file = project_dir / STATE_FILE
+    state_file.write_text(
+        _state_markdown(
+            phase=phase,
+            plan_status=plan_status,
+            execution_status=execution_status,
+            progress_pct=progress_pct,
+            agents=agents,
+            pending_inputs=pending_inputs,
+            hivee_api_base=hivee_api_base,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_project_fundamentals_file(
+    project_dir: Path,
+    *,
+    project_id: str,
+    title: str,
+    phase: str,
+    plan_status: str,
+    execution_status: str,
+    hivee_api_base: str,
+    role_rows: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    fundamentals_file = project_dir / FUNDAMENTALS_FILE
+    fundamentals_file.write_text(
+        _fundamentals_markdown(
+            project_id=project_id,
+            title=title,
+            phase=phase,
+            plan_status=plan_status,
+            execution_status=execution_status,
+            hivee_api_base=hivee_api_base,
+            role_rows=role_rows,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_project_scope_file(
+    project_dir: Path,
+    *,
+    agent_id: str,
+    agent_name: str,
+    is_primary: bool,
+    write_paths: Optional[List[str]] = None,
+    hivee_api_base: str = "",
+    project_id: str = "",
+) -> None:
+    scope_file = project_dir / SCOPE_FILE
+    scope_file.write_text(
+        _scope_markdown(
+            agent_id=agent_id,
+            agent_name=agent_name,
+            is_primary=is_primary,
+            write_paths=write_paths,
+            hivee_api_base=hivee_api_base,
+            project_id=project_id,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _get_hivee_api_base(project_id: str) -> str:
+    base = str(os.environ.get("HIVEE_PUBLIC_URL") or "").rstrip("/")
+    if not base:
+        base = "http://localhost:8000"
+    return f"{base}/api/projects/{project_id}"
+
+
+def _issue_agent_session_token(project_id: str, agent_id: str) -> str:
+    """Generate a fresh plaintext token for an agent session, upsert hash into DB, return plaintext."""
+    raw_token = _new_agent_access_token()
+    conn = db()
+    try:
+        conn.execute(
+            """
+            INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, created_at)
+            VALUES (?,?,?,?)
+            ON CONFLICT(project_id, agent_id) DO UPDATE SET
+                token_hash = excluded.token_hash,
+                created_at = excluded.created_at
+            """,
+            (project_id, agent_id, _hash_access_token(raw_token), int(time.time())),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return raw_token
+
 
 def _compose_guardrailed_message(
     user_message: str,

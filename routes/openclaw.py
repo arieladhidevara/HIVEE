@@ -522,14 +522,21 @@ def register_routes(app: FastAPI) -> None:
         if not effective_agent_id:
             raise HTTPException(400, "Main workspace agent is not configured. Re-run OpenClaw bootstrap.")
         scoped_message = _compose_guardrailed_message(payload.message.strip(), workspace_root=workspace_root)
-        res = await openclaw_chat(
-            row["base_url"],
-            connection_api_key,
-            scoped_message,
-            effective_agent_id,
-            max_output_tokens=SAFE_PROVIDER_MAX_OUTPUT_TOKENS,
-            user_id=user_id,
-        )
+        from services.connector_dispatch import connector_chat_sync as _connector_chat_sync_ws, get_user_online_connector as _get_oc_ws
+        online_ws_connector = _get_oc_ws(user_id)
+        if online_ws_connector:
+            res = await _connector_chat_sync_ws(
+                connector_id=str(online_ws_connector["id"]),
+                message=scoped_message,
+                agent_id=effective_agent_id,
+                session_key="workspace-chat",
+                timeout_sec=90,
+                from_agent_id="hivee",
+                from_label="Hivee Workspace",
+                context_type="message",
+            )
+        else:
+            raise HTTPException(400, "No connector available. Connect a Hivee Connector to use workspace chat.")
         if not res.get("ok"):
             raise HTTPException(400, res)
         res["resolved_agent_id"] = effective_agent_id
@@ -825,23 +832,23 @@ def register_routes(app: FastAPI) -> None:
             task_instruction=project_instruction,
         )
         if connector_row:
-            res = await _connector_chat_sync(
-                connector_id=connection_id,
-                message=scoped_message,
-                agent_id=effective_agent_id,
-                session_key=session_key,
-                timeout_sec=payload.timeout_sec,
-            )
+            resolved_rt_connector_id = connection_id
         else:
-            res = await openclaw_ws_chat(
-                base_url=row["base_url"],
-                api_key=connection_api_key,
-                message=scoped_message,
-                agent_id=effective_agent_id,
-                session_key=session_key,
-                timeout_sec=payload.timeout_sec,
-                user_id=user_id,
-            )
+            from services.connector_dispatch import get_user_online_connector as _get_rt_oc
+            online_rt = _get_rt_oc(user_id)
+            if not online_rt:
+                raise HTTPException(400, "No connector available. Connect a Hivee Connector to use agent chat.")
+            resolved_rt_connector_id = str(online_rt["id"])
+        res = await _connector_chat_sync(
+            connector_id=resolved_rt_connector_id,
+            message=scoped_message,
+            agent_id=effective_agent_id,
+            session_key=session_key,
+            timeout_sec=payload.timeout_sec,
+            from_agent_id="hivee",
+            from_label="Hivee Runtime",
+            context_type="message",
+        )
         if not res.get("ok"):
             if project_scope:
                 _append_project_daily_log(
@@ -912,23 +919,16 @@ def register_routes(app: FastAPI) -> None:
                     user_message=payload.message,
                     previous_response=raw_agent_text,
                 )
-                if connector_row:
-                    followup_res = await _connector_chat_sync(
-                        connector_id=connection_id,
-                        message=followup_prompt,
-                        agent_id=effective_agent_id,
-                        session_key=session_key,
-                        timeout_sec=max(10, min(payload.timeout_sec, 60)),
-                    )
-                else:
-                    followup_res = await openclaw_ws_chat(
-                        base_url=row["base_url"],
-                        api_key=connection_api_key,
-                        message=followup_prompt,
-                        agent_id=effective_agent_id,
-                        session_key=session_key,
-                        timeout_sec=max(10, min(payload.timeout_sec, 60)),
-                    )
+                followup_res = await _connector_chat_sync(
+                    connector_id=resolved_rt_connector_id,
+                    message=followup_prompt,
+                    agent_id=effective_agent_id,
+                    session_key=session_key,
+                    timeout_sec=max(10, min(payload.timeout_sec, 60)),
+                    from_agent_id="hivee",
+                    from_label="Hivee Runtime",
+                    context_type="message",
+                )
                 if followup_res.get("ok"):
                     followup_text = str(followup_res.get("text") or "").strip()
                     followup_parsed = _extract_agent_report_payload(followup_text)
@@ -1003,23 +1003,16 @@ def register_routes(app: FastAPI) -> None:
                     task_text=payload.message,
                     previous_response=raw_agent_text,
                 )
-                if connector_row:
-                    rescue_res = await _connector_chat_sync(
-                        connector_id=connection_id,
-                        message=rescue_prompt,
-                        agent_id=effective_agent_id,
-                        session_key=session_key,
-                        timeout_sec=max(10, min(payload.timeout_sec, 60)),
-                    )
-                else:
-                    rescue_res = await openclaw_ws_chat(
-                        base_url=row["base_url"],
-                        api_key=connection_api_key,
-                        message=rescue_prompt,
-                        agent_id=effective_agent_id,
-                        session_key=session_key,
-                        timeout_sec=max(10, min(payload.timeout_sec, 60)),
-                    )
+                rescue_res = await _connector_chat_sync(
+                    connector_id=resolved_rt_connector_id,
+                    message=rescue_prompt,
+                    agent_id=effective_agent_id,
+                    session_key=session_key,
+                    timeout_sec=max(10, min(payload.timeout_sec, 60)),
+                    from_agent_id="hivee",
+                    from_label="Hivee Runtime",
+                    context_type="message",
+                )
                 if rescue_res.get("ok"):
                     rescue_text = str(rescue_res.get("text") or "").strip()
                     rescue_parsed = _extract_agent_report_payload(rescue_text)
@@ -1247,6 +1240,15 @@ def register_routes(app: FastAPI) -> None:
                             "created_at": int(auto_chat_message.get("created_at") or 0),
                         },
                     )
+                    # Route @mention to the mentioned agent's connector
+                    import asyncio
+                    asyncio.ensure_future(_dispatch_chat_mention_to_connector(
+                        project_id=session_key,
+                        mention_target=target,
+                        message_text=str(auto_chat_message.get("text") or "")[:500],
+                        from_agent_id=str(auto_chat_message.get("author_id") or "agent"),
+                        from_label=str(auto_chat_message.get("author_label") or "Agent"),
+                    ))
             await emit(
                 session_key,
                 "agent.chat.update",
@@ -1281,6 +1283,16 @@ def register_routes(app: FastAPI) -> None:
                     extra_event_payload = extra.get("event_payload") if isinstance(extra.get("event_payload"), dict) else {}
                     if extra_event_name:
                         await emit(session_key, extra_event_name, extra_event_payload)
+                    # Route @mentions to the mentioned agent's connector
+                    if extra_event_name == "project.chat.mention" and isinstance(extra_event_payload, dict):
+                        import asyncio
+                        asyncio.ensure_future(_dispatch_chat_mention_to_connector(
+                            project_id=session_key,
+                            mention_target=str(extra_event_payload.get("target") or ""),
+                            message_text=str(extra_event_payload.get("text") or ""),
+                            from_agent_id=str(extra_event_payload.get("author_id") or extra_event_payload.get("author_label") or "agent"),
+                            from_label=str(extra_event_payload.get("author_label") or "Agent"),
+                        ))
             if saved_writes:
                 await emit(
                     session_key,

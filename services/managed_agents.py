@@ -1667,33 +1667,44 @@ async def _project_chat(
     session_key: str = "main",
     timeout_sec: int = 120,
     user_id: Optional[str] = None,
+    from_agent_id: Optional[str] = None,
+    from_label: Optional[str] = None,
+    context_type: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Route a project chat to either connector or direct OpenClaw based on backend_mode."""
+    """Route a project chat exclusively through connector. Direct OpenClaw is not supported."""
     from services.connector_dispatch import connector_chat_sync
-    try:
-        backend_mode = str(row["backend_mode"] or "direct_openclaw")
-    except Exception:
-        backend_mode = "direct_openclaw"
     try:
         connector_id = str(row["connector_id"] or "").strip()
     except Exception:
         connector_id = ""
-    if backend_mode == "connector" and connector_id:
-        return await connector_chat_sync(
-            connector_id=connector_id,
-            message=message,
-            agent_id=agent_id,
-            session_key=session_key,
-            timeout_sec=timeout_sec,
-        )
-    return await openclaw_ws_chat(
-        base_url=str(row["base_url"] or ""),
-        api_key=connection_api_key,
+    if not connector_id:
+        # Try connection_id as connector fallback
+        try:
+            connector_id = str(row["connection_id"] or "").strip()
+        except Exception:
+            connector_id = ""
+    if not connector_id:
+        return {
+            "ok": False,
+            "error": "No connector configured for this project. All agent communication requires a connector.",
+            "transport": "none",
+        }
+    try:
+        project_id = str(row["id"] or "").strip()
+    except Exception:
+        project_id = ""
+    hivee_api_base = _get_hivee_api_base(project_id) if project_id else ""
+    return await connector_chat_sync(
+        connector_id=connector_id,
         message=message,
         agent_id=agent_id,
         session_key=session_key,
         timeout_sec=timeout_sec,
-        user_id=str(user_id or ""),
+        from_agent_id=from_agent_id or "hivee",
+        from_label=from_label or "Hivee",
+        context_type=context_type or "message",
+        project_id=project_id,
+        hivee_api_base=hivee_api_base,
     )
 async def _ensure_project_info_document(project_id: str, *, force: bool = False) -> Dict[str, Any]:
     conn = db()
@@ -1740,6 +1751,8 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         str(row["brief"] or ""),
         str(row["goal"] or ""),
         setup_details=setup_details,
+        project_id=str(row["id"] or ""),
+        hivee_api_base=_get_hivee_api_base(str(row["id"] or "")),
     )
     info_path = project_dir / PROJECT_INFO_FILE
     existing_info = ""
@@ -1805,6 +1818,9 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         session_key=f"{project_id}:project-info",
         timeout_sec=120,
         user_id=str(row["user_id"] or ""),
+        from_agent_id="hivee",
+        from_label="Hivee System",
+        context_type="control",
     )
     p_tokens, c_tokens, _ = _extract_usage_counts(res)
     if p_tokens <= 0:
@@ -1967,35 +1983,21 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
     if not primary_agent_id:
         primary_agent_id = str(row["main_agent_id"] or "").strip() or None
 
-    info_result = await _ensure_project_info_document(project_id, force=force)
-    project_info_excerpt = str(info_result.get("text") or "").strip()[:10_000]
-    instruction = _plan_prompt_from_project(
-        title=str(row["title"] or ""),
-        brief=str(row["brief"] or ""),
-        goal=str(row["goal"] or ""),
-        setup_details=setup_details,
-        role_rows=role_rows,
-        project_root=str(row["project_root"] or ""),
-        project_info_excerpt=project_info_excerpt,
+    hivee_api_base = _get_hivee_api_base(project_id)
+    agent_token = _issue_agent_session_token(project_id, primary_agent_id or "")
+    task = (
+        f"Read fundamentals.md first, then context.md and setup-chat.md.\n"
+        f"Build a complete project plan and write it to `plan.md`.\n"
+        f"Include: milestones, deliverables, agent dependencies, handoff triggers, pit-stop approval gates.\n"
+        f"End your chat_update with: WAITING FOR USER APPROVAL.\n"
+        f"Post your status to chat (@owner) at start and when done."
     )
-    plan_file_context = _build_project_file_context(
-        owner_user_id=str(row["user_id"]),
-        project_root=str(row["project_root"] or ""),
-        include_paths=[
-            PROJECT_INFO_FILE,
-            OVERVIEW_FILE,
-            PROJECT_SETUP_FILE,
-            PROJECT_PROTOCOL_FILE,
-            "agents/ROLES.md",
-            SETUP_CHAT_HISTORY_FILE,
-            SETUP_CHAT_HISTORY_COMPAT_FILE,
-        ],
-        request_text=f"{str(row['brief'] or '')}\n{str(row['goal'] or '')}",
-        max_total_chars=7_000,
-        max_files=8,
+    instruction = _build_fundamentals_session_prompt(
+        task=task,
+        project_id=project_id,
+        agent_token=agent_token,
+        hivee_api_base=hivee_api_base,
     )
-    if plan_file_context:
-        instruction = f"{instruction}\n\n{plan_file_context}"
     res = await _project_chat(
         row,
         connection_api_key,
@@ -2004,6 +2006,9 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         session_key=f"{project_id}:plan",
         timeout_sec=120,
         user_id=str(row["user_id"] or ""),
+        from_agent_id="hivee",
+        from_label="Hivee System",
+        context_type="plan_generation",
     )
     prompt_tokens, completion_tokens, _ = _extract_usage_counts(res)
     if prompt_tokens <= 0:
@@ -2041,6 +2046,32 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
     )
     conn.commit()
     conn.close()
+
+    # Save plan.md to project folder
+    try:
+        project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
+        plan_md_content = f"# Project Plan\n> Generated by primary agent. Awaiting user approval.\n\n{plan_text}"
+        (project_dir / "plan.md").write_text(plan_md_content, encoding="utf-8")
+        # Also keep legacy path in sync
+        (project_dir / PROJECT_PLAN_FILE).write_text(plan_md_content, encoding="utf-8")
+        # Post to chat so user sees plan is ready
+        _apply_project_actions(
+            owner_user_id=str(row["user_id"]),
+            project_id=project_id,
+            project_root=str(row["project_root"] or ""),
+            actions=[{
+                "type": "post_chat_message",
+                "text": f"@owner Plan is ready for your review. Saved to `plan.md`. Please approve or request changes.",
+                "mentions": ["owner"],
+            }],
+            allow_paths=None,
+            actor_type="project_agent",
+            actor_id=str(primary_agent_id or ""),
+            actor_label=f"agent:{primary_agent_id}",
+        )
+    except Exception:
+        pass
+
     _refresh_project_documents(project_id)
     _append_project_daily_log(
         owner_user_id=str(row["user_id"]),
@@ -2110,37 +2141,14 @@ async def _delegate_project_tasks(project_id: str) -> None:
     if not primary_agent_id:
         primary_agent_id = str(row["main_agent_id"] or "").strip() or None
 
-    info_result = await _ensure_project_info_document(project_id, force=False)
-    project_info_excerpt = str(info_result.get("text") or "").strip()[:10_000]
+    hivee_api_base = _get_hivee_api_base(project_id)
+    agent_token = _issue_agent_session_token(project_id, primary_agent_id or "")
     instruction = _delegate_prompt_from_project(
-        title=str(row["title"] or ""),
-        brief=str(row["brief"] or ""),
-        goal=str(row["goal"] or ""),
-        setup_details=setup_details,
+        project_id=project_id,
         role_rows=role_rows,
-        plan_text=str(row["plan_text"] or ""),
-        project_root=str(row["project_root"] or ""),
-        project_info_excerpt=project_info_excerpt,
+        agent_token=agent_token,
+        hivee_api_base=hivee_api_base,
     )
-    delegate_file_context = _build_project_file_context(
-        owner_user_id=str(row["user_id"]),
-        project_root=str(row["project_root"] or ""),
-        include_paths=[
-            PROJECT_INFO_FILE,
-            OVERVIEW_FILE,
-            PROJECT_PLAN_FILE,
-            PROJECT_SETUP_FILE,
-            PROJECT_PROTOCOL_FILE,
-            "agents/ROLES.md",
-            SETUP_CHAT_HISTORY_FILE,
-            SETUP_CHAT_HISTORY_COMPAT_FILE,
-        ],
-        request_text=str(row["plan_text"] or ""),
-        max_total_chars=8_000,
-        max_files=8,
-    )
-    if delegate_file_context:
-        instruction = f"{instruction}\n\n{delegate_file_context}"
     res = await _project_chat(
         row,
         connection_api_key,
@@ -2149,6 +2157,9 @@ async def _delegate_project_tasks(project_id: str) -> None:
         session_key=f"{project_id}:delegate",
         timeout_sec=120,
         user_id=str(row["user_id"] or ""),
+        from_agent_id="hivee",
+        from_label="Hivee System",
+        context_type="delegation",
     )
     prompt_tokens, completion_tokens, _ = _extract_usage_counts(res)
     if prompt_tokens <= 0:
@@ -2171,11 +2182,9 @@ async def _delegate_project_tasks(project_id: str) -> None:
 
     _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=55)
     primary_reply = str(res.get("text") or "").strip()
-    payload = _parse_delegation_payload(primary_reply)
+    parsed = _extract_agent_report_payload(primary_reply)
     by_id = {str(r.get("agent_id") or "").strip(): r for r in role_rows}
-    project_md = str(payload.get("project_delegation_md") or payload.get("project_md") or "").strip()
-    if not project_md:
-        project_md = str(row["plan_text"] or "").strip() or "Delegation initialized."
+
     if primary_reply:
         await emit(
             project_id,
@@ -2201,18 +2210,61 @@ async def _delegate_project_tasks(project_id: str) -> None:
         await emit(project_id, "project.delegation.failed", {"error": "Project directory unavailable"})
         return
     project_dir.mkdir(parents=True, exist_ok=True)
-    agents_dir = project_dir / "agents"
-    agents_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / USER_OUTPUTS_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (project_dir / USER_OUTPUTS_DIRNAME / HANDOFFS_DIRNAME).mkdir(parents=True, exist_ok=True)
 
-    (project_dir / PROJECT_DELEGATION_FILE).write_text(project_md + "\n", encoding="utf-8")
-    legacy_delegation = (project_dir / "project-delegation.md").resolve()
-    if _path_within(legacy_delegation, project_dir) and legacy_delegation.exists():
-        try:
-            legacy_delegation.unlink()
-        except Exception:
-            pass
-    assigned_count = 0
-    raw_tasks = payload.get("agent_tasks")
+    # Save delegation.md (new) + legacy PROJECT-DELEGATION.MD
+    output_files = parsed.get("output_files") if isinstance(parsed.get("output_files"), list) else []
+    delegation_content = ""
+    for f in output_files:
+        rel = str(f.get("path") or "").strip().lower()
+        if "delegation" in rel:
+            delegation_content = str(f.get("content") or "").strip()
+            break
+    if not delegation_content:
+        # Fallback: use chat_update as delegation summary
+        delegation_content = str(parsed.get("chat_update") or primary_reply or "Delegation initialized.").strip()
+    (project_dir / "delegation.md").write_text(f"# Delegation\n\n{delegation_content}\n", encoding="utf-8")
+    (project_dir / PROJECT_DELEGATION_FILE).write_text(f"# Delegation\n\n{delegation_content}\n", encoding="utf-8")
+
+    # Apply all actions from agent response: creates tasks, posts chat @mentions, writes files
+    actions_raw = parsed.get("actions") if isinstance(parsed.get("actions"), list) else []
+    if actions_raw:
+        action_result = _apply_project_actions(
+            owner_user_id=str(row["user_id"]),
+            project_id=project_id,
+            project_root=str(row["project_root"] or ""),
+            actions=actions_raw,
+            allow_paths=None,  # primary agent has full access
+            actor_type="project_agent",
+            actor_id=str(primary_agent_id or ""),
+            actor_label=f"agent:{primary_agent_id}",
+        )
+        for item in (action_result.get("applied") or []):
+            event_name = str(item.get("event") or "").strip()
+            event_payload = item.get("event_payload") if isinstance(item.get("event_payload"), dict) else {}
+            if event_name:
+                await emit(project_id, event_name, event_payload)
+
+    # Apply output_files writes
+    if output_files:
+        _apply_project_file_writes(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            writes=output_files,
+            default_prefix=USER_OUTPUTS_DIRNAME,
+            allow_paths=None,
+        )
+
+    # Fallback: if agent didn't create task cards via actions, create them ourselves per agent
+    existing_tasks_count = 0
+    for act in actions_raw:
+        if _normalize_agent_action_kind(act.get("type")) == "create_task":
+            existing_tasks_count += 1
+
+    # Legacy task_map from old payload format (backward compat)
+    payload_legacy = _parse_delegation_payload(primary_reply)
+    raw_tasks = payload_legacy.get("agent_tasks")
     task_map: Dict[str, str] = {}
     if isinstance(raw_tasks, list):
         for item in raw_tasks:
@@ -2226,24 +2278,18 @@ async def _delegate_project_tasks(project_id: str) -> None:
     agent_order = list(by_id.keys())
     assigned_task_map: Dict[str, str] = {}
     assigned_mentions_map: Dict[str, List[str]] = {}
+    agents_dir = project_dir / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    assigned_count = 0
     for pos, aid in enumerate(agent_order):
         row_item = by_id.get(aid) or {}
+        agent_name = str(row_item.get("agent_name") or aid)
         role = str(row_item.get("role") or "").strip() or "Collaborate based on project plan."
-        default_task = (
-            f"Read {PROJECT_INFO_FILE}, {PROJECT_PROTOCOL_FILE}, {OVERVIEW_FILE}, {PROJECT_PLAN_FILE}, and {PROJECT_DELEGATION_FILE}, then execute assigned scope and report progress in chat.\n"
-            f"- Follow dependency order from {PROJECT_DELEGATION_FILE}.\n"
-            "- If your output unblocks another agent, mention them explicitly as @agent_id in chat_update so handoff happens in chat.\n"
-            "- Save concrete artifacts into project files using output_files.\n"
-            "- Use structured actions when you must mutate real project files, group chat state, or task/progress state directly.\n"
-            "- Persist deliverables in Hivee project files; do not keep final-only copies on provider/local runtime server.\n"
-            "- If blocked by missing user approval/input (credentials, API key, sign-off, pit stop), set requires_user_input=true with pause_reason and resume_hint.\n"
-            "- If user answers SKIP, decide assumptions responsibly and continue.\n"
-        )
         next_aid = agent_order[pos + 1] if (pos + 1) < len(agent_order) else None
         task_text = _normalize_task_markdown_for_agent(
             agent_id=aid,
             role=role,
-            task_md=task_map.get(aid, default_task),
+            task_md=task_map.get(aid, f"Read delegation.md and execute your assigned scope. Report progress via chat with @mentions."),
             next_agent_id=next_aid,
         )
         assigned_task_map[aid] = task_text
@@ -2252,12 +2298,48 @@ async def _delegate_project_tasks(project_id: str) -> None:
         assigned_count += 1
         mention_targets = sorted({m for m in re.findall(r"@([a-zA-Z0-9._-]+)", task_text) if m and m != aid})[:8]
         assigned_mentions_map[aid] = mention_targets
+
+        # Fallback: if agent didn't post a chat @mention for this agent, do it now
+        if existing_tasks_count == 0:
+            _apply_project_actions(
+                owner_user_id=str(row["user_id"]),
+                project_id=project_id,
+                project_root=str(row["project_root"] or ""),
+                actions=[{
+                    "type": "post_chat_message",
+                    "text": f"@{aid} your tasks are assigned. Check `delegation.md` for your scope and start trigger.",
+                    "mentions": [aid],
+                }],
+                allow_paths=None,
+                actor_type="project_agent",
+                actor_id=str(primary_agent_id or ""),
+                actor_label=f"agent:{primary_agent_id}",
+            )
+            # Fallback task card creation
+            _apply_project_actions(
+                owner_user_id=str(row["user_id"]),
+                project_id=project_id,
+                project_root=str(row["project_root"] or ""),
+                actions=[{
+                    "type": "create_task",
+                    "title": f"{role} — {agent_name}",
+                    "description": task_text[:TASK_DESCRIPTION_MAX_CHARS],
+                    "assignee_agent_id": aid,
+                    "status": "todo",
+                    "priority": "high",
+                }],
+                allow_paths=None,
+                actor_type="project_agent",
+                actor_id=str(primary_agent_id or ""),
+                actor_label=f"agent:{primary_agent_id}",
+            )
+
         await emit(
             project_id,
             "agent.task.assigned",
             {
                 "agent_id": aid,
-                "agent_name": str(row_item.get("agent_name") or aid),
+                "agent_name": agent_name,
                 "role": role,
                 "task_file": f"agents/{fname}",
                 "task_preview": task_text[:500],
@@ -2399,6 +2481,9 @@ async def _delegate_project_tasks(project_id: str) -> None:
             session_key=f"{project_id}:agent:{aid}",
             timeout_sec=120,
             user_id=str(row["user_id"] or ""),
+            from_agent_id="hivee",
+            from_label="Hivee System",
+            context_type="task_execution",
         )
         p_tokens, c_tokens, _ = _extract_usage_counts(agent_res)
         if p_tokens <= 0:
@@ -2497,6 +2582,9 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 session_key=f"{project_id}:agent:{aid}",
                 timeout_sec=120,
                 user_id=str(row["user_id"] or ""),
+                from_agent_id="hivee",
+                from_label="Hivee System",
+                context_type="task_execution",
             )
             if followup_res.get("ok"):
                 fp, fc, _ = _extract_usage_counts(followup_res)
@@ -2583,6 +2671,9 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 session_key=f"{project_id}:agent:{aid}",
                 timeout_sec=120,
                 user_id=str(row["user_id"] or ""),
+                from_agent_id="hivee",
+                from_label="Hivee System",
+                context_type="task_execution",
             )
             if rescue_res.get("ok"):
                 rp, rc, _ = _extract_usage_counts(rescue_res)
@@ -2682,6 +2773,31 @@ async def _delegate_project_tasks(project_id: str) -> None:
             pause_reason = str(pause_decision.get("reason") or pause_reason or chat_update).strip()
             resume_hint = str(pause_decision.get("resume_hint") or resume_hint).strip()
             chat_update = _ensure_owner_mention(chat_update)
+            # Create a blocked task card so user sees the issue clearly
+            issue_title = f"[BLOCKED] {agent_name} — {pause_reason[:120]}"
+            issue_desc = (
+                f"Agent `{aid}` ({role}) is blocked and needs user input.\n\n"
+                f"**Blocker:** {pause_reason}\n\n"
+                f"**Resume hint:** {resume_hint or 'No hint provided.'}\n\n"
+                f"**Last chat update:** {chat_update[:600]}"
+            )
+            _apply_project_actions(
+                owner_user_id=str(row["user_id"]),
+                project_id=project_id,
+                project_root=str(row["project_root"] or ""),
+                actions=[{
+                    "type": "create_task",
+                    "title": issue_title,
+                    "description": issue_desc[:TASK_DESCRIPTION_MAX_CHARS],
+                    "assignee_agent_id": aid,
+                    "status": "blocked",
+                    "priority": "urgent",
+                }],
+                allow_paths=None,
+                actor_type="project_agent",
+                actor_id=str(aid),
+                actor_label=f"agent:{aid}",
+            )
         else:
             chat_update = _ensure_chat_handoff_mentions(chat_update, assigned_mentions_map.get(aid) or [])
 
@@ -2783,6 +2899,16 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 extra_event_payload = extra.get("event_payload") if isinstance(extra.get("event_payload"), dict) else {}
                 if extra_event_name:
                     await emit(project_id, extra_event_name, extra_event_payload)
+                # Route @mentions to the mentioned agent's connector
+                if extra_event_name == "project.chat.mention" and isinstance(extra_event_payload, dict):
+                    import asyncio
+                    asyncio.ensure_future(_dispatch_chat_mention_to_connector(
+                        project_id=project_id,
+                        mention_target=str(extra_event_payload.get("target") or ""),
+                        message_text=str(extra_event_payload.get("text") or ""),
+                        from_agent_id=str(extra_event_payload.get("author_id") or extra_event_payload.get("author_label") or "agent"),
+                        from_label=str(extra_event_payload.get("author_label") or "Agent"),
+                    ))
         await emit(
             project_id,
             "agent.task.reported",

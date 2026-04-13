@@ -172,8 +172,7 @@ def _send_external_invite_email(
 
 async def _compose_external_invite_email_with_primary_agent(
     *,
-    base_url: str,
-    api_key: str,
+    connector_id: str,
     main_agent_id: str,
     default_subject: str,
     default_body: str,
@@ -183,7 +182,9 @@ async def _compose_external_invite_email_with_primary_agent(
     invitation_doc_url: str,
     portal_url: str,
     invite_code: str,
+    project_id: str = "",
 ) -> Dict[str, Any]:
+    from services.connector_dispatch import connector_chat_sync as _connector_chat_sync
     fallback = {
         "subject": str(default_subject or "").strip()[:220] or "You are invited to contribute to this project!",
         "body": str(default_body or "").strip()[:6000],
@@ -194,9 +195,9 @@ async def _compose_external_invite_email_with_primary_agent(
         "send_error": None,
         "send_note": None,
     }
-    if not base_url or not api_key or not main_agent_id:
+    if not connector_id or not main_agent_id:
         fallback["send_status"] = "skipped_missing_primary_agent"
-        fallback["send_error"] = "Primary agent connection is missing"
+        fallback["send_error"] = "No connector or agent configured for this project"
         return fallback
 
     prompt = (
@@ -216,13 +217,16 @@ async def _compose_external_invite_email_with_primary_agent(
     )
 
     try:
-        res = await openclaw_ws_chat(
-            base_url=base_url,
-            api_key=api_key,
+        res = await _connector_chat_sync(
+            connector_id=connector_id,
             message=prompt,
             agent_id=main_agent_id,
             session_key=f"external-invite-email:{_normalize_invite_code(invite_code) or 'default'}",
             timeout_sec=40,
+            from_agent_id="hivee",
+            from_label="Hivee System",
+            context_type="control",
+            project_id=project_id,
         )
     except Exception as exc:
         fallback["compose_error"] = detail_to_text(exc)[:600]
@@ -486,23 +490,25 @@ def register_routes(app: FastAPI) -> None:
         )
         session_key = (payload.session_key or "new-project").strip() or "new-project"
         timeout = max(10, min(payload.timeout_sec, 45 if payload.optimize_tokens else 90))
+        # Resolve connector_id: prefer explicit connector_row, else look up user's online connector
         if connector_row:
-            res = await _connector_chat_sync(
-                connector_id=str(payload.connection_id),
-                message=instruction,
-                agent_id=effective_agent_id,
-                session_key=f"project-setup:{session_key}",
-                timeout_sec=timeout,
-            )
+            resolved_connector_id = str(payload.connection_id)
         else:
-            res = await openclaw_ws_chat(
-                base_url=row["base_url"],
-                api_key=connection_api_key,
-                message=instruction,
-                agent_id=effective_agent_id,
-                session_key=f"project-setup:{session_key}",
-                timeout_sec=timeout,
-            )
+            from services.connector_dispatch import get_user_online_connector as _get_user_online_connector
+            online = _get_user_online_connector(user_id)
+            if not online:
+                raise HTTPException(400, "No connector available. Please connect a Hivee Connector to use setup chat.")
+            resolved_connector_id = str(online["id"])
+        res = await _connector_chat_sync(
+            connector_id=resolved_connector_id,
+            message=instruction,
+            agent_id=effective_agent_id,
+            session_key=f"project-setup:{session_key}",
+            timeout_sec=timeout,
+            from_agent_id="hivee",
+            from_label="Hivee System",
+            context_type="control",
+        )
         if not res.get("ok"):
             raise HTTPException(400, res)
         res["resolved_agent_id"] = effective_agent_id
@@ -560,23 +566,25 @@ def register_routes(app: FastAPI) -> None:
             workspace_root=workspace_root,
         )
         session_key = (payload.session_key or "new-project").strip() or "new-project"
+        # Resolve connector_id: prefer explicit connector_row, else look up user's online connector
         if connector_row:
-            res = await _connector_chat_sync(
-                connector_id=str(payload.connection_id),
-                message=instruction,
-                agent_id=effective_agent_id,
-                session_key=f"project-setup-draft:{session_key}",
-                timeout_sec=max(10, min(payload.timeout_sec, 60)),
-            )
+            resolved_connector_id = str(payload.connection_id)
         else:
-            res = await openclaw_ws_chat(
-                base_url=row["base_url"],
-                api_key=connection_api_key,
-                message=instruction,
-                agent_id=effective_agent_id,
-                session_key=f"project-setup-draft:{session_key}",
-                timeout_sec=max(10, min(payload.timeout_sec, 60)),
-            )
+            from services.connector_dispatch import get_user_online_connector as _get_user_online_connector
+            online = _get_user_online_connector(user_id)
+            if not online:
+                raise HTTPException(400, "No connector available. Please connect a Hivee Connector to use setup draft.")
+            resolved_connector_id = str(online["id"])
+        res = await _connector_chat_sync(
+            connector_id=resolved_connector_id,
+            message=instruction,
+            agent_id=effective_agent_id,
+            session_key=f"project-setup-draft:{session_key}",
+            timeout_sec=max(10, min(payload.timeout_sec, 60)),
+            from_agent_id="hivee",
+            from_label="Hivee System",
+            context_type="control",
+        )
     
         text = ""
         parsed: Dict[str, Any] = {}
@@ -692,6 +700,8 @@ def register_routes(app: FastAPI) -> None:
             payload.goal,
             setup_details=setup_details,
             setup_chat_history_text=setup_chat_history_text,
+            project_id=pid,
+            hivee_api_base=_get_hivee_api_base(pid),
         )
     
         conn.execute(
@@ -763,6 +773,38 @@ def register_routes(app: FastAPI) -> None:
             ],
         )
         _refresh_project_documents(pid)
+
+        # Generate fundamentals.md, agents.md, state.md, scope.md for this project
+        hivee_api_base = _get_hivee_api_base(pid)
+        project_dir = Path(project_root)
+        _write_project_fundamentals_file(
+            project_dir,
+            project_id=pid,
+            title=payload.title,
+            phase="setup",
+            plan_status=PLAN_STATUS_PENDING,
+            execution_status=EXEC_STATUS_IDLE,
+            hivee_api_base=hivee_api_base,
+            role_rows=[{"agent_id": main_agent_id, "agent_name": main_agent_name, "role": "Primary owner agent", "is_primary": True}],
+        )
+        _write_project_agents_file(
+            project_dir,
+            role_rows=[{"agent_id": main_agent_id, "agent_name": main_agent_name, "role": "Primary owner agent", "is_primary": True}],
+        )
+        _write_project_state_file(
+            project_dir,
+            phase="setup",
+            plan_status=PLAN_STATUS_PENDING,
+            execution_status=EXEC_STATUS_IDLE,
+            progress_pct=0,
+            agents=[{"agent_id": main_agent_id, "agent_name": main_agent_name}],
+        )
+        _write_project_scope_file(
+            project_dir,
+            agent_id=main_agent_id,
+            agent_name=main_agent_name,
+            is_primary=True,
+        )
 
         await emit(pid, "project.created", {"title": payload.title})
         await emit(pid, "project.agents_set", {"count": 1, "primary_agent_id": main_agent_id, "auto_seeded": True})
@@ -1026,7 +1068,35 @@ def register_routes(app: FastAPI) -> None:
             kind="plan.approve" if payload.approve else "plan.revert",
             text="User approved project plan." if payload.approve else "User reverted plan to waiting approval.",
         )
-    
+
+        # Update fundamentals.md and state.md to reflect new plan status
+        try:
+            project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
+            role_rows = _project_agent_rows_from_id(project_id)
+            hivee_api_base = _get_hivee_api_base(project_id)
+            phase = "execution" if payload.approve else "planning"
+            exec_status = EXEC_STATUS_RUNNING if payload.approve else EXEC_STATUS_IDLE
+            _write_project_fundamentals_file(
+                project_dir,
+                project_id=project_id,
+                title=str(row["title"] or ""),
+                phase=phase,
+                plan_status=new_status,
+                execution_status=exec_status,
+                hivee_api_base=hivee_api_base,
+                role_rows=role_rows,
+            )
+            _write_project_state_file(
+                project_dir,
+                phase=phase,
+                plan_status=new_status,
+                execution_status=exec_status,
+                progress_pct=5 if payload.approve else 0,
+                agents=[{"agent_id": str(r.get("agent_id") or ""), "agent_name": str(r.get("agent_name") or "")} for r in role_rows],
+            )
+        except Exception:
+            pass
+
         if payload.approve:
             await emit(project_id, "project.plan.approved", {"project_id": project_id})
             asyncio.create_task(_delegate_project_tasks(project_id))
@@ -1215,6 +1285,34 @@ def register_routes(app: FastAPI) -> None:
         )
         return {"ok": True, "path": rel, "mode": mode, "bytes": len(content.encode("utf-8"))}
 
+    @app.get("/api/projects/{project_id}/files/{file_path:path}")
+    async def read_project_file(request: Request, project_id: str, file_path: str):
+        access = _resolve_project_workspace_access(request, project_id, required_scope="project.read")
+        project = access["project"]
+        owner_user_id = str(project["user_id"])
+        project_root = str(project.get("project_root") or "")
+        try:
+            target = _resolve_project_relative_path(
+                owner_user_id,
+                project_root,
+                file_path,
+                require_exists=True,
+                require_dir=False,
+            ).resolve()
+        except Exception:
+            raise HTTPException(404, "File not found")
+        if not target.is_file():
+            raise HTTPException(404, "File not found")
+        try:
+            content = target.read_text(encoding="utf-8")
+        except Exception:
+            raise HTTPException(500, "Could not read file")
+        return Response(
+            content=content,
+            media_type="text/markdown; charset=utf-8",
+            headers={"X-Project-File": file_path},
+        )
+
     @app.get("/api/projects/{project_id}/chat/messages", response_model=List[ProjectChatMessageOut])
     async def list_project_chat_messages(
         request: Request,
@@ -1257,20 +1355,26 @@ def register_routes(app: FastAPI) -> None:
 
         await emit(project_id, "project.chat.message", message)
         for target in (message.get("mentions") or [])[:PROJECT_CHAT_MENTION_MAX]:
-            await emit(
-                project_id,
-                "project.chat.mention",
-                {
-                    "message_id": str(message.get("id") or ""),
-                    "project_id": project_id,
-                    "target": target,
-                    "author_type": str(message.get("author_type") or ""),
-                    "author_id": message.get("author_id"),
-                    "author_label": message.get("author_label"),
-                    "text": str(message.get("text") or "")[:500],
-                    "created_at": int(message.get("created_at") or 0),
-                },
-            )
+            mention_payload = {
+                "message_id": str(message.get("id") or ""),
+                "project_id": project_id,
+                "target": target,
+                "author_type": str(message.get("author_type") or ""),
+                "author_id": message.get("author_id"),
+                "author_label": message.get("author_label"),
+                "text": str(message.get("text") or "")[:500],
+                "created_at": int(message.get("created_at") or 0),
+            }
+            await emit(project_id, "project.chat.mention", mention_payload)
+            # Route @mention to the mentioned agent's connector
+            import asyncio
+            asyncio.ensure_future(_dispatch_chat_mention_to_connector(
+                project_id=project_id,
+                mention_target=target,
+                message_text=str(message.get("text") or "")[:500],
+                from_agent_id=str(message.get("author_id") or "user"),
+                from_label=str(message.get("author_label") or "User"),
+            ))
         return ProjectChatMessageOut(**message)
 
     @app.post("/api/projects/{project_id}/agent-ops", response_model=ProjectAgentOpsOut)
@@ -2084,18 +2188,15 @@ def register_routes(app: FastAPI) -> None:
         conn = db()
         proj = conn.execute(
             """
-            SELECT p.id, p.title, p.goal, p.project_root, p.connection_id,
-                   c.base_url AS connection_base_url, c.api_key AS connection_api_key, c.api_key_secret_id AS connection_api_key_secret_id,
+            SELECT p.id, p.title, p.goal, p.project_root, p.connection_id, p.connector_id,
                    cp.main_agent_id AS owner_main_agent_id
             FROM projects p
-            LEFT JOIN openclaw_connections c ON c.id = p.connection_id AND c.user_id = p.user_id
             LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
             WHERE p.id = ? AND p.user_id = ?
             LIMIT 1
             """,
             (project_id, user_id),
         ).fetchone()
-        connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=user_id, row=proj) if proj else ""
         if not proj:
             conn.close()
             raise HTTPException(404, "Project not found")
@@ -2164,9 +2265,14 @@ def register_routes(app: FastAPI) -> None:
             invite_code=raw_invite_code,
             target_email=target_email or None,
         )
+        proj_connector_id = str(proj["connector_id"] or "").strip()
+        if not proj_connector_id:
+            # Fall back to user's online connector
+            from services.connector_dispatch import get_user_online_connector as _get_user_online_connector
+            online_conn = _get_user_online_connector(user_id)
+            proj_connector_id = str(online_conn["id"]) if online_conn else ""
         composed = await _compose_external_invite_email_with_primary_agent(
-            base_url=str(proj["connection_base_url"] or ""),
-            api_key=connection_api_key,
+            connector_id=proj_connector_id,
             main_agent_id=str(proj["owner_main_agent_id"] or "").strip(),
             default_subject=str(email_template.get("subject") or ""),
             default_body=str(email_template.get("body") or ""),
@@ -2176,6 +2282,7 @@ def register_routes(app: FastAPI) -> None:
             invitation_doc_url=invitation_doc_url,
             portal_url=portal_url,
             invite_code=raw_invite_code,
+            project_id=project_id,
         )
         email_subject = str(composed.get("subject") or email_template.get("subject") or "").strip()[:220]
         email_body = str(composed.get("body") or email_template.get("body") or "").strip()[:6000]

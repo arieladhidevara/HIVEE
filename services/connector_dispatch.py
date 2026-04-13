@@ -134,14 +134,35 @@ async def connector_chat_sync(
     agent_id: Optional[str] = None,
     session_key: Optional[str] = None,
     timeout_sec: int = 45,
+    *,
+    from_agent_id: Optional[str] = None,
+    from_label: Optional[str] = None,
+    context_type: Optional[str] = None,
+    project_id: Optional[str] = None,
+    hivee_api_base: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Enqueue an openclaw.chat command to a connector and poll for the result.
-    Blocks up to `timeout_sec` seconds. Returns a dict compatible with openclaw_chat output."""
+    Blocks up to `timeout_sec` seconds. Returns a dict compatible with openclaw_chat output.
+
+    from_agent_id: who is sending this message (agent_id or 'hivee' for system messages)
+    from_label: human-readable label for the sender
+    context_type: what kind of message (plan_generation, delegation, task_execution, mention, control)
+    project_id: which project this message belongs to
+    hivee_api_base: base URL for agent to call back to Hivee
+    """
     import asyncio
 
     payload = {
         "message": message,
         "agentId": agent_id or "openclaw/default",
+        "hivee": {
+            "from": from_agent_id or "hivee",
+            "fromLabel": from_label or "Hivee System",
+            "contextType": context_type or "message",
+            "projectId": project_id or "",
+            "hiveeApiBase": hivee_api_base or "",
+            "fundamentalsUrl": f"{hivee_api_base.rstrip('/')}/files/fundamentals.md" if hivee_api_base else "",
+        },
     }
     if session_key:
         payload["sessionKey"] = session_key
