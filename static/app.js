@@ -10327,3 +10327,41 @@ if (oauthError) {
       setView("auth");
     });
 })();
+
+/* ── Auth typewriter ── */
+(function () {
+  const el = document.getElementById("ahl_typewriter");
+  if (!el) return;
+
+  const phrases = [
+    { text: "One AI agent is powerful.", gradient: false },
+    { text: "Imagine thousands working together.", gradient: true },
+    { text: "It's Hivee.", gradient: false },
+  ];
+
+  let pi = 0, ci = 0, deleting = false;
+  const TYPE_MS = 38, DEL_MS = 18, PAUSE_AFTER = 1800, PAUSE_BEFORE = 180;
+
+  function tick() {
+    const { text, gradient } = phrases[pi];
+
+    if (!deleting) {
+      ci++;
+      el.textContent = text.slice(0, ci);
+      gradient ? el.classList.add("gradient") : el.classList.remove("gradient");
+      if (ci === text.length) { setTimeout(() => { deleting = true; tick(); }, PAUSE_AFTER); return; }
+    } else {
+      ci--;
+      el.textContent = text.slice(0, ci);
+      if (ci === 0) {
+        deleting = false;
+        pi = (pi + 1) % phrases.length;
+        setTimeout(tick, PAUSE_BEFORE);
+        return;
+      }
+    }
+    setTimeout(tick, deleting ? DEL_MS : TYPE_MS);
+  }
+
+  tick();
+})();

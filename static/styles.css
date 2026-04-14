@@ -137,7 +137,7 @@ h1, h2, h3, h4, strong {
   transition: opacity 200ms;
 }
 .ticker-item img {
-  height: 28px;
+  height: 18px;
   width: auto;
   object-fit: contain;
   display: block;
@@ -347,40 +347,43 @@ label {
   line-height: 1.08;
 }
 
-/* Auth headline — editorial three-tier hierarchy */
-.auth-headline {
-  margin: 16px 0 14px;
+/* Auth typewriter headline */
+.ahl-typewriter-wrap {
+  margin: 16px 0 24px;
+  min-height: 3.5em;
+  display: flex;
+  align-items: flex-start;
 }
-.ahl-eyebrow {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.3);
-  margin: 0 0 12px;
-  line-height: 1.4;
-}
-.ahl-hero {
-  font-size: clamp(34px, 4.8vw, 60px);
+.ahl-typewriter {
+  font-size: clamp(28px, 3.8vw, 48px);
   font-weight: 800;
-  line-height: 1.05;
-  letter-spacing: -0.035em;
-  background: linear-gradient(135deg, #22d3ee 0%, #60a5fa 55%, #818cf8 100%);
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  color: #fff;
+  display: inline;
+}
+.ahl-typewriter.gradient {
+  background: linear-gradient(135deg, #facc15 0%, #ff4d4d 45%, #22d3ee 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  color: transparent;
-  margin: 0 0 18px;
 }
-.ahl-tag {
-  font-size: clamp(18px, 2.2vw, 26px);
-  font-weight: 800;
-  color: #fff;
-  margin: 0;
-  letter-spacing: -0.01em;
+.ahl-cursor {
+  font-size: clamp(28px, 3.8vw, 48px);
+  font-weight: 200;
+  color: rgba(255,255,255,0.5);
+  line-height: 1.1;
+  animation: cursor-blink 0.65s step-end infinite;
+  margin-left: 2px;
+  align-self: flex-start;
+}
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
 }
 
 .brand-copy {
+  display: none;
   max-width: 440px;
   color: var(--muted);
   margin: 0;
