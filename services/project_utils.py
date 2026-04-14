@@ -5110,24 +5110,32 @@ def _get_hivee_api_base(project_id: str) -> str:
 
 
 def _issue_agent_session_token(project_id: str, agent_id: str) -> str:
-    """Generate a fresh plaintext token for an agent session, upsert hash into DB, return plaintext."""
-    raw_token = _new_agent_access_token()
+    """Return the stable plaintext token for this project+agent pair.
+    Creates one if it doesn't exist yet — never rotates an existing token."""
     conn = db()
     try:
+        row = conn.execute(
+            "SELECT token_plain FROM project_agent_access_tokens WHERE project_id = ? AND agent_id = ?",
+            (project_id, agent_id),
+        ).fetchone()
+        if row and row["token_plain"]:
+            return str(row["token_plain"])
+        raw_token = _new_agent_access_token()
         conn.execute(
             """
-            INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, created_at)
-            VALUES (?,?,?,?)
+            INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, token_plain, created_at)
+            VALUES (?,?,?,?,?)
             ON CONFLICT(project_id, agent_id) DO UPDATE SET
                 token_hash = excluded.token_hash,
+                token_plain = excluded.token_plain,
                 created_at = excluded.created_at
             """,
-            (project_id, agent_id, _hash_access_token(raw_token), int(time.time())),
+            (project_id, agent_id, _hash_access_token(raw_token), raw_token, int(time.time())),
         )
         conn.commit()
+        return raw_token
     finally:
         conn.close()
-    return raw_token
 
 
 def _compose_guardrailed_message(

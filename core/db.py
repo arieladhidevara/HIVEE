@@ -129,6 +129,7 @@ def init_db() -> None:
             project_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
             token_hash TEXT NOT NULL,
+            token_plain TEXT,
             created_at INTEGER NOT NULL,
             PRIMARY KEY(project_id, agent_id),
             FOREIGN KEY(project_id) REFERENCES projects(id)
@@ -755,6 +756,9 @@ def init_db() -> None:
         cur.execute("ALTER TABLE projects ADD COLUMN backend_mode TEXT NOT NULL DEFAULT 'connector'")
     if "connector_id" not in project_cols:
         cur.execute("ALTER TABLE projects ADD COLUMN connector_id TEXT")
+    pat_cols = [r[1] for r in cur.execute("PRAGMA table_info(project_agent_access_tokens)").fetchall()]
+    if "token_plain" not in pat_cols:
+        cur.execute("ALTER TABLE project_agent_access_tokens ADD COLUMN token_plain TEXT")
     conn.commit()
     conn.close()
 
