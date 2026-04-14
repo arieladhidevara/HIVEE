@@ -995,8 +995,8 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(404, "Project not found")
         now = int(time.time())
         conn.execute(
-            "UPDATE projects SET plan_status = ?, plan_updated_at = ? WHERE id = ?",
-            (PLAN_STATUS_GENERATING, now, project_id),
+            "UPDATE projects SET plan_status = ?, plan_updated_at = ?, execution_status = ?, execution_updated_at = ? WHERE id = ?",
+            (PLAN_STATUS_GENERATING, now, EXEC_STATUS_IDLE, now, project_id),
         )
         conn.commit()
         conn.close()
@@ -1756,6 +1756,14 @@ def register_routes(app: FastAPI) -> None:
             })
         elif current_plan_status != PLAN_STATUS_GENERATING:
             # No approved plan yet — generate plan now that agents are set
+            # Reset execution_status to IDLE so a stale RUNNING state doesn't block approval
+            _conn = db()
+            _conn.execute(
+                "UPDATE projects SET plan_status = ?, execution_status = ?, execution_updated_at = ? WHERE id = ?",
+                (PLAN_STATUS_GENERATING, EXEC_STATUS_IDLE, int(time.time()), project_id),
+            )
+            _conn.commit()
+            _conn.close()
             asyncio.create_task(_generate_project_plan(project_id, force=True))
             await emit(project_id, "project.plan.regenerate_requested", {"project_id": project_id, "source": "agents_set"})
 
