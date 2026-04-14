@@ -120,23 +120,32 @@ h1, h2, h3, h4, strong {
   align-items: center;
   gap: 0;
   white-space: nowrap;
-  animation: ticker-scroll 28s linear infinite;
+  animation: ticker-scroll 32s linear infinite;
   width: max-content;
+  will-change: transform;
+}
+.ticker-half {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 .ticker-item {
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.22);
-  padding: 0 6px;
-  transition: color 200ms;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 40px;
+  opacity: 0.5;
+  transition: opacity 200ms;
 }
-.ticker-item:hover { color: rgba(255,255,255,0.55); }
+.ticker-item img {
+  height: 28px;
+  width: auto;
+  object-fit: contain;
+  display: block;
+  filter: brightness(0) invert(1);
+}
+.ticker-item:hover { opacity: 0.85; }
 .ticker-sep {
-  font-size: 10px;
-  color: rgba(255,255,255,0.10);
-  padding: 0 8px;
+  display: none;
   user-select: none;
 }
 @keyframes ticker-scroll {
@@ -338,21 +347,37 @@ label {
   line-height: 1.08;
 }
 
-/* Bold auth headline */
+/* Auth headline — editorial three-tier hierarchy */
 .auth-headline {
-  font-size: clamp(26px, 4vw, 42px) !important;
-  font-weight: 800 !important;
-  line-height: 1.15 !important;
-  margin: 16px 0 14px !important;
-  letter-spacing: -0.02em;
-  color: var(--text);
+  margin: 16px 0 14px;
 }
-.auth-headline-accent {
-  color: var(--cyan);
+.ahl-eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.3);
+  margin: 0 0 12px;
+  line-height: 1.4;
 }
-.auth-headline-name {
-  color: rgba(255,255,255,0.5);
-  font-weight: 700;
+.ahl-hero {
+  font-size: clamp(34px, 4.8vw, 60px);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+  background: linear-gradient(135deg, #22d3ee 0%, #60a5fa 55%, #818cf8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  color: transparent;
+  margin: 0 0 18px;
+}
+.ahl-tag {
+  font-size: clamp(18px, 2.2vw, 26px);
+  font-weight: 800;
+  color: #fff;
+  margin: 0;
+  letter-spacing: -0.01em;
 }
 
 .brand-copy {
