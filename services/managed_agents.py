@@ -3169,6 +3169,156 @@ async def _delegate_project_tasks(project_id: str) -> None:
     )
 
 
+async def _onboard_agents_into_project(
+    project_id: str,
+    added_agent_ids: List[str],
+    all_agent_ids: List[str],
+) -> None:
+    """Called when agents are added/changed on an already-approved project.
+    Primary agent reviews the roster + current progress and assigns tasks to new agents."""
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id,
+               p.plan_text, p.plan_status, p.execution_status, p.progress_pct,
+               p.backend_mode, p.connector_id,
+               c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
+        FROM projects p
+        LEFT JOIN openclaw_connections c ON c.id = p.connection_id
+        LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
+        WHERE p.id = ?
+        """,
+        (project_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return
+    connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=str(row["user_id"]), row=row)
+    role_rows = _project_agent_rows(conn, project_id)
+    conn.close()
+
+    if not role_rows:
+        return
+
+    primary_agent_id = None
+    for r in role_rows:
+        if bool(r.get("is_primary")):
+            primary_agent_id = str(r.get("agent_id") or "").strip() or None
+            break
+    if not primary_agent_id:
+        primary_agent_id = str(row["main_agent_id"] or "").strip() or None
+    if not primary_agent_id:
+        return
+
+    exec_status = str(row["execution_status"] or "idle")
+    progress_pct = int(row["progress_pct"] or 0)
+    hivee_api_base = _get_hivee_api_base(project_id)
+    agent_token = _issue_agent_session_token(project_id, primary_agent_id)
+
+    added_lines = "\n".join(
+        f"- {aid}" + (
+            " — " + str(next((r.get("role") or "" for r in role_rows if str(r.get("agent_id") or "") == aid), "")).strip()
+            if next((r.get("role") or "" for r in role_rows if str(r.get("agent_id") or "") == aid), "").strip()
+            else ""
+        )
+        for aid in added_agent_ids
+    ) or "- (config update on existing agents)"
+
+    task = (
+        f"New or updated agents have been added to the project:\n{added_lines}\n\n"
+        f"Current execution progress: {exec_status} at {progress_pct}%.\n\n"
+        f"Your task:\n"
+        f"1. Read plan.md and state.md to understand current progress.\n"
+        f"2. Determine what work remains and what tasks fit the new agent(s).\n"
+        f"3. Create task cards for them using create_task actions.\n"
+        f"4. Notify each new agent via post_chat_message with @mention so they receive their assignment.\n"
+        f"5. Update execution progress with update_execution if needed.\n"
+        f"6. Post a summary to @owner via post_chat_message.\n"
+    )
+    instruction = _build_fundamentals_session_prompt(
+        task=task,
+        project_id=project_id,
+        agent_id=primary_agent_id,
+        agent_token=agent_token,
+        hivee_api_base=hivee_api_base,
+    )
+
+    await emit(project_id, "project.agents.onboarding_started", {
+        "added": added_agent_ids,
+        "primary_agent_id": primary_agent_id,
+        "progress_pct": progress_pct,
+    })
+    _append_project_daily_log(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        kind="agents.onboarding",
+        text=f"Primary agent onboarding new agents: {', '.join(added_agent_ids) or 'config update'}",
+    )
+
+    res = await _project_chat(
+        row,
+        connection_api_key,
+        instruction,
+        agent_id=primary_agent_id,
+        session_key=f"{project_id}:onboard",
+        timeout_sec=None,
+        user_id=str(row["user_id"] or ""),
+        from_agent_id="hivee",
+        from_label="Hivee System",
+        context_type="delegation",
+    )
+
+    if not res.get("ok"):
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="agents.onboarding_failed",
+            text=detail_to_text(res.get("error") or res.get("details"))[:1200],
+        )
+        await emit(project_id, "project.agents.onboarding_failed", {
+            "error": detail_to_text(res.get("error") or res.get("details"))[:500],
+        })
+        return
+
+    raw_text = str(res.get("text") or "").strip()
+    parsed = _extract_agent_report_payload(raw_text)
+    write_payload = parsed.get("output_files") or []
+    action_payload = parsed.get("actions") or []
+
+    owner_user_id = str(row["user_id"] or "")
+    project_root = str(row["project_root"] or "")
+
+    _apply_project_file_writes(
+        owner_user_id=owner_user_id,
+        project_root=project_root,
+        writes=write_payload if isinstance(write_payload, list) else [],
+        default_prefix=f"{USER_OUTPUTS_DIRNAME}/onboarding",
+        allow_paths=["*"],
+    )
+    _apply_project_actions(
+        owner_user_id=owner_user_id,
+        project_id=project_id,
+        project_root=project_root,
+        actions=action_payload if isinstance(action_payload, list) else [],
+        allow_paths=["*"],
+        actor_type="project_agent",
+        actor_id=primary_agent_id,
+        actor_label=f"agent:{primary_agent_id}",
+    )
+
+    _refresh_project_documents(project_id)
+    _append_project_daily_log(
+        owner_user_id=owner_user_id,
+        project_root=project_root,
+        kind="agents.onboarding_done",
+        text=f"Primary agent completed onboarding for: {', '.join(added_agent_ids) or 'config update'}",
+    )
+    await emit(project_id, "project.agents.onboarding_done", {
+        "added": added_agent_ids,
+        "primary_agent_id": primary_agent_id,
+    })
+
+
 def _read_project_execution_state(project_id: str) -> Tuple[str, int]:
     conn = db()
     row = conn.execute(

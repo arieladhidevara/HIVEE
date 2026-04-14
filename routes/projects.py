@@ -1,7 +1,7 @@
 from hivee_shared import *
 from email.message import EmailMessage
 import smtplib
-from services.managed_agents import _delegate_project_tasks, _project_chat
+from services.managed_agents import _delegate_project_tasks, _project_chat, _onboard_agents_into_project
 
 
 def _new_project_external_invite_token() -> str:
@@ -801,8 +801,6 @@ def register_routes(app: FastAPI) -> None:
 
         await emit(pid, "project.created", {"title": payload.title})
         await emit(pid, "project.agents_set", {"count": 1, "primary_agent_id": main_agent_id, "auto_seeded": True})
-        asyncio.create_task(_generate_project_plan(pid, force=True))
-        await emit(pid, "project.plan.regenerate_requested", {"project_id": pid, "source": "project_created"})
         await emit(pid, "project.scope_initialized", {"project_root": project_root})
         _append_project_daily_log(
             owner_user_id=user_id,
@@ -1627,7 +1625,7 @@ def register_routes(app: FastAPI) -> None:
 
         conn = db()
         proj = conn.execute(
-            "SELECT id, project_root, title, brief, goal, setup_json, plan_text, plan_status FROM projects WHERE id = ? AND user_id = ?",
+            "SELECT id, project_root, title, brief, goal, setup_json, plan_text, plan_status, execution_status, progress_pct FROM projects WHERE id = ? AND user_id = ?",
             (project_id, user_id),
         ).fetchone()
         if not proj:
@@ -1743,8 +1741,26 @@ def register_routes(app: FastAPI) -> None:
             payload={"count": len(normalized_agent_ids)},
         )
         await emit(project_id, "project.agents_set", {"count": len(normalized_agent_ids), "primary_agent_id": primary_id})
-        asyncio.create_task(_generate_project_plan(project_id, force=True))
-        await emit(project_id, "project.plan.regenerate_requested", {"project_id": project_id, "source": "agents_set"})
+
+        current_plan_status = _coerce_plan_status(proj["plan_status"])
+        added_agent_ids = sorted(next_owner_ids - existing_owner_ids)
+
+        if current_plan_status == PLAN_STATUS_APPROVED:
+            # Plan already approved — primary agent onboards new/changed agents and assigns tasks
+            asyncio.create_task(_onboard_agents_into_project(
+                project_id=project_id,
+                added_agent_ids=added_agent_ids,
+                all_agent_ids=normalized_agent_ids,
+            ))
+            await emit(project_id, "project.agents.onboarding_started", {
+                "added": added_agent_ids,
+                "primary_agent_id": primary_id,
+            })
+        elif current_plan_status != PLAN_STATUS_GENERATING:
+            # No approved plan yet — generate plan now that agents are set
+            asyncio.create_task(_generate_project_plan(project_id, force=True))
+            await emit(project_id, "project.plan.regenerate_requested", {"project_id": project_id, "source": "agents_set"})
+
         return {"ok": True, "primary_agent_id": primary_id, "agent_access_tokens": issued_tokens}
 
     @app.get("/api/projects/{project_id}/agents")
