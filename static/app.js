@@ -3932,52 +3932,36 @@ function renderPrimaryNavAgents() {
 
   const rows = primaryNavAgentsData();
   if (!rows.length) {
-    const empty = document.createElement("div");
-    empty.className = "nav-mini-empty";
-    empty.textContent = activeConnectionId
-      ? "Hub connected. Agent card will appear after bootstrap finishes."
-      : "Pair a hub to load your agent cards.";
-    content.appendChild(empty);
+    if (activeConnectionId) {
+      const empty = document.createElement("div");
+      empty.className = "nav-child-empty";
+      empty.textContent = "Bootstrap hub to load agents.";
+      content.appendChild(empty);
+    }
     return;
   }
 
   const list = document.createElement("div");
-  list.className = "nav-mini-list";
+  list.className = "nav-child-list";
 
   for (const agent of rows) {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = `nav-mini-card nav-agent-card${agent.is_primary ? " is-primary" : ""}`;
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `nav-child-item${agent.is_primary ? " is-primary" : ""}`;
 
-    const avatarWrap = document.createElement("div");
-    avatarWrap.className = "nav-mini-avatar";
     const palette = colorForAgent(agent.agent_id);
-    avatarWrap.style.borderColor = palette.border;
-    avatarWrap.style.background = hexToRgba(palette.hex, 0.08);
-    avatarWrap.appendChild(createAgentAvatarImg(agent.agent_id, `${agent.agent_name} mascot`));
+    const dot = document.createElement("span");
+    dot.className = "nav-child-dot";
+    dot.style.background = palette.hex;
 
-    const body = document.createElement("div");
-    body.className = "nav-mini-body";
+    const label = document.createElement("span");
+    label.className = "nav-child-label";
+    label.textContent = agent.agent_name;
 
-    const title = document.createElement("strong");
-    title.className = "nav-mini-title";
-    title.textContent = agent.agent_name;
-
-    const meta = document.createElement("span");
-    meta.className = "nav-mini-meta";
-    meta.textContent = agent.capabilities[0] || agent.description || (agent.is_primary ? "Primary agent" : "Managed agent");
-
-    const badge = document.createElement("span");
-    badge.className = `nav-mini-badge ${agent.is_primary ? "active" : (agent.status === "offline" ? "offline" : "idle")}`;
-    badge.textContent = agent.is_primary ? "Primary" : (agent.status || "active");
-
-    body.appendChild(title);
-    body.appendChild(meta);
-    body.appendChild(badge);
-    card.appendChild(avatarWrap);
-    card.appendChild(body);
-    card.addEventListener("click", () => openAgentDetailModal(agent));
-    list.appendChild(card);
+    item.appendChild(dot);
+    item.appendChild(label);
+    item.addEventListener("click", () => { setNavTab("agents"); openAgentDetailView(agent); });
+    list.appendChild(item);
   }
 
   content.appendChild(list);
@@ -3989,15 +3973,11 @@ function renderPrimaryNavHub() {
   content.innerHTML = "";
 
   if (!connectionsCache.length) {
-    const empty = document.createElement("div");
-    empty.className = "nav-mini-empty";
-    empty.textContent = "No hubs paired yet.";
     const cta = document.createElement("button");
     cta.type = "button";
-    cta.className = "nav-mini-cta";
-    cta.textContent = "Pair New Hub";
+    cta.className = "nav-child-cta";
+    cta.textContent = "+ Pair New Hub";
     cta.addEventListener("click", () => setNavTab("hub"));
-    content.appendChild(empty);
     content.appendChild(cta);
     return;
   }
@@ -4006,40 +3986,30 @@ function renderPrimaryNavHub() {
     (Array.isArray(connectorsList) ? connectorsList : []).map((item) => [String(item?.id || "").trim(), item])
   );
   const list = document.createElement("div");
-  list.className = "nav-mini-list";
+  list.className = "nav-child-list";
 
-  for (const hub of connectionsCache.slice(0, 4)) {
+  for (const hub of connectionsCache.slice(0, 5)) {
     const hubId = String(hub?.id || "").trim();
     if (!hubId) continue;
     const details = connectorDetails.get(hubId) || {};
     const isActive = hubId === String(activeConnectionId || "").trim();
     const status = String(details?.status || (isActive && connectionHealthy ? "online" : "idle")).trim().toLowerCase();
 
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = `nav-mini-card nav-hub-card${isActive ? " is-primary" : ""}`;
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `nav-child-item${isActive ? " is-primary" : ""}`;
 
-    const body = document.createElement("div");
-    body.className = "nav-mini-body";
+    const dot = document.createElement("span");
+    dot.className = `nav-child-dot nav-child-status-${status === "online" ? "online" : status === "offline" ? "offline" : "idle"}`;
 
-    const title = document.createElement("strong");
-    title.className = "nav-mini-title";
-    title.textContent = String(hub?.name || "Hub");
+    const label = document.createElement("span");
+    label.className = "nav-child-label";
+    label.textContent = String(hub?.name || "Hub");
 
-    const meta = document.createElement("span");
-    meta.className = "nav-mini-meta";
-    meta.textContent = String(hub?.base_url || details?.openclaw_base_url || hubId);
-
-    const badge = document.createElement("span");
-    badge.className = `nav-mini-badge ${status === "online" ? "active" : status === "offline" ? "offline" : "idle"}`;
-    badge.textContent = isActive ? `Active ${status}` : status;
-
-    body.appendChild(title);
-    body.appendChild(meta);
-    body.appendChild(badge);
-    card.appendChild(body);
-    card.addEventListener("click", () => setNavTab("hub"));
-    list.appendChild(card);
+    item.appendChild(dot);
+    item.appendChild(label);
+    item.addEventListener("click", () => setNavTab("hub"));
+    list.appendChild(item);
   }
 
   content.appendChild(list);
@@ -5029,7 +4999,7 @@ function applyMention(alias) {
 
 function _isDefaultPlaceholderAgent(id) {
   const low = String(id || "").trim().toLowerCase();
-  return !low || low === "default" || low === "openclaw" || low.endsWith("/default") || low.endsWith(":default");
+  return !low || low.includes("default");
 }
 
 function _normalizeDiscoveredAgent(item, { connectionId = "", status = "active" } = {}) {
@@ -7342,7 +7312,29 @@ async function loadSavedConnectionsList({ silent = false } = {}) {
   }
 }
 
-async function deleteSavedConnection(connectionId) {
+function showHubDeleteConfirm(label) {
+  return new Promise((resolve) => {
+    const existing = document.getElementById("hub_delete_confirm_toast");
+    if (existing) existing.remove();
+    const toast = document.createElement("div");
+    toast.id = "hub_delete_confirm_toast";
+    toast.className = "hub-delete-confirm";
+    toast.innerHTML = `
+      <span>Delete <strong>${esc(label)}</strong>?</span>
+      <div class="hub-delete-confirm-actions">
+        <button type="button" class="secondary" id="hdc_cancel" style="min-height:28px;padding:3px 12px;font-size:11px">Cancel</button>
+        <button type="button" class="secondary hub-delete-confirm-yes" id="hdc_yes" style="min-height:28px;padding:3px 12px;font-size:11px">Delete</button>
+      </div>
+    `;
+    document.body.appendChild(toast);
+    const cleanup = (val) => { toast.remove(); resolve(val); };
+    toast.querySelector("#hdc_yes").addEventListener("click", () => cleanup(true));
+    toast.querySelector("#hdc_cancel").addEventListener("click", () => cleanup(false));
+    setTimeout(() => { if (document.getElementById("hub_delete_confirm_toast")) cleanup(false); }, 8000);
+  });
+}
+
+async function deleteSavedConnection(connectionId, { skipConfirm = false } = {}) {
   const id = String(connectionId || "").trim();
   if (!id) throw new Error("connection_id is required");
   const conn = savedConnectionsList.find((item) => String(item?.id || "").trim() === id)
@@ -7350,8 +7342,10 @@ async function deleteSavedConnection(connectionId) {
     || connectorsList.find((item) => String(item?.id || "").trim() === id)
     || null;
   const label = String(conn?.name || conn?.id || "hub").trim();
-  const confirmed = window.confirm(`Delete hub "${label}"?\nThis removes the saved hub entry and its managed-agent cache.`);
-  if (!confirmed) return;
+  if (!skipConfirm) {
+    const confirmed = await showHubDeleteConfirm(label);
+    if (!confirmed) return;
+  }
   try {
     const res = await api(`/api/openclaw/${encodeURIComponent(id)}`, "DELETE");
     const deletedLabel = String(res?.deleted?.name || label).trim();
@@ -7395,7 +7389,7 @@ function renderSavedConnectionsList() {
           <div class="connector-card-actions">
             <button
               type="button"
-              class="secondary danger"
+              class="secondary hub-delete-btn"
               data-delete-connection-id="${esc(c.id || "")}"
               style="min-height:30px;padding:4px 12px;font-size:11px"
             >Delete</button>
@@ -7437,7 +7431,7 @@ function renderConnectorsList() {
           <div class="connector-card-actions">
             <button
               type="button"
-              class="secondary danger"
+              class="secondary hub-delete-btn"
               data-delete-connection-id="${esc(c.id || "")}"
               style="min-height:30px;padding:4px 12px;font-size:11px"
             >Delete</button>
@@ -7608,12 +7602,141 @@ function renderSummaryAgents() {
 
     card.style.cursor = "pointer";
     card.setAttribute("role", "button");
-    card.addEventListener("click", () => openAgentDetailModal(agent));
+    card.addEventListener("click", () => openAgentDetailView(agent));
 
     card.appendChild(avatarWrap);
     card.appendChild(body);
     list.appendChild(card);
   }
+}
+
+function openAgentDetailView(agent) {
+  const listView = $("agents_list_view");
+  const detailView = $("agents_detail_view");
+  if (!listView || !detailView) { openAgentDetailModal(agent); return; }
+
+  listView.classList.add("hidden");
+  detailView.classList.remove("hidden");
+
+  const palette = colorForAgent(agent.agent_id || agent.id);
+  const agentId = String(agent.agent_id || agent.id || "").trim();
+  const agentName = String(agent.agent_name || agent.name || agentId || "Agent");
+  const statusStr = String(agent.status || "active").toLowerCase();
+  const statusClass = statusStr === "active" ? "active" : statusStr === "offline" ? "offline" : "idle";
+  const connectionId = String(agent.connection_id || "").trim();
+
+  // Avatar
+  const avatarWrap = $("agd_avatar_wrap");
+  if (avatarWrap) {
+    avatarWrap.innerHTML = "";
+    avatarWrap.style.borderColor = palette.border;
+    avatarWrap.style.background = hexToRgba(palette.hex, 0.1);
+    const img = createAgentAvatarImg(agentId, "Agent mascot");
+    avatarWrap.appendChild(img);
+  }
+
+  const nameEl = $("agd_name");
+  if (nameEl) nameEl.textContent = agentName;
+
+  const statusBadge = $("agd_status_badge");
+  if (statusBadge) {
+    statusBadge.className = `agent-status-badge ${statusClass}`;
+    statusBadge.innerHTML = `<span class="asd"></span>${statusStr}`;
+  }
+
+  const metaEl = $("agd_meta");
+  if (metaEl) {
+    const connRow = connectionsCache.find((r) => String(r?.id || "").trim() === connectionId);
+    const connLabel = connRow ? (connRow.name || connectionId) : connectionId;
+    metaEl.textContent = [agentId && `ID: ${agentId}`, connLabel && `Hub: ${connLabel}`, agent.model && `Model: ${agent.model}`].filter(Boolean).join("  ·  ");
+  }
+
+  // Capabilities
+  const capsEl = $("agd_caps");
+  if (capsEl) {
+    const caps = Array.isArray(agent.capabilities) ? agent.capabilities : [];
+    capsEl.innerHTML = caps.length
+      ? caps.map((c) => `<span class="chip summary-cap-chip">${esc(c)}</span>`).join("")
+      : '<span class="helper">No capability data yet.</span>';
+  }
+
+  // Token usage chart
+  const usageEl = $("agd_usage_chart");
+  if (usageEl) {
+    const tokens = Math.max(0, Number(agent.usage_tokens || agent.total_tokens || 0));
+    const maxTokens = Math.max(1, ...summaryAgents.map((a) => Number(a.usage_tokens || a.total_tokens || 0)));
+    const pct = tokens > 0 ? Math.max(4, Math.round((tokens / maxTokens) * 100)) : 0;
+    const label = tokens > 999999 ? `${(tokens/1_000_000).toFixed(1)}M`
+                : tokens > 999 ? `${(tokens/1000).toFixed(1)}k` : String(tokens || "0");
+    usageEl.innerHTML = `
+      <div class="agd-bar-row">
+        <span class="agd-bar-label">Total tokens</span>
+        <div class="agd-bar-track"><div class="agd-bar-fill" style="width:${pct}%;background:${palette.hex}"></div></div>
+        <span class="agd-bar-val">${label}</span>
+      </div>
+    `;
+  }
+
+  // Success rate chart (from raw metrics if available)
+  const successEl = $("agd_success_chart");
+  if (successEl) {
+    const raw = agent.raw && typeof agent.raw === "object" ? agent.raw : {};
+    const metrics = raw.metrics && typeof raw.metrics === "object" ? raw.metrics : {};
+    const successes = Number(metrics.success_count || 0);
+    const failures = Number(metrics.failure_count || 0);
+    const total = successes + failures;
+    if (total > 0) {
+      const pct = Math.round((successes / total) * 100);
+      const color = pct >= 80 ? "var(--cyan)" : pct >= 50 ? "var(--yellow)" : "rgba(255,100,100,0.8)";
+      successEl.innerHTML = `
+        <div class="agd-bar-row">
+          <span class="agd-bar-label">Success rate</span>
+          <div class="agd-bar-track"><div class="agd-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+          <span class="agd-bar-val">${pct}%</span>
+        </div>
+        <div class="agd-bar-row" style="margin-top:6px">
+          <span class="agd-bar-label" style="opacity:.6">Calls</span>
+          <span class="agd-bar-val" style="color:var(--muted)">${successes} ok / ${failures} fail / ${total} total</span>
+        </div>
+      `;
+    } else {
+      successEl.innerHTML = '<span class="helper">No execution data yet.</span>';
+    }
+  }
+
+  // Projects
+  const projEl = $("agd_projects");
+  if (projEl) {
+    const agentProjects = projectsCache.filter((p) => {
+      const agents = Array.isArray(p.assigned_agent_ids) ? p.assigned_agent_ids : [];
+      return agents.includes(agentId) || p.primary_agent_id === agentId;
+    });
+    projEl.innerHTML = agentProjects.length
+      ? agentProjects.map((p) => `
+          <div class="agd-project-row">
+            <span class="pc-status-pill ${String(p.execution_status||"idle").toLowerCase()}">${executionStatusLabel(String(p.execution_status||"idle"))}</span>
+            <span>${esc(p.title)}</span>
+          </div>`).join("")
+      : '<span class="helper">Not assigned to any project yet.</span>';
+  }
+
+  // Recent activity
+  const actEl = $("agd_activity");
+  if (actEl) {
+    const liveProject = projectsCache.find((p) => {
+      const exec = String(p.execution_status||"").toLowerCase();
+      return (exec === "running" || exec === "planning") &&
+        (p.primary_agent_id === agentId || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agentId)));
+    });
+    actEl.innerHTML = liveProject
+      ? `<div class="summary-agent-live agent-live-active"><span class="sal-dot"></span><span class="sal-text">Currently working on: ${esc(liveProject.title)}</span></div>`
+      : `<span class="helper">No active tasks right now.</span>`;
+  }
+}
+
+function closeAgentDetailView() {
+  $("agents_list_view")?.classList.remove("hidden");
+  $("agents_detail_view")?.classList.add("hidden");
 }
 
 function openAgentDetailModal(agent) {
@@ -7908,6 +8031,7 @@ function setNavTab(tab) {
     renderInbox();
   }
   if (tab === "agents") {
+    closeAgentDetailView();
     loadSummaryAgents().catch(() => {});
   }
   if (tab === "hub") {
@@ -9754,8 +9878,21 @@ function bindActions() {
       if (btn) { const o = btn.textContent; btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = o; }, 1500); }
     }).catch(() => {});
   });
-  $("btn_refresh_connectors")?.addEventListener("click", () => loadConnectorsList().catch(() => {}));
-  $("btn_refresh_saved_connections")?.addEventListener("click", () => loadSavedConnectionsList().catch(() => {}));
+  $("btn_refresh_connectors")?.addEventListener("click", () => {
+    loadConnectorsList().catch(() => {});
+    loadSavedConnectionsList({ silent: true }).catch(() => {});
+  });
+  $("btn_copy_hub_install")?.addEventListener("click", () => {
+    const cmd = $("hub_install_cmd")?.textContent || "";
+    navigator.clipboard.writeText(cmd.trim()).then(() => {
+      const btn = $("btn_copy_hub_install");
+      const msg = $("hub_install_copy_msg");
+      if (btn) { const o = btn.textContent; btn.textContent = "Copied!"; setTimeout(() => { btn.textContent = o; }, 1800); }
+      if (msg) { msg.textContent = "Paste it in your Docker terminal."; setTimeout(() => { msg.textContent = ""; }, 3000); }
+    }).catch(() => {});
+  });
+
+  $("btn_agent_detail_back")?.addEventListener("click", closeAgentDetailView);
 
   $("home_connections")?.addEventListener("change", (ev) => {
     activeConnectionId = ev.target.value;

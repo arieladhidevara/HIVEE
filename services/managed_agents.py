@@ -147,13 +147,7 @@ async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: 
 def _is_default_placeholder_agent(agent_id: str) -> bool:
     """Return True for generic placeholder IDs that are not real agents."""
     low = str(agent_id or "").strip().lower()
-    return (
-        not low
-        or low == "default"
-        or low == "openclaw"
-        or low.endswith("/default")
-        or low.endswith(":default")
-    )
+    return not low or "default" in low
 
 
 def _normalize_managed_agent_candidates(

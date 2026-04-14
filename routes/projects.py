@@ -667,13 +667,14 @@ def register_routes(app: FastAPI) -> None:
             """,
             (user_id, resolved_connection_id, main_agent_id),
         ).fetchone()
-        if not managed_primary:
-            conn.close()
-            raise HTTPException(
-                400,
-                "Primary owner agent is missing from managed agents. Re-run bootstrap and try again.",
-            )
-        main_agent_name = str(managed_primary["agent_name"] or main_agent_name or main_agent_id).strip() or main_agent_id
+        # Use the managed row's name if available; otherwise fall back to the
+        # policy name or the raw agent ID.  Do NOT block project creation just
+        # because the managed-agents cache hasn't been populated yet.
+        main_agent_name = str(
+            (managed_primary["agent_name"] if managed_primary else None)
+            or main_agent_name
+            or main_agent_id
+        ).strip() or main_agent_id
 
         pid = new_id("prj")
         now = int(time.time())

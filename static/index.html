@@ -589,27 +589,86 @@
           </div>
 
           <div id="center_agents" class="center-pane hidden" data-center-tab="agents">
-            <h3>Agents</h3>
-            <div class="summary-grid">
-              <section class="summary-card">
-                <div class="title-row">
-                  <h4>Managed Agents</h4>
-                </div>
-                <p class="helper">All agents in your account with mascot identity, status, and specialization metadata.</p>
-                <div id="summary_agents_list" class="summary-agents-grid"></div>
-                <p id="summary_agents_msg" class="helper"></p>
-              </section>
+
+            <!-- LIST VIEW -->
+            <div id="agents_list_view">
+              <div class="agents-list-header">
+                <h3>Agents</h3>
+                <p class="helper">Managed agents on your connected hubs.</p>
+              </div>
+              <div id="summary_agents_list" class="summary-agents-grid"></div>
+              <p id="summary_agents_msg" class="helper" style="padding:0 20px"></p>
             </div>
+
+            <!-- DETAIL VIEW (hidden until agent selected) -->
+            <div id="agents_detail_view" class="hidden">
+              <div class="agent-detail-topbar">
+                <button id="btn_agent_detail_back" type="button" class="secondary agent-detail-back-btn">← Agents</button>
+              </div>
+              <div class="agent-detail-hero">
+                <div id="agd_avatar_wrap" class="agent-detail-avatar"></div>
+                <div class="agent-detail-hero-info">
+                  <div class="agent-detail-hero-name-row">
+                    <h2 id="agd_name">Agent</h2>
+                    <span id="agd_status_badge" class="agent-status-badge active"><span class="asd"></span>active</span>
+                  </div>
+                  <p id="agd_meta" class="helper" style="margin:0"></p>
+                </div>
+              </div>
+
+              <div class="agent-detail-body">
+
+                <section class="agent-detail-section">
+                  <h5>Capabilities</h5>
+                  <div id="agd_caps" class="agent-detail-caps"></div>
+                </section>
+
+                <section class="agent-detail-section">
+                  <h5>Token Usage</h5>
+                  <div id="agd_usage_chart" class="agent-detail-chart"></div>
+                </section>
+
+                <section class="agent-detail-section">
+                  <h5>Success Rate</h5>
+                  <div id="agd_success_chart" class="agent-detail-chart"></div>
+                </section>
+
+                <section class="agent-detail-section">
+                  <h5>Projects Involved</h5>
+                  <div id="agd_projects"></div>
+                </section>
+
+                <section class="agent-detail-section">
+                  <h5>Recent Activity</h5>
+                  <div id="agd_activity"></div>
+                </section>
+
+              </div>
+            </div>
+
           </div>
 
           <div id="center_hub" class="center-pane hidden" data-center-tab="hub">
             <div class="hub-container">
-              <div class="account-grid">
-                <section class="account-card">
-                  <div class="account-card-head">
-                    <h4>Pair New Hub</h4>
+              <div class="hub-setup-row">
+
+                <section class="account-card hub-step-card">
+                  <div class="hub-step-badge">Step 1</div>
+                  <div class="account-card-head"><h4>Install Hivee Hub</h4></div>
+                  <p class="account-sub">Run these commands in your Docker terminal to set up your local hub.</p>
+                  <div class="hub-install-block">
+                    <pre id="hub_install_cmd" class="hub-install-code">git clone https://github.com/arieladhidevara/HIVEE-HUB.git
+cd HIVEE-HUB
+docker compose up -d --build</pre>
+                    <button id="btn_copy_hub_install" type="button" class="secondary hub-copy-btn">Copy</button>
                   </div>
-                  <p class="account-sub">Generate a pairing token, then paste it into your hub's <code>.env</code> file as <code>HIVEE_PAIRING_TOKEN</code>.</p>
+                  <p id="hub_install_copy_msg" class="helper"></p>
+                </section>
+
+                <section class="account-card hub-step-card">
+                  <div class="hub-step-badge">Step 2</div>
+                  <div class="account-card-head"><h4>Connect Hub</h4></div>
+                  <p class="account-sub">Generate a pairing token, then paste it into your hub's <code>.env</code> as <code>HIVEE_PAIRING_TOKEN</code>.</p>
                   <div class="stack">
                     <label>Hub Label (optional)</label>
                     <input id="connector_token_label" type="text" placeholder="e.g. VPS-1 Hub">
@@ -628,26 +687,20 @@
                   </div>
                 </section>
 
-                <section class="account-card">
-                  <div class="account-card-head">
-                    <h4>Connected Hubs</h4>
-                    <button id="btn_refresh_connectors" type="button" class="secondary">Refresh</button>
-                  </div>
-                  <p class="account-sub">Hubs registered to your account. Each hub bridges your local OpenClaw to Hivee Cloud.</p>
-                  <div id="connectors_list" class="connectors-list"></div>
-                  <p id="connectors_msg" class="helper"></p>
-                </section>
-
-                <section class="account-card">
-                  <div class="account-card-head">
-                    <h4>Available Hubs</h4>
-                    <button id="btn_refresh_saved_connections" type="button" class="secondary">Refresh</button>
-                  </div>
-                  <p class="account-sub">All hubs currently available to this workspace for routing, chat, and project execution.</p>
-                  <div id="saved_connections_list" class="connectors-list"></div>
-                  <p id="saved_connections_msg" class="helper"></p>
-                </section>
               </div>
+
+              <section class="account-card hub-all-card">
+                <div class="account-card-head">
+                  <h4>Your Hubs</h4>
+                  <button id="btn_refresh_connectors" type="button" class="secondary">Refresh</button>
+                </div>
+                <p class="account-sub">All hubs registered to your account.</p>
+                <div id="connectors_list" class="connectors-list"></div>
+                <p id="connectors_msg" class="helper"></p>
+                <div id="saved_connections_list" class="connectors-list" style="margin-top:8px"></div>
+                <p id="saved_connections_msg" class="helper"></p>
+              </section>
+
             </div>
           </div>
 
