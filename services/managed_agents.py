@@ -2130,6 +2130,221 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
     )
     await emit(project_id, "project.plan.ready", {"status": PLAN_STATUS_AWAITING_APPROVAL, "preview": plan_text[:1000]})
 
+async def _run_agent_subplan_phase(
+    project_id: str,
+    row: Any,
+    connection_api_key: str,
+    *,
+    agent_id: str,
+    agent_name: str,
+    primary_agent_id: str,
+    primary_agent_name: str,
+    task_text: str,
+) -> Tuple[bool, str]:
+    """
+    Two-step sub-plan phase for a single agent:
+    1. Invoke agent to write a detailed sub-plan and @mention primary for approval.
+    2. Invoke primary to review and approve/reject via chat.
+    Returns (approved: bool, subplan_text: str).
+    """
+    hivee_api_base = _get_hivee_api_base(project_id)
+    agent_token = _issue_agent_session_token(project_id, agent_id)
+    primary_token = _issue_agent_session_token(project_id, primary_agent_id)
+
+    # ── Step 1: Agent writes sub-plan ─────────────────────────────────────────
+    subplan_instruction = (
+        f"hivee_agent_id: {agent_id}\n"
+        f"hivee_project_token: {agent_token}\n"
+        f"fundamentals: GET {hivee_api_base}/files/fundamentals.md\n"
+        f"  Headers: X-Project-Agent-Id: {agent_id}\n"
+        f"           X-Project-Agent-Token: {agent_token}\n\n"
+        f"All Hivee API requests must include:\n"
+        f"  X-Project-Agent-Id: {agent_id}\n"
+        f"  X-Project-Agent-Token: {agent_token}\n\n"
+        f"You are agent `{agent_id}` ({agent_name}).\n"
+        f"You have been assigned this high-level task:\n\n"
+        f"{task_text}\n\n"
+        f"Before executing, write a DETAILED SUB-PLAN. Save it to "
+        f"`agents/{agent_id}-subplan.md` in output_files. Include:\n"
+        f"- Approach and methodology\n"
+        f"- Step-by-step sub-tasks you will create on the progress map\n"
+        f"- Timeline estimate per sub-task\n"
+        f"- Deliverable files\n"
+        f"- Risks, assumptions, dependencies\n\n"
+        f"Then post to chat requesting approval:\n"
+        f"  @{primary_agent_id} here is my sub-plan for [task title]. "
+        f"Read `agents/{agent_id}-subplan.md`. Please approve or provide feedback.\n\n"
+        f"Do NOT start executing yet.\n\n"
+        f"Return JSON: {{\"chat_update\": \"...\", "
+        f"\"output_files\": [{{\"path\": \"agents/{agent_id}-subplan.md\", \"content\": \"...\"}}], "
+        f"\"actions\": [{{\"type\": \"post_chat_message\", "
+        f"\"text\": \"@{primary_agent_id} sub-plan ready for review...\", "
+        f"\"mentions\": [\"{primary_agent_id}\"]}}], "
+        f"\"requires_user_input\": true, "
+        f"\"pause_reason\": \"Waiting for @{primary_agent_id} sub-plan approval.\"}}"
+    )
+    subplan_res = await _project_chat(
+        row,
+        connection_api_key,
+        subplan_instruction,
+        agent_id=agent_id,
+        session_key=f"{project_id}:subplan:{agent_id}",
+        timeout_sec=None,
+        user_id=str(row["user_id"] or ""),
+        from_agent_id="hivee",
+        from_label="Hivee System",
+        context_type="subplan",
+    )
+    _update_project_usage_metrics(
+        project_id,
+        prompt_tokens=_estimate_tokens_from_text(subplan_instruction),
+        completion_tokens=_estimate_tokens_from_text(subplan_res.get("text")),
+    )
+
+    subplan_text = str(subplan_res.get("text") or "").strip()
+    parsed_subplan = _extract_agent_report_payload(subplan_text)
+
+    # Persist sub-plan file + chat message
+    subplan_writes = parsed_subplan.get("output_files") or []
+    if isinstance(subplan_writes, list) and subplan_writes:
+        _apply_project_file_writes(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            writes=subplan_writes,
+            default_prefix=USER_OUTPUTS_DIRNAME,
+            allow_paths=None,
+        )
+    _apply_project_actions(
+        owner_user_id=str(row["user_id"]),
+        project_id=project_id,
+        project_root=str(row["project_root"] or ""),
+        actions=parsed_subplan.get("actions") or [],
+        allow_paths=None,
+        actor_type="project_agent",
+        actor_id=agent_id,
+        actor_label=f"agent:{agent_id}",
+    )
+
+    # Extract the actual sub-plan content for primary to read
+    actual_subplan = ""
+    for f in subplan_writes if isinstance(subplan_writes, list) else []:
+        if str(f.get("path") or "").strip().endswith("subplan.md"):
+            actual_subplan = str(f.get("content") or "").strip()
+            break
+    if not actual_subplan:
+        actual_subplan = str(parsed_subplan.get("chat_update") or subplan_text)[:3000]
+
+    await emit(project_id, "agent.subplan.submitted", {
+        "agent_id": agent_id, "agent_name": agent_name, "preview": actual_subplan[:400],
+    })
+
+    if not subplan_res.get("ok"):
+        # Sub-plan call failed — default approve so execution isn't blocked
+        return True, actual_subplan
+
+    # ── Step 2: Primary reviews sub-plan ──────────────────────────────────────
+    review_instruction = (
+        f"hivee_agent_id: {primary_agent_id}\n"
+        f"hivee_project_token: {primary_token}\n"
+        f"fundamentals: GET {hivee_api_base}/files/fundamentals.md\n"
+        f"  Headers: X-Project-Agent-Id: {primary_agent_id}\n"
+        f"           X-Project-Agent-Token: {primary_token}\n\n"
+        f"All Hivee API requests must include:\n"
+        f"  X-Project-Agent-Id: {primary_agent_id}\n"
+        f"  X-Project-Agent-Token: {primary_token}\n\n"
+        f"You are the primary agent `{primary_agent_id}` ({primary_agent_name}).\n"
+        f"Agent `{agent_id}` ({agent_name}) submitted their sub-plan for review:\n\n"
+        f"---\n{actual_subplan[:3000]}\n---\n\n"
+        f"Review this sub-plan against the overall project plan, goals, and constraints "
+        f"(read plan.md if needed). Consider: scope alignment, realistic timeline, correct "
+        f"dependencies, resource fit.\n\n"
+        f"Respond with your decision. Include `\"approved\": true` or `\"approved\": false`.\n"
+        f"Post your decision to chat @{agent_id}.\n\n"
+        f"Return JSON: {{\"chat_update\": \"...\", \"approved\": true, \"feedback\": \"...\", "
+        f"\"actions\": [{{\"type\": \"post_chat_message\", "
+        f"\"text\": \"@{agent_id} Sub-plan approved. Proceed.\", "
+        f"\"mentions\": [\"{agent_id}\"]}}]}}"
+    )
+    review_res = await _project_chat(
+        row,
+        connection_api_key,
+        review_instruction,
+        agent_id=primary_agent_id,
+        session_key=f"{project_id}:review:{agent_id}",
+        timeout_sec=None,
+        user_id=str(row["user_id"] or ""),
+        from_agent_id="hivee",
+        from_label="Hivee System",
+        context_type="subplan_review",
+    )
+    _update_project_usage_metrics(
+        project_id,
+        prompt_tokens=_estimate_tokens_from_text(review_instruction),
+        completion_tokens=_estimate_tokens_from_text(review_res.get("text")),
+    )
+
+    if not review_res.get("ok"):
+        return True, actual_subplan  # fallback: approve
+
+    review_text = str(review_res.get("text") or "").strip()
+    parsed_review = _extract_agent_report_payload(review_text)
+
+    # Post primary's decision to chat
+    _apply_project_actions(
+        owner_user_id=str(row["user_id"]),
+        project_id=project_id,
+        project_root=str(row["project_root"] or ""),
+        actions=parsed_review.get("actions") or [],
+        allow_paths=None,
+        actor_type="project_agent",
+        actor_id=primary_agent_id,
+        actor_label=f"agent:{primary_agent_id}",
+    )
+
+    # Determine approval — check explicit field first, then infer from text
+    approved_flag = parsed_review.get("approved")
+    if approved_flag is None:
+        review_chat = str(parsed_review.get("chat_update") or "").lower()
+        approved_flag = any(kw in review_chat for kw in ("approved", "proceed", "looks good", "good to go", "approve"))
+    approved = bool(approved_flag)
+
+    await emit(project_id, "agent.subplan.reviewed", {
+        "agent_id": agent_id, "agent_name": agent_name,
+        "approved": approved,
+        "feedback": str(parsed_review.get("feedback") or "")[:400],
+    })
+    return approved, actual_subplan
+
+
+def _parse_parallel_groups(
+    parsed_delegation: Dict[str, Any],
+    by_id: Dict[str, Any],
+) -> List[List[str]]:
+    """
+    Extract parallel_groups from the primary agent's delegation response.
+    Returns a list of groups; each group is a list of agent_ids to run concurrently.
+    Falls back to one-agent-per-group (fully sequential) if not present or invalid.
+    """
+    raw = parsed_delegation.get("parallel_groups")
+    if isinstance(raw, list) and raw:
+        groups: List[List[str]] = []
+        seen: set = set()
+        for g in raw:
+            if not isinstance(g, list):
+                continue
+            valid = [str(a).strip() for a in g if str(a).strip() in by_id and str(a).strip() not in seen]
+            if valid:
+                groups.append(valid)
+                seen.update(valid)
+        # Any agents not covered by primary's groups get appended as individual groups
+        for aid in by_id:
+            if aid not in seen:
+                groups.append([aid])
+        return groups if groups else [[aid] for aid in by_id]
+    # Fallback: each agent in its own sequential group
+    return [[aid] for aid in by_id]
+
+
 async def _delegate_project_tasks(project_id: str) -> None:
     conn = db()
     row = conn.execute(
@@ -2325,6 +2540,9 @@ async def _delegate_project_tasks(project_id: str) -> None:
             if aid and task_md and aid in by_id:
                 task_map[aid] = task_md
 
+    # Parse parallel groups from primary's delegation response
+    parallel_groups = _parse_parallel_groups(parsed, by_id)
+
     agent_order = list(by_id.keys())
     assigned_task_map: Dict[str, str] = {}
     assigned_mentions_map: Dict[str, List[str]] = {}
@@ -2429,32 +2647,73 @@ async def _delegate_project_tasks(project_id: str) -> None:
     primary_last_resume_hint = ""
     primary_pause_resolved = False
 
-    for idx, aid in enumerate(agent_order, start=1):
+    # ── SUB-PLAN PHASE ────────────────────────────────────────────────────────
+    # Each non-primary agent writes a detailed sub-plan; primary reviews it.
+    # Agents within the same parallel group submit sub-plans concurrently.
+    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=20)
+    await emit(project_id, "project.subplan.phase_started", {
+        "groups": [[a for a in g] for g in parallel_groups],
+    })
+    subplan_map: Dict[str, str] = {}  # agent_id -> approved sub-plan text
+
+    for grp in parallel_groups:
+        non_primary_in_group = [a for a in grp if a != primary_agent_id]
+        if not non_primary_in_group:
+            continue
+        state, _ = _read_project_execution_state(project_id)
+        if state == EXEC_STATUS_STOPPED:
+            break
+
+        async def _collect_subplan(aid: str) -> Tuple[str, bool, str]:
+            a_name = str((by_id.get(aid) or {}).get("agent_name") or aid)
+            approved, sp_text = await _run_agent_subplan_phase(
+                project_id, row, connection_api_key,
+                agent_id=aid,
+                agent_name=a_name,
+                primary_agent_id=primary_agent_id or aid,
+                primary_agent_name=primary_agent_name,
+                task_text=assigned_task_map.get(aid) or "",
+            )
+            return aid, approved, sp_text
+
+        results = await asyncio.gather(*[_collect_subplan(a) for a in non_primary_in_group])
+        for aid, approved, sp_text in results:
+            subplan_map[aid] = sp_text
+            a_name = str((by_id.get(aid) or {}).get("agent_name") or aid)
+            _append_project_daily_log(
+                owner_user_id=str(row["user_id"]),
+                project_root=str(row["project_root"] or ""),
+                kind="agent.subplan.reviewed",
+                text=f"{aid}: {'approved' if approved else 'needs revision'} — {sp_text[:400]}",
+            )
+
+    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=40)
+    await emit(project_id, "project.subplan.phase_complete", {
+        "agents_with_subplans": list(subplan_map.keys()),
+    })
+
+    # ── EXECUTION PHASE (parallel groups) ────────────────────────────────────
+    # Inner async function so we can run agents within a group concurrently.
+    async def _run_one_agent(aid: str, grp_idx: int) -> None:
+        nonlocal processed_agents, failed_agents
+        nonlocal primary_last_chat_update, primary_last_notes
+        nonlocal primary_last_pause_reason, primary_last_resume_hint, primary_pause_resolved
+
         row_item = by_id.get(aid) or {}
+        # Wait while paused; bail on stop
         while True:
             state, _ = _read_project_execution_state(project_id)
             if state == EXEC_STATUS_PAUSED:
                 await asyncio.sleep(0.7)
                 continue
             if state == EXEC_STATUS_STOPPED:
-                _refresh_project_documents(project_id)
-                _append_project_daily_log(
-                    owner_user_id=str(row["user_id"]),
-                    project_root=str(row["project_root"] or ""),
-                    kind="delegation.stopped",
-                    text="Delegation run stopped by user before all agents reported.",
-                )
-                await emit(
-                    project_id,
-                    "project.delegation.stopped",
-                    {"processed_agents": processed_agents, "failed_agents": failed_agents, "total_agents": len(agent_order)},
-                )
                 return
             break
 
         role = str(row_item.get("role") or "").strip() or "Collaborate based on project plan."
         agent_name = str(row_item.get("agent_name") or aid)
         task_text = assigned_task_map.get(aid) or f"# Task for {aid}\n\nRole: {role}\n"
+        approved_subplan = subplan_map.get(aid, "")
         task_rel = f"agents/{_safe_agent_filename(aid)}.md"
         agent_file_context = _build_project_file_context(
             owner_user_id=str(row["user_id"]),
@@ -2473,10 +2732,15 @@ async def _delegate_project_tasks(project_id: str) -> None:
             max_total_chars=7_500,
             max_files=8,
         )
-        await emit(
-            project_id,
-            "agent.task.started",
-            {"agent_id": aid, "agent_name": agent_name, "role": role},
+        await emit(project_id, "agent.task.started", {"agent_id": aid, "agent_name": agent_name, "role": role})
+
+        subplan_section = (
+            f"\n\n## Your Approved Sub-Plan\n{approved_subplan[:2000]}\n\n"
+            f"Follow this sub-plan. Your FIRST action must be to create detailed sub-task cards "
+            f"(via `create_task` actions) matching the steps in your sub-plan, then begin executing.\n"
+        ) if approved_subplan else (
+            f"\n\nFirst, create detailed sub-task cards (via `create_task` actions) for each step "
+            f"of your work, then begin executing.\n"
         )
 
         agent_instruction = (
@@ -2492,6 +2756,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "\n\n"
             + f"You are invited agent `{aid}` with role `{role}`.\n"
             + team_roster_text
+            + subplan_section
             + "\n\n"
             + _build_project_task_snapshot(project_id)
             + "\n"
@@ -2501,7 +2766,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "{\n"
             + "  \"chat_update\": \"Human-friendly update sentence to show in chat\",\n"
             + "  \"output_files\": [{\"path\":\"relative/path.ext\",\"content\":\"file content\",\"append\":false}],\n"
-            + "  \"actions\": [{\"type\":\"write_file\",\"path\":\"src/app.js\",\"content\":\"...\"},{\"type\":\"post_chat_message\",\"text\":\"handoff to @qa-bot\"},{\"type\":\"update_execution\",\"progress_pct\":45}],\n"
+            + "  \"actions\": [{\"type\":\"create_task\",\"title\":\"...\",\"description\":\"...\"},{\"type\":\"post_chat_message\",\"text\":\"handoff to @agent_id\"},{\"type\":\"update_execution\",\"progress_pct\":45}],\n"
             + "  \"notes\": \"optional technical notes\",\n"
             + "  \"requires_user_input\": false,\n"
             + "  \"pause_reason\": \"\",\n"
@@ -2510,11 +2775,10 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "Rules:\n"
             + "- chat_update must read like normal conversation.\n"
             + "- Put every created/updated artifact in output_files.\n"
-            + "- Use `actions` when you need to change real project files, group chat state, or task/progress state in place.\n"
-            + "- Persist deliverables in Hivee project files; do not keep final-only copies on provider/local runtime server.\n"
-            + "- Use relative paths inside this project only.\n"
+            + "- Use `actions` when you need to change real project files, group chat state, or task/progress state.\n"
+            + "- FIRST action: create sub-task cards for each step of your sub-plan.\n"
             + "- Use exact IDs from roster when mentioning other agents.\n"
-            + "- Mention handoff needs in chat_update with @agent_id if needed.\n"
+            + "- Mention handoff needs in chat_update with @agent_id.\n"
             + f"- Follow `{PROJECT_PROTOCOL_FILE}` for delegation, mention, and status update rules.\n\n"
             + "- If blocked by user approval/input or planned pit stop, set requires_user_input=true and explain pause_reason.\n"
             + "- If user says SKIP for missing info, proceed with assumptions and state them briefly in chat_update.\n"
@@ -2523,13 +2787,14 @@ async def _delegate_project_tasks(project_id: str) -> None:
         )
         if agent_file_context:
             agent_instruction = f"{agent_instruction}\n\n{agent_file_context}"
+
         agent_res = await _project_chat(
             row,
             connection_api_key,
             agent_instruction,
             agent_id=aid,
             session_key=f"{project_id}:agent:{aid}",
-            timeout_sec=120,
+            timeout_sec=None,
             user_id=str(row["user_id"] or ""),
             from_agent_id="hivee",
             from_label="Hivee System",
@@ -2545,18 +2810,14 @@ async def _delegate_project_tasks(project_id: str) -> None:
         if not agent_res.get("ok"):
             failed_agents += 1
             err_text = detail_to_text(agent_res.get("error") or agent_res.get("details") or "Agent task failed")[:1200]
-            await emit(
-                project_id,
-                "agent.task.failed",
-                {"agent_id": aid, "agent_name": agent_name, "error": err_text},
-            )
+            await emit(project_id, "agent.task.failed", {"agent_id": aid, "agent_name": agent_name, "error": err_text})
             _append_project_daily_log(
                 owner_user_id=str(row["user_id"]),
                 project_root=str(row["project_root"] or ""),
                 kind="agent.task.failed",
                 text=f"{aid}: {err_text}",
             )
-            continue
+            return
 
         report_text = str(agent_res.get("text") or "").strip()
         if not report_text:
@@ -2573,10 +2834,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
         if bool(agent_perms.get("can_write_files")):
             agent_output_allow_paths = _normalize_permission_write_paths(
                 agent_perms.get("write_paths") or [],
-                fallback=[
-                    USER_OUTPUTS_DIRNAME,
-                    f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
-                ],
+                fallback=[USER_OUTPUTS_DIRNAME, f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}"],
             )
         else:
             agent_output_allow_paths = []
@@ -2922,7 +3180,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             encoding="utf-8",
         )
         processed_agents += 1
-        pct = min(95, 55 + int((idx / agent_total) * 40))
+        pct = min(95, 40 + int(((grp_idx + 1) / max(1, len(parallel_groups))) * 53))
         _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=pct)
         for note in _summarize_ws_frames(agent_res.get("frames"), limit=8):
             await emit(project_id, "agent.task.live", {"agent_id": aid, "agent_name": agent_name, "note": note})
@@ -3063,6 +3321,25 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 )
                 if str(aid).strip() == str(primary_agent_id or "").strip():
                     primary_pause_resolved = True
+
+    # ── Parallel group runner ─────────────────────────────────────────────────
+    for grp_idx, grp in enumerate(parallel_groups):
+        state, _ = _read_project_execution_state(project_id)
+        if state == EXEC_STATUS_STOPPED:
+            _refresh_project_documents(project_id)
+            _append_project_daily_log(
+                owner_user_id=str(row["user_id"]),
+                project_root=str(row["project_root"] or ""),
+                kind="delegation.stopped",
+                text="Delegation run stopped by user.",
+            )
+            await emit(project_id, "project.delegation.stopped", {
+                "processed_agents": processed_agents,
+                "failed_agents": failed_agents,
+                "total_agents": len(agent_order),
+            })
+            return
+        await asyncio.gather(*[_run_one_agent(aid, grp_idx) for aid in grp])
 
     final_primary_pause = _infer_pause_request(
         chat_update=primary_last_chat_update,

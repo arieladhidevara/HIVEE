@@ -219,7 +219,43 @@ Use `actions` array for structured Hivee mutations:
 
 ---
 
-## 5. Handoff Protocol
+## 5. Sub-Plan Protocol (REQUIRED before execution)
+
+When you receive a high-level task assignment, you MUST write a sub-plan before executing:
+
+### Step 1 — Write your sub-plan
+Include in `output_files` (path: `agents/{your_agent_id}-subplan.md`):
+- Approach and methodology
+- Step-by-step breakdown of sub-tasks you will create
+- Timeline estimate per sub-task
+- Expected deliverable files
+- Risks, assumptions, dependencies on other agents
+
+### Step 2 — Request primary agent approval via chat
+```json
+{
+  "type": "post_chat_message",
+  "text": "@primary_agent_id here is my sub-plan for [task title]. Read agents/{your_id}-subplan.md. Please approve or provide feedback.",
+  "mentions": ["primary_agent_id"]
+}
+```
+Set `requires_user_input: true` and `pause_reason: "Waiting for @primary_agent_id sub-plan approval."`.
+
+### Step 3 — After approval
+Once the primary agent approves via chat:
+1. Create detailed sub-task cards via `create_task` actions (one per sub-task in your plan).
+2. Update `update_execution` to reflect your actual progress.
+3. Begin execution and report progress at each sub-task.
+
+### Primary agent: reviewing sub-plans
+When an agent @mentions you with a sub-plan request:
+- Review it against the overall project plan, budget, and timeline.
+- Post your decision to chat: `@agent_id Sub-plan approved. Proceed.` OR `@agent_id Changes needed: [specific feedback].`
+- Include `"approved": true` or `"approved": false` in your JSON response.
+
+---
+
+## 6. Handoff Protocol
 
 Before triggering another agent to start work:
 1. **Write a handoff file:**
@@ -236,7 +272,7 @@ Before triggering another agent to start work:
 
 ---
 
-## 6. Blocked / Needs User Input
+## 7. Blocked / Needs User Input
 
 When you cannot continue without human input:
 ```json
@@ -251,7 +287,7 @@ Hivee will automatically create a BLOCKED task card visible to the owner in the 
 
 ---
 
-## 7. File Access (Read via HTTP)
+## 8. File Access (Read via HTTP)
 
 All project files are readable via HTTP using your agent credentials:
 ```
@@ -276,7 +312,7 @@ X-Project-Agent-Token: <your_hivee_project_token>
 
 ---
 
-## 8. Absolute Rules (Never Violate)
+## 9. Absolute Rules (Never Violate)
 
 1. **Always return valid JSON.** No exceptions.
 2. **Always populate `chat_update`.** Even a brief status is required.
@@ -2640,34 +2676,37 @@ def _delegate_prompt_from_project(
         if aid:
             roster.append({"agent_id": aid, "agent_name": name, "role": role, "is_primary": primary})
 
+    primary_id = next((r["agent_id"] for r in roster if r.get("is_primary")), agent_id)
     task = (
         "Plan has been approved by user. Your job now:\n\n"
         "1. Read `plan.md` from Hivee storage to get the full approved plan.\n"
         "2. Read `agents.md` to get the exact `@agent_id` for each team member.\n"
-        "3. Break the plan into concrete tasks per agent. For each task:\n"
-        "   - Clear title and description\n"
-        "   - Which agent is responsible\n"
-        "   - Prerequisites and start trigger\n"
-        "   - Expected output files\n"
-        "   - Handoff trigger: who to @mention when done\n"
-        "   - Pit-stop: what user approval is needed (if any)\n"
-        "4. Save the full delegation doc to `delegation.md` via output_files.\n"
-        "5. Create a task card in Hivee for EACH task via actions (create_task).\n"
-        "6. Post ONE chat message per agent via actions (post_chat_message) with @mention "
-        "so they know their tasks are ready — e.g. '@design_agent your tasks are assigned, check delegation.md'.\n"
-        "7. Post a final summary to @owner: how many tasks created, who does what, what needs approval.\n"
-        "8. If any task has a blocker or missing credential, create it with status=blocked "
-        "and include the blocker in the description.\n\n"
+        "3. Break the plan into HIGH-LEVEL tasks — ONE task per agent (or per major phase per agent):\n"
+        "   - Keep descriptions concise (2-4 sentences). No implementation detail yet.\n"
+        "   - State what the agent is responsible for delivering.\n"
+        "   - List expected output files.\n"
+        "   - Note any hard dependencies (which task must finish first).\n"
+        "4. Decide execution order — parallel vs sequential:\n"
+        "   - Group agents that can work at the same time into the SAME parallel group.\n"
+        "   - Agents that must wait for another group go in a later group.\n"
+        "   - Include `parallel_groups` in your JSON response as a list of lists:\n"
+        "     e.g. [[\"agent_a\", \"agent_b\"], [\"agent_c\"], [\"agent_d\", \"agent_e\"]]\n"
+        "     Group 0 runs first (all in parallel), then group 1 (after group 0 finishes), etc.\n"
+        "5. Save delegation.md via output_files — include the parallel/sequential plan.\n"
+        "6. Create ONE task card (create_task) per agent with status=todo.\n"
+        "7. Post ONE chat message per assigned agent @mentioning them:\n"
+        f"   'You are assigned [scope]. Write your detailed sub-plan first, then @mention @{primary_id} for approval before starting.'\n"
+        "8. Post a @owner summary: how many tasks, who does what, parallel groups.\n\n"
         "Return JSON:\n"
         "{\n"
         "  \"chat_update\": \"Summary for @owner...\",\n"
+        "  \"parallel_groups\": [[\"agent_id_1\", \"agent_id_2\"], [\"agent_id_3\"]],\n"
         "  \"output_files\": [{\"path\": \"delegation.md\", \"content\": \"...\", \"append\": false}],\n"
         "  \"actions\": [\n"
-        "    {\"type\": \"write_file\", \"path\": \"delegation.md\", \"content\": \"...\"},\n"
         "    {\"type\": \"create_task\", \"title\": \"...\", \"description\": \"...\", "
         "\"assignee_agent_id\": \"...\", \"status\": \"todo\", \"priority\": \"high\"},\n"
-        "    {\"type\": \"post_chat_message\", \"text\": \"@agent_id your tasks are assigned...\", "
-        "\"mentions\": [\"agent_id\"]},\n"
+        "    {\"type\": \"post_chat_message\", \"text\": \"@agent_id you are assigned [scope]. Write your sub-plan first and @mention "
+        f"@{primary_id} for approval.\", \"mentions\": [\"agent_id\"]}},\n"
         "    ...\n"
         "  ]\n"
         "}\n\n"
