@@ -132,12 +132,25 @@ def get_user_online_connector(user_id: str) -> Optional[Dict[str, Any]]:
     return best
 
 
+def _connector_is_alive(connector_id: str, stale_threshold_sec: int = 45) -> bool:
+    """Return True if the connector has sent a heartbeat within stale_threshold_sec."""
+    conn = db()
+    row = conn.execute(
+        "SELECT last_seen_at FROM connectors WHERE id = ?",
+        (connector_id,),
+    ).fetchone()
+    conn.close()
+    if not row or not row["last_seen_at"]:
+        return False
+    return (time.time() - int(row["last_seen_at"])) < stale_threshold_sec
+
+
 async def connector_chat_sync(
     connector_id: str,
     message: str,
     agent_id: Optional[str] = None,
     session_key: Optional[str] = None,
-    timeout_sec: int = 45,
+    timeout_sec: Optional[int] = 45,
     *,
     from_agent_id: Optional[str] = None,
     from_label: Optional[str] = None,
@@ -146,7 +159,12 @@ async def connector_chat_sync(
     hivee_api_base: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Enqueue an openclaw.chat command to a connector and poll for the result.
-    Blocks up to `timeout_sec` seconds. Returns a dict compatible with openclaw_chat output.
+
+    If timeout_sec is None, polls indefinitely — stopping only if the connector
+    goes offline (no heartbeat for >45s). Use this for long-running background
+    tasks like plan generation.
+
+    If timeout_sec is set, also enforces a hard deadline as a safety net.
 
     from_agent_id: who is sending this message (agent_id or 'hivee' for system messages)
     from_label: human-readable label for the sender
@@ -177,11 +195,38 @@ async def connector_chat_sync(
         payload=payload,
     )
 
-    # Poll for result
-    deadline = time.time() + timeout_sec
+    liveness_only = timeout_sec is None
+    deadline = None if liveness_only else (time.time() + timeout_sec)
     poll_interval = 0.5  # start fast
-    while time.time() < deadline:
+    polls_since_liveness_check = 0
+
+    while True:
+        # Hard deadline check (only when timeout_sec is set)
+        if deadline is not None and time.time() >= deadline:
+            break
+
         await asyncio.sleep(poll_interval)
+        polls_since_liveness_check += 1
+
+        # Check connector liveness every ~15s of wall time
+        if polls_since_liveness_check >= 8:
+            polls_since_liveness_check = 0
+            if not _connector_is_alive(connector_id):
+                conn = db()
+                conn.execute(
+                    "UPDATE connector_commands SET status = 'timeout' WHERE id = ? AND status = 'queued'",
+                    (command_id,),
+                )
+                conn.commit()
+                conn.close()
+                return {
+                    "ok": False,
+                    "error": "Connector went offline while waiting for agent response.",
+                    "transport": "connector",
+                    "connector_id": connector_id,
+                    "command_id": command_id,
+                }
+
         result = latest_connector_result(command_id)
         if result is not None:
             inner = result.get("result") or {}
@@ -201,7 +246,7 @@ async def connector_chat_sync(
                 return {
                     "ok": True,
                     "text": text,
-                    "transport": f"http via connector",
+                    "transport": "http via connector",
                     "path": "connector",
                     "response": output.get("raw") or output or inner,
                     "connector_id": connector_id,
@@ -228,8 +273,7 @@ async def connector_chat_sync(
         # Gradually slow down polling
         poll_interval = min(poll_interval * 1.3, 2.0)
 
-    # Timeout
-    # Mark command as timed out
+    # Hard deadline reached
     conn = db()
     conn.execute(
         "UPDATE connector_commands SET status = 'timeout' WHERE id = ? AND status = 'queued'",
