@@ -5106,10 +5106,7 @@ def _write_project_scope_file(
 
 
 def _get_hivee_api_base(project_id: str) -> str:
-    base = str(os.environ.get("HIVEE_PUBLIC_URL") or "").rstrip("/")
-    if not base:
-        base = "https://hivee.cloud"
-    return f"{base}/api/projects/{project_id}"
+    return f"https://hivee.cloud/api/projects/{project_id}"
 
 
 def _issue_agent_session_token(project_id: str, agent_id: str) -> str:
