@@ -1021,6 +1021,9 @@ function renderProjectInviteUI() {
       ? `Invite code hint: ${hint}`
       : (requiresInviteCode ? "Invite code is required for this invitation." : "");
   }
+  // Hide code row entirely when code is already in URL (transparent to user)
+  const codeRow = $("invite_code_row");
+  if (codeRow) codeRow.style.display = codeFromUrl ? "none" : "";
 
   if (connectionSelect) {
     const previous = String(connectionSelect.value || "").trim();
@@ -9330,70 +9333,48 @@ async function refreshWizardExternalAccess({ silent = false } = {}) {
 }
 async function createWizardExternalInvite(ev) {
   if (ev?.preventDefault) ev.preventDefault();
-  if (!selectedProjectId) throw new Error("Choose project first");
+  if (!selectedProjectId) throw new Error("Project not created yet — click 'Create & Invite Agents' first.");
 
   const targetEmail = String($("ext_target_email")?.value || "").trim();
-  const requestedAgentId = String($("ext_requested_agent_id")?.value || "").trim();
-  const requestedAgentName = String($("ext_requested_agent_name")?.value || "").trim();
-  const role = String($("ext_role")?.value || "").trim();
-  const note = String($("ext_note")?.value || "").trim();
-  const expiresHours = String($("ext_expires_hours")?.value || "72").trim();
+  if (!targetEmail) throw new Error("Enter the email address to invite.");
 
   const res = await api(`/api/projects/${selectedProjectId}/invites/external-agent`, "POST", {
-    target_email: targetEmail || null,
-    requested_agent_id: requestedAgentId || null,
-    requested_agent_name: requestedAgentName || null,
-    role,
-    note,
-    expires_in_sec: _hoursToInviteTtlSec(expiresHours),
+    target_email: targetEmail,
+    expires_in_sec: 7 * 24 * 3600, // 7 days for email invites
   });
 
   wizardLatestExternalInvite = res || null;
-  if (
-    wizardLatestExternalInvite
-    && !String(wizardLatestExternalInvite.project_invitations_preview_url || "").trim()
-    && wizardProjectInvitationsPreviewUrl
-  ) {
-    wizardLatestExternalInvite.project_invitations_preview_url = wizardProjectInvitationsPreviewUrl;
+  const emailInput = $("ext_target_email");
+  if (emailInput) emailInput.value = "";
+
+  const status = String(res?.email_delivery_status || "").trim();
+  const err = String(res?.email_delivery_error || "").trim();
+  let msg = `Invite sent to ${targetEmail}.`;
+  if (status && status !== "sent_by_primary_agent" && status !== "sent_via_smtp_fallback") {
+    msg += err ? ` Note: ${err}` : ` (delivery status: ${status})`;
   }
-  renderWizardLatestExternalInviteDelivery();
+  setMessage("wizard_external_msg", msg, "ok");
+  await refreshWizardExternalAccess({ silent: true });
+}
 
-  const inviteUrl = String(res?.invite_url || "").trim();
-  const portalUrl = String(res?.portal_url || "").trim();
-  const inviteCode = String(res?.invite_code || "").trim();
-  const docUrl = String(res?.project_invitations_preview_url || "").trim();
-  let copied = false;
-  if (inviteUrl && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(inviteUrl);
-      copied = true;
-    } catch {
-      copied = false;
-    }
+async function generateWizardInviteLink() {
+  if (!selectedProjectId) throw new Error("Project not created yet — click 'Create & Invite Agents' first.");
+
+  const res = await api(`/api/projects/${selectedProjectId}/invites/external-agent`, "POST", {
+    expires_in_sec: 365 * 24 * 3600, // 1 year for link invites
+  });
+
+  wizardLatestExternalInvite = res || null;
+  // Use portal_url (contains both token + code) so recipient doesn't need to enter code
+  const linkUrl = String(res?.portal_url || res?.invite_url || "").trim();
+  const linkInput = $("ext_invite_link_url");
+  if (linkInput) linkInput.value = linkUrl;
+  const resultDiv = $("ext_link_result");
+  if (resultDiv) resultDiv.classList.remove("hidden");
+  if (linkUrl && navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(linkUrl); } catch { /* ignore */ }
   }
-
-  let portalOpened = false;
-  if (portalUrl) {
-    try {
-      _openInviteDeliveryUrl(portalUrl);
-      portalOpened = true;
-    } catch {
-      portalOpened = false;
-    }
-  }
-
-  const msgBits = ["External invite sent."];
-  if (portalOpened) msgBits.push("Receiver portal opened in new tab.");
-  if (copied) msgBits.push("Invite URL copied to clipboard.");
-  else if (inviteUrl) msgBits.push(`Invite URL: ${inviteUrl}`);
-  if (portalUrl && !portalOpened) msgBits.push(`Portal URL: ${portalUrl}`);
-  if (inviteCode) msgBits.push(`Invite Code: ${inviteCode}`);
-  if (docUrl) msgBits.push(`Project invitations doc: ${docUrl}`);
-  if (res?.email_sent_by_primary_agent) msgBits.push("Primary agent sent the invite email.");
-  else if (res?.email_delivery_status) msgBits.push(`Email status: ${res.email_delivery_status}`);
-  if (res?.email_delivery_error) msgBits.push(`Email issue: ${detailToText(res.email_delivery_error)}`);
-  setMessage("wizard_external_msg", msgBits.join(" "), "ok");
-
+  setMessage("wizard_external_msg", "Invite link generated. Copy and share it.", "ok");
   await refreshWizardExternalAccess({ silent: true });
 }
 async function revokeWizardExternalInvite(inviteId) {
@@ -10224,7 +10205,7 @@ function bindActions() {
       sendWizardSetupChat().catch((e) => showUiError("wizard_msg", e));
     }
   });
-  $("btn_wizard_next")?.addEventListener("click", showWizardAgentsStep);
+  $("btn_wizard_next")?.addEventListener("click", () => createProjectNow().catch((e) => showUiError("wizard_msg", e)));
   $("btn_wizard_create_now").onclick = () => createProjectNow().catch((e) => showUiError("wizard_msg", e));
   $("btn_manage_agents").onclick = () => {
     if (!selectedProjectId) return;
@@ -10368,61 +10349,25 @@ function bindActions() {
   $("btn_confirm_inbox_accept")?.addEventListener("click", () => {
     confirmInboxAccept().catch((e) => setMessage("inbox_accept_invite_msg", detailToText(e?.message || e), "error"));
   });
-  $("btn_refresh_external_access")?.addEventListener("click", () => {
-    refreshWizardExternalAccess({ silent: false }).catch((e) => showUiError("wizard_external_msg", e));
+  // External invite: email / link tab switching
+  $("btn_ext_invite_by_email")?.addEventListener("click", () => {
+    $("btn_ext_invite_by_email")?.classList.add("active");
+    $("btn_ext_invite_by_link")?.classList.remove("active");
+    $("ext_invite_email_pane")?.classList.remove("hidden");
+    $("ext_invite_link_pane")?.classList.add("hidden");
   });
-  $("btn_copy_latest_invite_url")?.addEventListener("click", () => {
-    _copyInviteDeliveryText($("ext_latest_invite_url")?.value, "Invite URL copied.")
+  $("btn_ext_invite_by_link")?.addEventListener("click", () => {
+    $("btn_ext_invite_by_link")?.classList.add("active");
+    $("btn_ext_invite_by_email")?.classList.remove("active");
+    $("ext_invite_link_pane")?.classList.remove("hidden");
+    $("ext_invite_email_pane")?.classList.add("hidden");
+  });
+  $("btn_gen_invite_link")?.addEventListener("click", () => {
+    generateWizardInviteLink().catch((e) => showUiError("wizard_external_msg", e));
+  });
+  $("btn_copy_invite_link")?.addEventListener("click", () => {
+    _copyInviteDeliveryText($("ext_invite_link_url")?.value, "Link copied.")
       .catch((e) => showUiError("wizard_external_msg", e));
-  });
-  $("btn_open_latest_invite_url")?.addEventListener("click", () => {
-    try {
-      _openInviteDeliveryUrl($("ext_latest_invite_url")?.value);
-    } catch (e) {
-      showUiError("wizard_external_msg", e);
-    }
-  });
-  $("btn_copy_latest_portal_url")?.addEventListener("click", () => {
-    _copyInviteDeliveryText($("ext_latest_portal_url")?.value, "Portal URL copied.")
-      .catch((e) => showUiError("wizard_external_msg", e));
-  });
-  $("btn_open_latest_portal_url")?.addEventListener("click", () => {
-    try {
-      _openInviteDeliveryUrl($("ext_latest_portal_url")?.value);
-    } catch (e) {
-      showUiError("wizard_external_msg", e);
-    }
-  });
-  $("btn_copy_latest_invite_code")?.addEventListener("click", () => {
-    _copyInviteDeliveryText($("ext_latest_invite_code")?.value, "Invite code copied.")
-      .catch((e) => showUiError("wizard_external_msg", e));
-  });
-  $("btn_copy_project_invitations_url")?.addEventListener("click", () => {
-    _copyInviteDeliveryText($("ext_project_invitations_url")?.value, "Project invitations URL copied.")
-      .catch((e) => showUiError("wizard_external_msg", e));
-  });
-  $("btn_open_project_invitations_url")?.addEventListener("click", () => {
-    try {
-      _openInviteDeliveryUrl($("ext_project_invitations_url")?.value);
-    } catch (e) {
-      showUiError("wizard_external_msg", e);
-    }
-  });
-  $("btn_copy_latest_email")?.addEventListener("click", () => {
-    const subject = String($("ext_latest_email_subject")?.value || "").trim();
-    const body = String($("ext_latest_email_body")?.value || "").trim();
-    const payload = subject && body ? `Subject: ${subject}\n\n${body}` : (subject || body);
-    _copyInviteDeliveryText(payload, "Email draft copied.")
-      .catch((e) => showUiError("wizard_external_msg", e));
-  });
-  $("btn_open_invite_mailto")?.addEventListener("click", () => {
-    try {
-      const mailto = _latestInviteMailtoUrl();
-      if (!mailto) throw new Error("Email draft is empty.");
-      window.location.href = mailto;
-    } catch (e) {
-      showUiError("wizard_external_msg", e);
-    }
   });
   $("btn_subscribe").onclick = () => subscribeEvents().catch((e) => addEvent("error", detailToText(e)));
   $("btn_run").onclick = () => runProject().catch((e) => { setMessage("chat_hint", detailToText(e), "error"); addEvent("error", detailToText(e)); });

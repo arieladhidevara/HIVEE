@@ -3233,6 +3233,14 @@ textarea[readonly]:focus {
 .tdm-card-field-label { font-size: 9px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .tdm-card-field-value { font-size: 11px; color: var(--text); margin: 0; line-height: 1.5; white-space: pre-wrap; }
 
+/* ===== EXTERNAL INVITE ===== */
+.ext-invite-type-row { display: flex; gap: 4px; margin-bottom: 12px; }
+.ext-invite-type-btn { flex: 1; padding: 6px 10px; font-size: 12px; font-weight: 600; border-radius: 8px; border: 1px solid var(--border); background: var(--surface3); color: var(--muted); cursor: pointer; transition: all .15s; }
+.ext-invite-type-btn.active { background: var(--surface4, var(--surface3)); border-color: var(--cyan); color: var(--text); }
+.ext-invite-type-btn:hover:not(.active) { color: var(--text); border-color: var(--line-2); }
+.ext-link-copy-row { display: flex; gap: 6px; align-items: center; margin-top: 10px; }
+.ext-link-copy-row input { flex: 1; font-size: 11px; }
+
 /* ===== CONNECTOR UI ===== */
 .connector-token-display {
   display: flex; align-items: center; gap: 8px;

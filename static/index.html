@@ -50,19 +50,20 @@
               <div class="action-row">
                 <button id="btn_open_project_invite_doc" class="secondary" type="button">Open Invitation Doc</button>
               </div>
-              <label>Invite Code (from Project-Invitation.md)</label>
-              <input id="invite_portal_code" type="text" placeholder="AB12CD34" autocomplete="off">
-              <p id="project_invite_code_hint" class="helper"></p>
+              <div id="invite_code_row">
+                <label>Invite Code</label>
+                <input id="invite_portal_code" type="text" placeholder="AB12CD34" autocomplete="off">
+                <p id="project_invite_code_hint" class="helper"></p>
+              </div>
               <label>Use Hub</label>
               <select id="invite_connection_id"></select>
-              <label>Agent ID (optional if invite already specifies one)</label>
-              <input id="invite_agent_id" type="text" placeholder="my-agent-id">
-              <label>Agent Name (optional)</label>
-              <input id="invite_agent_name" type="text" placeholder="My Agent Name">
+              <!-- hidden agent inputs kept for internal use -->
+              <input id="invite_agent_id" type="hidden">
+              <input id="invite_agent_name" type="hidden">
               <div class="action-row">
-                <button id="btn_accept_project_invite" type="button" class="primary">Continue to Agent Selection</button>
+                <button id="btn_accept_project_invite" type="button" class="primary">Continue</button>
                 <button id="btn_invite_open_setup" class="secondary" type="button">Open Hub Pairing</button>
-                <button id="btn_ignore_project_invite" class="secondary" type="button">Ignore Invite</button>
+                <button id="btn_ignore_project_invite" class="secondary" type="button">Ignore</button>
               </div>
               <p id="project_invite_msg" class="helper"></p>
             </div>
@@ -1060,75 +1061,44 @@ docker compose up -d --build</pre>
                 <div id="wizard_owner_agents" class="wizard-simple-list"></div>
               </div>
 
-              <!-- External Agents panel: two columns -->
+              <!-- External Agents panel -->
               <div id="invite_panel_external" class="invite-panel hidden">
-                <div class="external-invite-cols">
-                  <!-- Left: email form -->
-                  <div class="external-invite-email-col">
-                    <form id="form_external_invite" class="stack">
-                      <label>Email</label>
-                      <div style="position:relative">
-                        <input id="ext_target_email" type="email" placeholder="agent-owner@email.com" autocomplete="off">
-                        <div id="ext_email_suggestions" class="email-suggest-dropdown hidden"></div>
-                      </div>
-                      <label>Agent ID (optional)</label>
-                      <input id="ext_requested_agent_id" type="text" placeholder="dailybot">
-                      <label>Agent Name (optional)</label>
-                      <input id="ext_requested_agent_name" type="text" placeholder="Daily Bot">
-                      <label>Role</label>
-                      <input id="ext_role" type="text" placeholder="Research assistant">
-                      <label>Note</label>
-                      <textarea id="ext_note" placeholder="Context for invited external agent"></textarea>
-                      <label>Expires (hours)</label>
-                      <input id="ext_expires_hours" type="number" min="1" max="720" value="72">
-                      <div class="action-row">
-                        <button id="btn_create_external_invite" type="submit">Send Invite</button>
-                        <button id="btn_refresh_external_access" type="button" class="secondary">Refresh</button>
-                      </div>
-                    </form>
-                  </div>
+                <div class="ext-invite-type-row">
+                  <button id="btn_ext_invite_by_email" class="ext-invite-type-btn active" type="button">By Email</button>
+                  <button id="btn_ext_invite_by_link" class="ext-invite-type-btn" type="button">By Link</button>
+                </div>
 
-                  <!-- Right: generated invite link after creation -->
-                  <div class="external-invite-link-col">
-                    <section id="wizard_external_delivery" class="wizard-mini-card hidden">
-                      <label>Invitation URL</label>
-                      <input id="ext_latest_invite_url" type="text" readonly>
-                      <div class="action-row">
-                        <button id="btn_copy_latest_invite_url" type="button" class="secondary">Copy URL</button>
-                        <button id="btn_open_latest_invite_url" type="button" class="secondary">Open</button>
-                      </div>
-                      <label>Portal URL</label>
-                      <input id="ext_latest_portal_url" type="text" readonly>
-                      <div class="action-row">
-                        <button id="btn_copy_latest_portal_url" type="button" class="secondary">Copy</button>
-                        <button id="btn_open_latest_portal_url" type="button" class="secondary">Open</button>
-                      </div>
-                      <label>Invite Code</label>
-                      <input id="ext_latest_invite_code" type="text" readonly>
-                      <div class="action-row">
-                        <button id="btn_copy_latest_invite_code" type="button" class="secondary">Copy Code</button>
-                      </div>
-                      <label>Invitations Doc URL</label>
-                      <input id="ext_project_invitations_url" type="text" readonly>
-                      <div class="action-row">
-                        <button id="btn_copy_project_invitations_url" type="button" class="secondary">Copy</button>
-                        <button id="btn_open_project_invitations_url" type="button" class="secondary">Open Doc</button>
-                      </div>
-                      <label>Email Subject</label>
-                      <input id="ext_latest_email_subject" type="text" readonly>
-                      <label>Email Draft</label>
-                      <textarea id="ext_latest_email_body" readonly></textarea>
-                      <div class="action-row">
-                        <button id="btn_copy_latest_email" type="button" class="secondary">Copy Email</button>
-                        <button id="btn_open_invite_mailto" type="button" class="secondary">Open Draft</button>
-                      </div>
-                    </section>
-                    <section class="wizard-mini-card">
-                      <h5>Invites</h5>
-                      <div id="wizard_external_invites" class="wizard-simple-list"></div>
-                    </section>
+                <!-- Email pane -->
+                <div id="ext_invite_email_pane">
+                  <form id="form_external_invite" class="stack">
+                    <div style="position:relative">
+                      <input id="ext_target_email" type="email" placeholder="user@email.com" autocomplete="off">
+                      <div id="ext_email_suggestions" class="email-suggest-dropdown hidden"></div>
+                    </div>
+                    <button id="btn_create_external_invite" type="submit">Send Invite</button>
+                  </form>
+                </div>
+
+                <!-- Link pane -->
+                <div id="ext_invite_link_pane" class="hidden">
+                  <button id="btn_gen_invite_link" type="button" class="primary">Generate Invite Link</button>
+                  <div id="ext_link_result" class="hidden">
+                    <div class="ext-link-copy-row">
+                      <input id="ext_invite_link_url" type="text" readonly>
+                      <button id="btn_copy_invite_link" type="button" class="secondary">Copy</button>
+                    </div>
+                    <p class="helper">Permanent link — anyone with it can join after logging in.</p>
                   </div>
                 </div>
+
+                <!-- Hidden compatibility inputs (used internally) -->
+                <input id="ext_requested_agent_id" type="hidden">
+                <input id="ext_requested_agent_name" type="hidden">
+                <input id="ext_role" type="hidden">
+                <input id="ext_note" type="hidden">
+                <input id="ext_expires_hours" type="hidden" value="168">
+
+                <div id="wizard_external_invites" class="wizard-simple-list" style="margin-top:10px"></div>
               </div>
 
               <p id="wizard_external_msg" class="helper"></p>
@@ -1136,7 +1106,7 @@ docker compose up -d --build</pre>
           </div>
 
           <div id="wizard_footer_actions" class="action-row">
-            <button id="btn_wizard_next" type="button" class="primary">Next →</button>
+            <button id="btn_wizard_next" type="button" class="primary">Create &amp; Invite Agents</button>
             <button id="btn_wizard_create_now" type="button" class="primary hidden">Create Project</button>
           </div>
 
