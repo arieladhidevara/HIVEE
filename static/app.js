@@ -10330,38 +10330,46 @@ if (oauthError) {
 
 /* ── Auth typewriter ── */
 (function () {
-  const el = document.getElementById("ahl_typewriter");
-  if (!el) return;
+  const wrap = document.querySelector(".ahl-typewriter-wrap");
+  const el   = document.getElementById("ahl_typewriter");
+  if (!el || !wrap) return;
 
   const phrases = [
-    { text: "One AI agent is powerful.", gradient: false },
-    { text: "Imagine thousands working together.", gradient: true },
-    { text: "It's Hivee.", gradient: false },
+    { text: "One AI agent is powerful.",           gradient: false, long: false },
+    { text: "Imagine thousands working together.", gradient: true,  long: true  },
+    { text: "That's Hivee!",                       gradient: false, long: false },
   ];
 
-  let pi = 0, ci = 0, deleting = false;
-  const TYPE_MS = 38, DEL_MS = 18, PAUSE_AFTER = 1800, PAUSE_BEFORE = 180;
+  const TYPE_MS = 20, PAUSE_MS = 1000, FADE_MS = 320;
+  let pi = 0, ci = 0;
 
-  function tick() {
-    const { text, gradient } = phrases[pi];
+  wrap.style.transition = `opacity ${FADE_MS}ms ease`;
 
-    if (!deleting) {
-      ci++;
-      el.textContent = text.slice(0, ci);
-      gradient ? el.classList.add("gradient") : el.classList.remove("gradient");
-      if (ci === text.length) { setTimeout(() => { deleting = true; tick(); }, PAUSE_AFTER); return; }
-    } else {
-      ci--;
-      el.textContent = text.slice(0, ci);
-      if (ci === 0) {
-        deleting = false;
-        pi = (pi + 1) % phrases.length;
-        setTimeout(tick, PAUSE_BEFORE);
-        return;
-      }
-    }
-    setTimeout(tick, deleting ? DEL_MS : TYPE_MS);
+  function applyClasses() {
+    const { gradient, long } = phrases[pi];
+    el.classList.toggle("gradient", gradient);
+    el.classList.toggle("long", long);
   }
 
+  function fadeToNext() {
+    wrap.style.opacity = "0";
+    setTimeout(() => {
+      pi = (pi + 1) % phrases.length;
+      ci = 0;
+      el.textContent = "";
+      applyClasses();
+      wrap.style.opacity = "1";
+      setTimeout(tick, 80);
+    }, FADE_MS);
+  }
+
+  function tick() {
+    ci++;
+    el.textContent = phrases[pi].text.slice(0, ci);
+    if (ci === phrases[pi].text.length) { setTimeout(fadeToNext, PAUSE_MS); return; }
+    setTimeout(tick, TYPE_MS);
+  }
+
+  applyClasses();
   tick();
 })();

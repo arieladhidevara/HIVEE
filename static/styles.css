@@ -132,12 +132,12 @@ h1, h2, h3, h4, strong {
 .ticker-item {
   display: inline-flex;
   align-items: center;
-  padding: 0 40px;
-  opacity: 0.5;
+  padding: 0 28px;
+  opacity: 0.4;
   transition: opacity 200ms;
 }
 .ticker-item img {
-  height: 18px;
+  height: 14px;
   width: auto;
   object-fit: contain;
   display: block;
@@ -335,8 +335,8 @@ label {
 }
 
 .brand-logo {
-  width: clamp(96px, 14vw, 136px);
-  height: clamp(96px, 14vw, 136px);
+  width: clamp(44px, 6vw, 60px);
+  height: clamp(44px, 6vw, 60px);
   object-fit: contain;
   margin-bottom: 14px;
 }
@@ -350,17 +350,21 @@ label {
 /* Auth typewriter headline */
 .ahl-typewriter-wrap {
   margin: 16px 0 24px;
-  min-height: 3.5em;
+  min-height: 3.2em;
   display: flex;
   align-items: flex-start;
 }
 .ahl-typewriter {
-  font-size: clamp(28px, 3.8vw, 48px);
+  font-size: clamp(26px, 3.4vw, 44px);
   font-weight: 800;
   line-height: 1.1;
   letter-spacing: -0.025em;
   color: #fff;
   display: inline;
+  white-space: nowrap;
+}
+.ahl-typewriter.long {
+  font-size: clamp(18px, 2.2vw, 28px);
 }
 .ahl-typewriter.gradient {
   background: linear-gradient(135deg, #facc15 0%, #ff4d4d 45%, #22d3ee 100%);
@@ -369,7 +373,7 @@ label {
   background-clip: text;
 }
 .ahl-cursor {
-  font-size: clamp(28px, 3.8vw, 48px);
+  font-size: clamp(26px, 3.4vw, 44px);
   font-weight: 200;
   color: rgba(255,255,255,0.5);
   line-height: 1.1;
@@ -536,7 +540,7 @@ label {
   background: rgba(8, 11, 20, 0.8);
 }
 
-.social-grid { display: grid; gap: 8px; }
+.social-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
 .social-btn {
   border: 1px solid var(--line-2);
@@ -2456,7 +2460,17 @@ textarea[readonly]:focus {
 
 #view_auth .auth-brand {
   padding-right: 28px;
-  border-right: 1px solid rgba(255, 255, 255, 0.14);
+  position: relative;
+}
+#view_auth .auth-brand::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: 8%;
+  height: 84%;
+  width: 1px;
+  background: linear-gradient(to bottom, transparent 0%, #facc15 20%, #ff4d4d 50%, #22d3ee 80%, transparent 100%);
+  opacity: 0.55;
 }
 
 #view_auth .auth-panel {
