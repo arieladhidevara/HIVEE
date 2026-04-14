@@ -212,62 +212,77 @@
             </button>
           </div>
 
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="dashboard">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M8 19v-6M12 19V9M16 19v-3M20 19V7"/></svg>
-              <span>Dashboard</span>
-            </button>
-            <div id="nav_content_dashboard" class="nav-content hidden"></div>
-          </div>
-
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="inbox">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="M4 12h4l3 4 3-4h6"/></svg>
-              <span>Inbox</span>
-            </button>
-            <div id="nav_content_inbox" class="nav-content hidden"></div>
-          </div>
-
-          <div class="nav-section">
-            <button type="button" class="nav-toggle active" data-nav-tab="projects">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h8l2 2h8v10H3z"/></svg>
-              <span>Projects</span>
-            </button>
-            <div id="nav_content_projects" class="nav-content">
-              <div id="projects_list" class="project-list"></div>
+          <!-- Group 1: Dashboard + Inbox -->
+          <div class="nav-group">
+            <div class="nav-section">
+              <button type="button" class="nav-toggle" data-nav-tab="dashboard">
+                <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5M8 19v-6M12 19V9M16 19v-3M20 19V7"/></svg>
+                <span>Dashboard</span>
+              </button>
+              <div id="nav_content_dashboard" class="nav-content hidden"></div>
+            </div>
+            <div class="nav-section">
+              <button type="button" class="nav-toggle" data-nav-tab="inbox">
+                <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="M4 12h4l3 4 3-4h6"/></svg>
+                <span>Inbox</span>
+              </button>
+              <div id="nav_content_inbox" class="nav-content hidden"></div>
             </div>
           </div>
 
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="agents">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="12" rx="2"/><path d="M9 12h6M12 3v4"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
-              <span>Agents</span>
-            </button>
-            <div id="nav_content_agents" class="nav-content hidden"></div>
+          <div class="nav-group-divider"></div>
+
+          <!-- Group 2: Projects -->
+          <div class="nav-group">
+            <div class="nav-section">
+              <button type="button" class="nav-toggle active" data-nav-tab="projects">
+                <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h8l2 2h8v10H3z"/></svg>
+                <span>Projects</span>
+              </button>
+              <div id="nav_content_projects" class="nav-content">
+                <div id="projects_list" class="project-list"></div>
+              </div>
+            </div>
           </div>
 
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="hub">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v6"/><path d="M12 14v6"/><path d="M4 12h6"/><path d="M14 12h6"/><circle cx="12" cy="12" r="3"/><circle cx="12" cy="4" r="1.5"/><circle cx="20" cy="12" r="1.5"/><circle cx="12" cy="20" r="1.5"/><circle cx="4" cy="12" r="1.5"/></svg>
-              <span>Hub</span>
-            </button>
-            <div id="nav_content_hub" class="nav-content hidden"></div>
+          <div class="nav-group-divider"></div>
+
+          <!-- Group 3: Agents, Issues, Hub -->
+          <div class="nav-group">
+            <div class="nav-section">
+              <button type="button" class="nav-toggle" data-nav-tab="agents">
+                <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="12" rx="2"/><path d="M9 12h6M12 3v4"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
+                <span>Agents</span>
+              </button>
+              <div id="nav_content_agents" class="nav-content hidden"></div>
+            </div>
+            <div class="nav-section">
+              <button type="button" class="nav-toggle" data-nav-tab="issues">
+                <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+                <span>Issues</span>
+              </button>
+              <div id="nav_content_issues" class="nav-content hidden"></div>
+            </div>
+            <div class="nav-section">
+              <button type="button" class="nav-toggle" data-nav-tab="hub">
+                <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v6"/><path d="M12 14v6"/><path d="M4 12h6"/><path d="M14 12h6"/><circle cx="12" cy="12" r="3"/><circle cx="12" cy="4" r="1.5"/><circle cx="20" cy="12" r="1.5"/><circle cx="12" cy="20" r="1.5"/><circle cx="4" cy="12" r="1.5"/></svg>
+                <span>Hub</span>
+              </button>
+              <div id="nav_content_hub" class="nav-content hidden"></div>
+            </div>
           </div>
 
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="issues">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
-              <span>Issues</span>
-            </button>
-            <div id="nav_content_issues" class="nav-content hidden"></div>
-          </div>
+          <div class="nav-group-divider nav-group-divider--push"></div>
 
-          <div class="nav-section">
-            <button type="button" class="nav-toggle" data-nav-tab="settings">
-              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.3.8a7 7 0 0 0-1.8-1l-.3-2.4h-4l-.3 2.4a7 7 0 0 0-1.8 1L6 6l-2 3.5L6 11a7 7 0 0 0 0 2l-2 1.5L6 18l2.3-.8a7 7 0 0 0 1.8 1l.3 2.4h4l.3-2.4a7 7 0 0 0 1.8-1L18 18l2-3.5L18 13a7 7 0 0 0 .1-1z"/></svg>
-              <span>Settings</span>
-            </button>
-            <div id="nav_content_settings" class="nav-content hidden"></div>
+          <!-- Group 4: Settings -->
+          <div class="nav-group">
+            <div class="nav-section">
+              <button type="button" class="nav-toggle" data-nav-tab="settings">
+                <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.3.8a7 7 0 0 0-1.8-1l-.3-2.4h-4l-.3 2.4a7 7 0 0 0-1.8 1L6 6l-2 3.5L6 11a7 7 0 0 0 0 2l-2 1.5L6 18l2.3-.8a7 7 0 0 0 1.8 1l.3 2.4h4l.3-2.4a7 7 0 0 0 1.8-1L18 18l2-3.5L18 13a7 7 0 0 0 .1-1z"/></svg>
+                <span>Settings</span>
+              </button>
+              <div id="nav_content_settings" class="nav-content hidden"></div>
+            </div>
           </div>
         </aside>
 
@@ -497,10 +512,15 @@
           <div id="center_inbox" class="center-pane hidden" data-center-tab="inbox">
             <div class="inbox-container">
               <div class="inbox-tabs">
-                <button class="inbox-tab active" type="button" data-inbox-tab="general">General</button>
+                <button class="inbox-tab active" type="button" data-inbox-tab="invitations">Invitations</button>
+                <button class="inbox-tab" type="button" data-inbox-tab="general">General</button>
                 <button class="inbox-tab" type="button" data-inbox-tab="byproject">Per Project</button>
               </div>
-              <div id="inbox_general_pane" class="inbox-tab-pane">
+              <div id="inbox_invitations_pane" class="inbox-tab-pane">
+                <p class="helper" id="inbox_invitations_empty">No pending invitations.</p>
+                <div id="inbox_invitations_list" class="inbox-list"></div>
+              </div>
+              <div id="inbox_general_pane" class="inbox-tab-pane hidden">
                 <p class="helper" id="inbox_general_empty">No messages yet.</p>
                 <div id="inbox_general_list" class="inbox-list"></div>
               </div>
@@ -651,7 +671,23 @@
           </div>
 
           <div id="center_hub" class="center-pane hidden" data-center-tab="hub">
-            <div class="hub-container">
+
+            <!-- Agent cards section -->
+            <div class="hub-agents-section">
+              <div class="agents-list-header">
+                <h3>Agents</h3>
+                <p class="helper">All agents connected across your hubs.</p>
+              </div>
+              <div id="hub_agents_grid" class="summary-agents-grid hub-agents-grid"></div>
+              <p id="hub_agents_msg" class="helper" style="padding:0 20px"></p>
+            </div>
+
+            <!-- Hub management section -->
+            <div class="hub-mgmt-section">
+              <div class="hub-mgmt-header">
+                <h4>Hub Management</h4>
+              </div>
+              <div class="hub-container">
               <div class="hub-setup-row">
 
                 <section class="account-card hub-step-card">
@@ -704,8 +740,9 @@ docker compose up -d --build</pre>
                 <p id="saved_connections_msg" class="hidden"></p>
               </section>
 
-            </div>
-          </div>
+              </div><!-- /.hub-container -->
+            </div><!-- /.hub-mgmt-section -->
+          </div><!-- /#center_hub -->
 
           <div id="center_settings" class="center-pane hidden" data-center-tab="settings">
             <div class="settings-container">
@@ -820,10 +857,12 @@ docker compose up -d --build</pre>
             </button>
           </div>
           <div class="tdm-meta-row">
-            <div class="tdm-meta-item"><span class="tdm-meta-label">From</span><span id="tdm_from">—</span></div>
-            <div class="tdm-meta-item"><span class="tdm-meta-label">To</span><span id="tdm_to">—</span></div>
+            <div class="tdm-meta-item"><span class="tdm-meta-label">Delegated by</span><span id="tdm_from">—</span></div>
+            <div class="tdm-meta-item"><span class="tdm-meta-label">Assigned to</span><span id="tdm_to">—</span></div>
+            <div class="tdm-meta-item"><span class="tdm-meta-label">Handover to</span><span id="tdm_handover">—</span></div>
             <div class="tdm-meta-item"><span class="tdm-meta-label">Priority</span><span id="tdm_priority">—</span></div>
             <div class="tdm-meta-item"><span class="tdm-meta-label">Status</span><span id="tdm_status_label">—</span></div>
+            <div class="tdm-meta-item"><span class="tdm-meta-label">Weight</span><span id="tdm_weight" class="tdm-weight-badge">—</span></div>
           </div>
           <div class="tdm-io-row">
             <div class="tdm-io-col">
@@ -838,6 +877,14 @@ docker compose up -d --build</pre>
           <div class="tdm-body">
             <div class="tdm-section-label">Description</div>
             <p id="tdm_desc" class="tdm-desc"></p>
+            <div id="tdm_card_fields" class="tdm-card-fields" style="display:none">
+              <div class="tdm-card-grid">
+                <div class="tdm-card-field"><div class="tdm-card-field-label">Instructions</div><p id="tdm_card_instructions" class="tdm-card-field-value"></p></div>
+                <div class="tdm-card-field"><div class="tdm-card-field-label">Input</div><p id="tdm_card_input" class="tdm-card-field-value"></p></div>
+                <div class="tdm-card-field"><div class="tdm-card-field-label">Process</div><p id="tdm_card_process" class="tdm-card-field-value"></p></div>
+                <div class="tdm-card-field"><div class="tdm-card-field-label">Output</div><p id="tdm_card_output" class="tdm-card-field-value"></p></div>
+              </div>
+            </div>
             <div class="tdm-section-label">Issues</div>
             <div id="tdm_issues" class="tdm-issues-list"></div>
             <div class="tdm-section-label">Comments</div>
@@ -1020,7 +1067,10 @@ docker compose up -d --build</pre>
                   <div class="external-invite-email-col">
                     <form id="form_external_invite" class="stack">
                       <label>Email</label>
-                      <input id="ext_target_email" type="email" placeholder="agent-owner@email.com">
+                      <div style="position:relative">
+                        <input id="ext_target_email" type="email" placeholder="agent-owner@email.com" autocomplete="off">
+                        <div id="ext_email_suggestions" class="email-suggest-dropdown hidden"></div>
+                      </div>
                       <label>Agent ID (optional)</label>
                       <input id="ext_requested_agent_id" type="text" placeholder="dailybot">
                       <label>Agent Name (optional)</label>
@@ -1091,6 +1141,24 @@ docker compose up -d --build</pre>
           </div>
 
           <p id="wizard_msg" class="helper"></p>
+        </div>
+      </section>
+
+      <!-- Accept inbox invite modal -->
+      <section id="inbox_accept_invite_modal" class="wizard hidden">
+        <div class="wizard-card invite-agent-modal-card">
+          <div class="title-row">
+            <h3>Accept Project Invitation</h3>
+            <button id="btn_close_inbox_accept_modal" class="secondary" type="button">Close</button>
+          </div>
+          <p id="inbox_accept_invite_meta" class="helper"></p>
+          <p style="font-size:12px;font-weight:600;margin-bottom:6px">Select an agent to join with:</p>
+          <div id="inbox_accept_agent_list" class="agent-pick-list"></div>
+          <p id="inbox_accept_invite_msg" class="helper"></p>
+          <div class="action-row">
+            <button id="btn_confirm_inbox_accept" type="button" class="primary" disabled>Join Project</button>
+            <button id="btn_cancel_inbox_accept" type="button" class="secondary">Cancel</button>
+          </div>
         </div>
       </section>
 

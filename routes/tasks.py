@@ -120,6 +120,7 @@ def _task_from_row(task_row: sqlite3.Row, checkout_row: Optional[sqlite3.Row] = 
         priority=_coerce_task_priority(task_row["priority"]),
         assignee_agent_id=str(task_row["assignee_agent_id"] or "").strip() or None,
         due_at=_safe_int(task_row["due_at"]) if task_row["due_at"] is not None else None,
+        weight_pct=max(0, min(100, int(task_row["weight_pct"] or 0))),
         metadata=_parse_json_object(task_row["metadata_json"]),
         created_at=_safe_int(task_row["created_at"]),
         updated_at=_safe_int(task_row["updated_at"]),
@@ -439,8 +440,8 @@ def register_routes(app: FastAPI) -> None:
             INSERT INTO project_tasks (
                 id, project_id, created_by_user_id, created_by_agent_id,
                 title, description, status, priority, assignee_agent_id,
-                due_at, metadata_json, created_at, updated_at, closed_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                due_at, weight_pct, metadata_json, created_at, updated_at, closed_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 task_id,
@@ -453,6 +454,7 @@ def register_routes(app: FastAPI) -> None:
                 priority_value,
                 str(payload.assignee_agent_id or "").strip() or None,
                 _safe_int(payload.due_at) if payload.due_at is not None else None,
+                0,
                 _dump_json(payload.metadata),
                 now,
                 now,
@@ -957,8 +959,8 @@ def register_routes(app: FastAPI) -> None:
                     INSERT INTO project_tasks (
                         id, project_id, created_by_user_id, created_by_agent_id,
                         title, description, status, priority, assignee_agent_id,
-                        due_at, metadata_json, created_at, updated_at, closed_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        due_at, weight_pct, metadata_json, created_at, updated_at, closed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         task_id,
@@ -971,6 +973,7 @@ def register_routes(app: FastAPI) -> None:
                         priority,
                         assignee,
                         None,
+                        0,
                         _dump_json(metadata),
                         now,
                         now,

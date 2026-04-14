@@ -123,6 +123,11 @@ class ProjectExternalAgentInviteAcceptIn(BaseModel):
     invite_code: Optional[str] = None
     selected_agents: Optional[List[ProjectExternalAgentInviteSelectedAgentIn]] = None
 
+class InboxInviteAcceptIn(BaseModel):
+    connection_id: str
+    agent_id: str
+    agent_name: Optional[str] = None
+
 class ProjectAgentPermissionsUpdateIn(BaseModel):
     can_chat_project: Optional[bool] = None
     can_read_files: Optional[bool] = None
@@ -422,6 +427,7 @@ class ProjectTaskOut(BaseModel):
     priority: str = TASK_PRIORITY_MEDIUM
     assignee_agent_id: Optional[str] = None
     due_at: Optional[int] = None
+    weight_pct: int = 0
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: int
     updated_at: int

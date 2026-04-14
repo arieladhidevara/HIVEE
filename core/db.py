@@ -207,6 +207,7 @@ def init_db() -> None:
             priority TEXT NOT NULL DEFAULT 'medium',
             assignee_agent_id TEXT,
             due_at INTEGER,
+            weight_pct INTEGER NOT NULL DEFAULT 0,
             metadata_json TEXT NOT NULL DEFAULT '{}',
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
@@ -759,6 +760,9 @@ def init_db() -> None:
     pat_cols = [r[1] for r in cur.execute("PRAGMA table_info(project_agent_access_tokens)").fetchall()]
     if "token_plain" not in pat_cols:
         cur.execute("ALTER TABLE project_agent_access_tokens ADD COLUMN token_plain TEXT")
+    task_cols = [r[1] for r in cur.execute("PRAGMA table_info(project_tasks)").fetchall()]
+    if "weight_pct" not in task_cols:
+        cur.execute("ALTER TABLE project_tasks ADD COLUMN weight_pct INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     conn.close()
 

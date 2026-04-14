@@ -695,9 +695,14 @@ label {
   min-height: 100%;
   align-self: stretch;
   background: transparent;
+  display: flex;
+  flex-direction: column;
 }
 
 .nav-section + .nav-section { margin-top: 1px; }
+.nav-group { display: flex; flex-direction: column; gap: 1px; }
+.nav-group-divider { height: 1px; background: var(--line-1); margin: 6px 10px; flex-shrink: 0; }
+.nav-group-divider--push { flex: 1; background: none; margin: 0; min-height: 8px; }
 
 .nav-toggle {
   width: 100%;
@@ -1052,11 +1057,19 @@ label {
   background: transparent;
 }
 
+#center_hub.center-pane { padding: 0; }
+.hub-agents-section { padding: 20px 20px 0; }
+.hub-agents-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.hub-mgmt-section { border-top: 1px solid var(--line-1); margin-top: 24px; padding-top: 4px; }
+.hub-mgmt-header { padding: 16px 20px 0; }
+.hub-mgmt-header h4 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .hub-container {
   display: flex;
   flex-direction: column;
   gap: 20px;
   max-width: 860px;
+  padding: 20px;
+  padding-top: 12px;
 }
 .hub-setup-row {
   display: grid;
@@ -2832,6 +2845,12 @@ textarea[readonly]:focus {
 .inbox-item-time { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .inbox-item-subject { font-size: 13px; color: var(--text); margin-bottom: 3px; }
 .inbox-item-preview { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-invite-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+.email-suggest-dropdown { position: absolute; top: calc(100% + 2px); left: 0; right: 0; background: var(--surface); border: 1px solid var(--line-2); border-radius: 6px; z-index: 100; overflow: hidden; box-shadow: 0 4px 16px rgba(0,0,0,.35); }
+.email-suggest-item { padding: 9px 12px; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background 120ms; }
+.email-suggest-item:hover { background: rgba(255,255,255,.06); }
+.email-suggest-badge { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; background: var(--cyan); color: #000; letter-spacing: .04em; }
 
 /* ===== ISSUES GLOBAL ===== */
 .issues-container { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
@@ -3206,6 +3225,13 @@ textarea[readonly]:focus {
 .tdm-controls { display: flex; flex-wrap: wrap; gap: 6px; }
 .tdm-controls select { font-size: 11px; height: 26px; padding: 0 6px; }
 #tdm_msg.error { color: var(--red); }
+.tdm-weight-badge { font-size: 11px; font-weight: 700; color: var(--muted); }
+.tdm-weight-badge.has-weight { color: var(--cyan); background: rgba(0,229,255,.08); padding: 1px 6px; border-radius: 8px; border: 1px solid rgba(0,229,255,.2); }
+.tdm-card-fields { background: var(--surface3); border-radius: 8px; padding: 10px 14px; border: 1px solid var(--border); }
+.tdm-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
+.tdm-card-field { display: flex; flex-direction: column; gap: 3px; }
+.tdm-card-field-label { font-size: 9px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.tdm-card-field-value { font-size: 11px; color: var(--text); margin: 0; line-height: 1.5; white-space: pre-wrap; }
 
 /* ===== CONNECTOR UI ===== */
 .connector-token-display {

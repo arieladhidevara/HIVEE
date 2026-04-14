@@ -200,10 +200,29 @@ Use `actions` array for structured Hivee mutations:
 
 ### Task operations:
 ```json
-{"type": "create_task", "title": "...", "status": "todo", "priority": "medium", "description": "...", "assignee_agent_id": "dev"}
-{"type": "update_task", "task_id": "task_xxx", "status": "done", "notes": "Completed"}
+{
+  "type": "create_task",
+  "title": "...",
+  "description": "...",
+  "assignee_agent_id": "agent_id",
+  "status": "todo",
+  "priority": "high",
+  "weight_pct": 20,
+  "instructions": "What the agent must accomplish",
+  "input": "What data/files the agent receives to start",
+  "process": "High-level steps the agent should follow",
+  "output": "Files/artifacts the agent must produce",
+  "from_agent": "delegating_agent_id",
+  "handover_to": "next_agent_id_or_owner"
+}
+{"type": "update_task", "task_id": "task_xxx", "status": "done"}
 {"type": "delete_task", "task_id": "task_xxx"}
 ```
+
+**weight_pct rules:**
+- Every task MUST have a `weight_pct` (integer, 0–100).
+- All task weights for the project MUST sum to ~100.
+- When a task status is set to `done`, its `weight_pct` is automatically added to the project progress bar.
 
 ### Chat:
 ```json
@@ -244,8 +263,14 @@ Set `requires_user_input: true` and `pause_reason: "Waiting for @primary_agent_i
 ### Step 3 — After approval
 Once the primary agent approves via chat:
 1. Create detailed sub-task cards via `create_task` actions (one per sub-task in your plan).
+   - Each sub-task MUST include all structured fields: `instructions`, `input`, `process`, `output`,
+     `from_agent`, `handover_to`, `weight_pct`. Weights across your sub-tasks should sum to your
+     parent task's `weight_pct` allocation.
 2. Update `update_execution` to reflect your actual progress.
 3. Begin execution and report progress at each sub-task.
+4. When a sub-task is done, place output files in your assigned `Outputs/` folder.
+5. When ALL your tasks are done, copy final deliverables into `FINAL/` (top-level project folder).
+   This is the handoff point to the owner — only polished, complete work goes in `FINAL/`.
 
 ### Primary agent: reviewing sub-plans
 When an agent @mentions you with a sub-plan request:
@@ -318,10 +343,12 @@ X-Project-Agent-Token: <your_hivee_project_token>
 2. **Always populate `chat_update`.** Even a brief status is required.
 3. **Never store final deliverables only on your local runtime.** Push everything via `output_files` or `actions: write_file`.
 4. **Never assume missing information silently.** Ask via `requires_user_input` or state assumptions in `chat_update`.
-5. **Never edit system-managed files:** `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`. Exception: primary agent MAY write `plan.md` and `delegation.md` when explicitly assigned to do so by Hivee.
+5. **Never edit system-managed files:** `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`. Exception: primary agent MAY write `plan.md`, `delegation.md`, and `progress_map.json` when explicitly assigned to do so by Hivee.
 6. **Never write outside your assigned paths** (defined in `scope.md`).
 7. **Never skip `@mentions`** when handing off work or when blocked.
 8. **Never hallucinate agent IDs.** Read `agents.md` and use exact IDs.
+9. **Always place final deliverables in `FINAL/`.** When your work is done and ready for the owner, copy the polished output files to the `FINAL/` folder. Only complete, verified work belongs there.
+10. **Always set `weight_pct` on every task you create.** All task weights in the project must sum to ~100. This drives the progress bar automatically when tasks are marked done.
 """.strip() + "\n"
 
 
@@ -759,7 +786,11 @@ Hivee may send you messages with `contextType` values:
 {{"type": "post_chat_message", "text": "@owner work complete. Output at Outputs/{agent_id}/report.md", "mentions": ["owner"]}}
 
 // Create a task ({"primary only" if is_primary else "primary agent only"})
-{{"type": "create_task", "title": "...", "status": "todo", "priority": "medium", "assignee_agent_id": "target_agent_id"}}
+// All tasks MUST have weight_pct. All task weights in the project must sum to ~100.
+{{"type": "create_task", "title": "...", "description": "...", "status": "todo", "priority": "high",
+  "assignee_agent_id": "target_agent_id", "weight_pct": 20,
+  "instructions": "What must be done", "input": "What is provided", "process": "How to do it",
+  "output": "What files/artifacts to produce", "from_agent": "{agent_id}", "handover_to": "next_agent_id"}}
 
 // Update execution status ({"primary only" if is_primary else "primary agent only"})
 {{"type": "update_execution", "status": "running", "progress_pct": 50, "summary": "Phase 2 in progress"}}
@@ -2681,32 +2712,64 @@ def _delegate_prompt_from_project(
         "Plan has been approved by user. Your job now:\n\n"
         "1. Read `plan.md` from Hivee storage to get the full approved plan.\n"
         "2. Read `agents.md` to get the exact `@agent_id` for each team member.\n"
-        "3. Break the plan into HIGH-LEVEL tasks — ONE task per agent (or per major phase per agent):\n"
-        "   - Keep descriptions concise (2-4 sentences). No implementation detail yet.\n"
-        "   - State what the agent is responsible for delivering.\n"
-        "   - List expected output files.\n"
-        "   - Note any hard dependencies (which task must finish first).\n"
-        "4. Decide execution order — parallel vs sequential:\n"
-        "   - Group agents that can work at the same time into the SAME parallel group.\n"
-        "   - Agents that must wait for another group go in a later group.\n"
-        "   - Include `parallel_groups` in your JSON response as a list of lists:\n"
-        "     e.g. [[\"agent_a\", \"agent_b\"], [\"agent_c\"], [\"agent_d\", \"agent_e\"]]\n"
-        "     Group 0 runs first (all in parallel), then group 1 (after group 0 finishes), etc.\n"
-        "5. Save delegation.md via output_files — include the parallel/sequential plan.\n"
-        "6. Create ONE task card (create_task) per agent with status=todo.\n"
-        "7. Post ONE chat message per assigned agent @mentioning them:\n"
-        f"   'You are assigned [scope]. Write your detailed sub-plan first, then @mention @{primary_id} for approval before starting.'\n"
-        "8. Post a @owner summary: how many tasks, who does what, parallel groups.\n\n"
+        "3. Assign a `weight_pct` (integer 0–100) to EVERY task you create. All weights across ALL tasks\n"
+        "   for the project MUST sum to exactly 100. Larger/harder tasks get higher weight.\n"
+        "   This drives the project progress bar — when a task is marked done its weight is automatically\n"
+        "   added to the project progress percentage.\n"
+        "4. Build a progress map and save it as `progress_map.json` via output_files. Format:\n"
+        "   {\n"
+        "     \"nodes\": [{\"id\": \"task_ref\", \"label\": \"...\", \"agent\": \"agent_id\",\n"
+        "                 \"weight_pct\": 20, \"depends_on\": [\"other_ref\"]}],\n"
+        "     \"groups\": [[\"ref_a\", \"ref_b\"], [\"ref_c\"]]\n"
+        "   }\n"
+        "5. Break the plan into HIGH-LEVEL task cards — ONE per agent (or per major phase per agent).\n"
+        "   Each task card MUST include ALL of these structured fields:\n"
+        "   - `instructions`: What this agent must accomplish (2-4 sentences)\n"
+        "   - `input`: What data/files/context this agent receives to start\n"
+        "   - `process`: High-level steps the agent should follow\n"
+        "   - `output`: Exact files/artifacts this agent must produce\n"
+        "   - `from_agent`: agent_id of who delegates this task (you, the primary)\n"
+        "   - `handover_to`: agent_id who receives the output next (or 'owner' if final)\n"
+        "   - `weight_pct`: This task's share of total project progress (0–100, all must sum to 100)\n"
+        "   All outputs MUST be placed in the agent's assigned output folder.\n"
+        "   FINAL deliverables (ready for the user) must also be copied into `FINAL/`.\n"
+        "6. Decide execution order — parallel vs sequential:\n"
+        "   - Group agents that can work simultaneously into the SAME parallel group.\n"
+        "   - Agents that depend on a prior group go in a later group.\n"
+        "   - Include `parallel_groups` as a list of lists:\n"
+        "     e.g. [[\"agent_a\", \"agent_b\"], [\"agent_c\"], [\"agent_d\"]]\n"
+        "     Group 0 runs first (all in parallel), then group 1, etc.\n"
+        "7. Save `delegation.md` via output_files — include the parallel/sequential plan.\n"
+        "8. Create ONE task card (create_task) per agent with all structured fields above.\n"
+        "9. Post ONE chat message per assigned agent @mentioning them with their scope.\n"
+        "10. Post a @owner summary: task count, weight distribution, parallel groups.\n\n"
         "Return JSON:\n"
         "{\n"
         "  \"chat_update\": \"Summary for @owner...\",\n"
         "  \"parallel_groups\": [[\"agent_id_1\", \"agent_id_2\"], [\"agent_id_3\"]],\n"
-        "  \"output_files\": [{\"path\": \"delegation.md\", \"content\": \"...\", \"append\": false}],\n"
+        "  \"output_files\": [\n"
+        "    {\"path\": \"delegation.md\", \"content\": \"...\", \"append\": false},\n"
+        "    {\"path\": \"progress_map.json\", \"content\": \"{...}\", \"append\": false}\n"
+        "  ],\n"
         "  \"actions\": [\n"
-        "    {\"type\": \"create_task\", \"title\": \"...\", \"description\": \"...\", "
-        "\"assignee_agent_id\": \"...\", \"status\": \"todo\", \"priority\": \"high\"},\n"
-        "    {\"type\": \"post_chat_message\", \"text\": \"@agent_id you are assigned [scope]. Write your sub-plan first and @mention "
-        f"@{primary_id} for approval.\", \"mentions\": [\"agent_id\"]}},\n"
+        "    {\n"
+        "      \"type\": \"create_task\",\n"
+        "      \"title\": \"...\",\n"
+        "      \"description\": \"...\",\n"
+        "      \"assignee_agent_id\": \"agent_id\",\n"
+        "      \"status\": \"todo\",\n"
+        "      \"priority\": \"high\",\n"
+        "      \"weight_pct\": 25,\n"
+        "      \"instructions\": \"...\",\n"
+        "      \"input\": \"...\",\n"
+        "      \"process\": \"...\",\n"
+        "      \"output\": \"...\",\n"
+        "      \"from_agent\": \"primary_agent_id\",\n"
+        "      \"handover_to\": \"next_agent_id_or_owner\"\n"
+        "    },\n"
+        "    {\"type\": \"post_chat_message\", \"text\": \"@agent_id you are assigned [scope]. "
+        "Write your detailed sub-plan expanding each sub-task with instructions/input/process/output, "
+        f"then @mention @{primary_id} for approval before starting.\", \"mentions\": [\"agent_id\"]}},\n"
         "    ...\n"
         "  ]\n"
         "}\n\n"
@@ -4254,15 +4317,21 @@ def _apply_project_actions(
                         project_id=project_id,
                         assignee_agent_id=action.get("assignee_agent_id"),
                     )
+                    raw_weight = action.get("weight_pct")
+                    weight_pct_value = max(0, min(100, int(raw_weight))) if raw_weight is not None else 0
                     metadata = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+                    # Lift structured card fields into metadata if provided at action top level
+                    for _card_field in ("instructions", "input", "process", "output", "from_agent", "handover_to"):
+                        if action.get(_card_field) is not None and _card_field not in metadata:
+                            metadata[_card_field] = action[_card_field]
                     due_at_value = _to_int(action.get("due_at")) if action.get("due_at") is not None else None
                     conn.execute(
                         """
                         INSERT INTO project_tasks (
                             id, project_id, created_by_user_id, created_by_agent_id,
                             title, description, status, priority, assignee_agent_id,
-                            due_at, metadata_json, created_at, updated_at, closed_at
-                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            due_at, weight_pct, metadata_json, created_at, updated_at, closed_at
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
                             task_id,
@@ -4275,6 +4344,7 @@ def _apply_project_actions(
                             priority_value,
                             assignee,
                             due_at_value,
+                            weight_pct_value,
                             json.dumps(metadata, ensure_ascii=False),
                             now,
                             now,
@@ -4334,6 +4404,7 @@ def _apply_project_actions(
                         updates.append("description = ?")
                         params.append(str(action.get("description") or "")[:TASK_DESCRIPTION_MAX_CHARS])
                         changed_fields.append("description")
+                    _update_task_next_status: Optional[str] = None
                     if action.get("status") is not None:
                         next_status = _coerce_project_action_task_status(action.get("status"), required=True)
                         _project_action_ensure_status_transition_allowed(
@@ -4342,6 +4413,7 @@ def _apply_project_actions(
                             task_id=task_id,
                             next_status=next_status,
                         )
+                        _update_task_next_status = next_status
                         updates.append("status = ?")
                         params.append(next_status)
                         changed_fields.append("status")
@@ -4378,6 +4450,12 @@ def _apply_project_actions(
                         updates.append("metadata_json = ?")
                         params.append(json.dumps(metadata, ensure_ascii=False))
                         changed_fields.append("metadata")
+                    if action.get("weight_pct") is not None:
+                        raw_w = action.get("weight_pct")
+                        new_weight = max(0, min(100, int(raw_w))) if raw_w is not None else 0
+                        updates.append("weight_pct = ?")
+                        params.append(new_weight)
+                        changed_fields.append("weight_pct")
                     if not updates:
                         skipped.append(f"update_task {task_id}: no fields changed")
                         continue
@@ -4385,6 +4463,21 @@ def _apply_project_actions(
                     params.append(now)
                     params.append(task_id)
                     conn.execute(f"UPDATE project_tasks SET {', '.join(updates)} WHERE id = ?", tuple(params))
+                    # Auto-accumulate weight_pct into project progress when task is marked done
+                    if _update_task_next_status == TASK_STATUS_DONE:
+                        _task_weight = conn.execute(
+                            "SELECT weight_pct FROM project_tasks WHERE id = ?", (task_id,)
+                        ).fetchone()
+                        if _task_weight and _task_weight["weight_pct"] > 0:
+                            _cur_proj = conn.execute(
+                                "SELECT progress_pct FROM projects WHERE id = ?", (project_id,)
+                            ).fetchone()
+                            if _cur_proj:
+                                _new_pct = min(100, (_cur_proj["progress_pct"] or 0) + _task_weight["weight_pct"])
+                                conn.execute(
+                                    "UPDATE projects SET progress_pct = ?, execution_updated_at = ? WHERE id = ?",
+                                    (_new_pct, now, project_id),
+                                )
                     _append_project_activity_log_entry(
                         conn,
                         project_id=project_id,
@@ -4592,8 +4685,8 @@ def _apply_project_actions(
                             INSERT INTO project_tasks (
                                 id, project_id, created_by_user_id, created_by_agent_id,
                                 title, description, status, priority, assignee_agent_id,
-                                due_at, metadata_json, created_at, updated_at, closed_at
-                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                due_at, weight_pct, metadata_json, created_at, updated_at, closed_at
+                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                             """,
                             (
                                 new_task_id,
@@ -4606,6 +4699,7 @@ def _apply_project_actions(
                                 priority,
                                 assignee,
                                 None,
+                                0,
                                 json.dumps(metadata, ensure_ascii=False),
                                 now,
                                 now,

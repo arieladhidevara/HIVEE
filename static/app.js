@@ -44,6 +44,8 @@ let wizardDraft = null;
 let wizardSuggestedRoles = new Map();
 let wizardExternalInvites = [];
 let wizardExternalMemberships = [];
+let inboxInvitesCache = [];
+let inboxAcceptContext = null; // { invite, selectedAgentId, selectedConnectionId }
 let wizardAgentPermissions = [];
 let wizardProjectAgents = [];
 let wizardLatestExternalInvite = null;
@@ -2219,17 +2221,42 @@ function openTaskDetailModal(taskId) {
   if (titleEl) titleEl.textContent = String(task.title || "Untitled task");
 
   // Meta row
+  const meta = (task.metadata && typeof task.metadata === "object") ? task.metadata : {};
+  const fromAgentId = String(meta.from_agent || "").trim();
+  const handoverTo  = String(meta.handover_to || "").trim();
   const fromEl = $("tdm_from");
-  if (fromEl) fromEl.textContent = String(selectedProjectData?.title || "Project");
+  if (fromEl) {
+    if (fromAgentId) {
+      const ag = agentById.get(fromAgentId);
+      fromEl.textContent = ag ? String(ag.name || fromAgentId) : fromAgentId;
+    } else {
+      fromEl.textContent = String(selectedProjectData?.title || "Project");
+    }
+  }
   const toEl = $("tdm_to");
   if (toEl) {
     const ag = agentById.get(assigneeId);
     toEl.textContent = ag ? String(ag.name || assigneeId) : (assigneeId || "Unassigned");
   }
+  const handoverEl = $("tdm_handover");
+  if (handoverEl) {
+    if (handoverTo) {
+      const ag = agentById.get(handoverTo);
+      handoverEl.textContent = handoverTo === "owner" ? "Owner" : ag ? String(ag.name || handoverTo) : handoverTo;
+    } else {
+      handoverEl.textContent = "—";
+    }
+  }
   const priEl = $("tdm_priority");
   if (priEl) priEl.textContent = taskPriorityLabel(priorityValue);
   const stEl = $("tdm_status_label");
   if (stEl) stEl.textContent = taskStatusLabel(statusValue);
+  const weightEl = $("tdm_weight");
+  if (weightEl) {
+    const w = task.weight_pct != null ? Number(task.weight_pct) : 0;
+    weightEl.textContent = w > 0 ? `${w}%` : "—";
+    weightEl.className = "tdm-weight-badge" + (w > 0 ? " has-weight" : "");
+  }
 
   // Inputs (tasks this depends on)
   const inputsEl = $("tdm_inputs");
@@ -2281,6 +2308,25 @@ function openTaskDetailModal(taskId) {
     descEl.textContent = openDeps > 0
       ? `Blocked by ${openDeps} open ${openDeps === 1 ? "dependency" : "dependencies"}. ` + (String(task.description || "").trim())
       : (String(task.description || "").trim() || "(No description — main agent will define details during execution.)");
+  }
+
+  // Structured card fields (instructions / input / process / output)
+  const cardFieldsEl = $("tdm_card_fields");
+  if (cardFieldsEl) {
+    const cardDefs = [
+      { id: "tdm_card_instructions", key: "instructions" },
+      { id: "tdm_card_input",        key: "input" },
+      { id: "tdm_card_process",      key: "process" },
+      { id: "tdm_card_output",       key: "output" },
+    ];
+    let hasAny = false;
+    for (const { id, key } of cardDefs) {
+      const val = String(meta[key] || "").trim();
+      const el = $(id);
+      if (el) el.textContent = val || "—";
+      if (val) hasAny = true;
+    }
+    cardFieldsEl.style.display = hasAny ? "" : "none";
   }
 
   // Issues — derived from task state
@@ -7043,17 +7089,147 @@ function renderInbox() {
     }
   }
 
+  // Invitations tab
+  renderInboxInvitations();
+
   // Tab switching
   const tabs = document.querySelectorAll("[data-inbox-tab]");
   for (const tab of tabs) {
     tab.addEventListener("click", () => {
       for (const t of tabs) t.classList.toggle("active", t === tab);
       const key = tab.dataset.inboxTab;
+      const invitationsPane = $("inbox_invitations_pane");
       const generalPane = $("inbox_general_pane");
       const byprojectPane = $("inbox_byproject_pane");
+      if (invitationsPane) invitationsPane.classList.toggle("hidden", key !== "invitations");
       if (generalPane) generalPane.classList.toggle("hidden", key !== "general");
       if (byprojectPane) byprojectPane.classList.toggle("hidden", key !== "byproject");
     }, { once: true });
+  }
+}
+
+function renderInboxInvitations() {
+  const list = $("inbox_invitations_list");
+  const empty = $("inbox_invitations_empty");
+  if (!list) return;
+  const invites = Array.isArray(inboxInvitesCache) ? inboxInvitesCache : [];
+  if (!invites.length) {
+    if (empty) empty.classList.remove("hidden");
+    list.innerHTML = "";
+    return;
+  }
+  if (empty) empty.classList.add("hidden");
+  list.innerHTML = invites.map((inv) => {
+    const from = inv.owner_email || "Unknown";
+    const title = inv.project_title || inv.project_id || "Project";
+    const role = inv.role ? ` · ${inv.role}` : "";
+    const ts = inv.created_at ? relativeTs(inv.created_at) : "";
+    return `
+      <div class="inbox-item unread" data-invite-id="${esc(inv.id)}">
+        <div class="inbox-item-header">
+          <span class="inbox-item-from">${esc(from)}</span>
+          <span class="inbox-item-time">${esc(ts)}</span>
+        </div>
+        <div class="inbox-item-subject">Invited to: <strong>${esc(title)}</strong>${esc(role)}</div>
+        ${inv.note ? `<div class="inbox-item-preview">${esc(inv.note)}</div>` : ""}
+        <div class="inbox-invite-actions">
+          <button class="primary" type="button" style="font-size:12px;padding:4px 12px"
+            onclick="openInboxAcceptModal(${JSON.stringify(inv)})">Approve</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function loadInboxInvites() {
+  try {
+    const res = await api("/api/me/inbox/invites");
+    inboxInvitesCache = Array.isArray(res?.invites) ? res.invites : [];
+  } catch {
+    inboxInvitesCache = [];
+  }
+  renderInboxInvitations();
+}
+
+async function openInboxAcceptModal(invite) {
+  const modal = $("inbox_accept_invite_modal");
+  if (!modal) return;
+  inboxAcceptContext = { invite, selectedAgentId: null, selectedConnectionId: null };
+  setMessage("inbox_accept_invite_msg", "Loading your agents...", "");
+  const meta = $("inbox_accept_invite_meta");
+  if (meta) meta.textContent = `Project: ${invite.project_title || invite.project_id}${invite.role ? " · Role: " + invite.role : ""}`;
+  const confirmBtn = $("btn_confirm_inbox_accept");
+  if (confirmBtn) confirmBtn.disabled = true;
+  modal.classList.remove("hidden");
+
+  let agents = [];
+  try {
+    const res = await api("/api/me/managed-agents");
+    agents = Array.isArray(res?.agents) ? res.agents : [];
+  } catch {
+    agents = [];
+  }
+
+  const listEl = $("inbox_accept_agent_list");
+  if (listEl) {
+    if (!agents.length) {
+      listEl.innerHTML = `<p class="helper">No active managed agents found. Connect an agent first.</p>`;
+      setMessage("inbox_accept_invite_msg", "", "");
+      return;
+    }
+    listEl.innerHTML = agents.map((a) => `
+      <label class="agent-pick-row" style="display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:6px;cursor:pointer;border:1px solid var(--line-1);margin-bottom:4px">
+        <input type="radio" name="inbox_accept_agent" value="${esc(a.agent_id)}"
+          data-connection-id="${esc(a.connection_id)}" data-agent-name="${esc(a.agent_name)}"
+          onchange="onInboxAgentPick(this)">
+        <span style="font-size:13px;font-weight:600">${esc(a.agent_name || a.agent_id)}</span>
+        ${a.connection_name ? `<span style="font-size:11px;color:var(--muted)">${esc(a.connection_name)}</span>` : ""}
+      </label>
+    `).join("");
+  }
+  setMessage("inbox_accept_invite_msg", "", "");
+}
+
+function onInboxAgentPick(radio) {
+  if (!inboxAcceptContext) return;
+  inboxAcceptContext.selectedAgentId = radio.value;
+  inboxAcceptContext.selectedConnectionId = radio.dataset.connectionId;
+  inboxAcceptContext.selectedAgentName = radio.dataset.agentName;
+  const btn = $("btn_confirm_inbox_accept");
+  if (btn) btn.disabled = false;
+}
+
+function closeInboxAcceptModal() {
+  const modal = $("inbox_accept_invite_modal");
+  if (modal) modal.classList.add("hidden");
+  inboxAcceptContext = null;
+  setMessage("inbox_accept_invite_msg", "", "");
+}
+
+async function confirmInboxAccept() {
+  if (!inboxAcceptContext) return;
+  const { invite, selectedAgentId, selectedConnectionId, selectedAgentName } = inboxAcceptContext;
+  if (!selectedAgentId || !selectedConnectionId) {
+    setMessage("inbox_accept_invite_msg", "Select an agent first.", "error");
+    return;
+  }
+  const btn = $("btn_confirm_inbox_accept");
+  if (btn) btn.disabled = true;
+  setMessage("inbox_accept_invite_msg", "Joining...", "");
+  try {
+    await api(`/api/me/inbox/invites/${encodeURIComponent(invite.id)}/accept`, "POST", {
+      connection_id: selectedConnectionId,
+      agent_id: selectedAgentId,
+      agent_name: selectedAgentName || selectedAgentId,
+    });
+    setMessage("inbox_accept_invite_msg", "Joined! Project will appear in your dashboard.", "ok");
+    inboxInvitesCache = inboxInvitesCache.filter((i) => i.id !== invite.id);
+    renderInboxInvitations();
+    setTimeout(closeInboxAcceptModal, 1400);
+    loadProjects().catch(() => {});
+  } catch (e) {
+    setMessage("inbox_accept_invite_msg", detailToText(e?.message || e), "error");
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -7567,6 +7743,122 @@ function renderSummaryAgents() {
     card.appendChild(body);
     list.appendChild(card);
   }
+  // Keep hub grid in sync
+  renderHubAgents();
+}
+
+function renderHubAgents() {
+  const grid = $("hub_agents_grid");
+  const msg = $("hub_agents_msg");
+  if (!grid) return;
+  grid.innerHTML = "";
+  if (msg) msg.textContent = "";
+
+  if (summaryAgentsLoading) {
+    if (msg) msg.textContent = "Loading agents...";
+    return;
+  }
+  if (!summaryAgents.length) {
+    if (msg) msg.textContent = "No agents found. Pair a hub first.";
+    return;
+  }
+
+  for (const agent of summaryAgents) {
+    const card = document.createElement("article");
+    card.className = "summary-agent-card";
+    const palette = colorForAgent(agent.agent_id);
+
+    const avatarWrap = document.createElement("div");
+    avatarWrap.className = "summary-agent-avatar";
+    avatarWrap.style.borderColor = palette.border;
+    avatarWrap.style.background = hexToRgba(palette.hex, 0.08);
+    const avatar = createAgentAvatarImg(agent.agent_id, "Agent mascot");
+    avatar.onerror = () => { avatar.src = AGENT_MASCOT_PATH || SUMMARY_AGENT_DEFAULT_AVATAR; };
+    avatarWrap.appendChild(avatar);
+
+    const body = document.createElement("div");
+    body.className = "summary-agent-body";
+
+    const heading = document.createElement("div");
+    heading.className = "summary-agent-heading";
+    const name = document.createElement("strong");
+    name.textContent = String(agent.agent_name || agent.agent_id || "Agent");
+    const statusStr = String(agent.status || "active").toLowerCase();
+    const statusBadge = document.createElement("span");
+    statusBadge.className = `agent-status-badge ${statusStr === "active" ? "active" : statusStr === "offline" ? "offline" : "idle"}`;
+    statusBadge.innerHTML = `<span class="asd"></span>${statusStr}`;
+    heading.appendChild(name);
+    heading.appendChild(statusBadge);
+
+    // Richer meta: show connection name if available, else ID
+    const connName = String(agent.connection_name || agent.connection_id || "").trim();
+    const meta = document.createElement("p");
+    meta.className = "summary-agent-meta";
+    meta.textContent = connName ? `Hub: ${connName}` : `ID: ${agent.agent_id || "-"}`;
+
+    // Description / skills from card if available
+    const desc = String(agent.description || agent.card?.description || "").trim();
+    if (desc) {
+      const descEl = document.createElement("p");
+      descEl.className = "summary-agent-meta";
+      descEl.style.cssText = "color:var(--text);font-size:12px;line-height:1.4";
+      descEl.textContent = desc.length > 120 ? desc.slice(0, 120) + "…" : desc;
+      body.appendChild(heading);
+      body.appendChild(meta);
+      body.appendChild(descEl);
+    } else {
+      body.appendChild(heading);
+      body.appendChild(meta);
+    }
+
+    const caps = document.createElement("div");
+    caps.className = "summary-agent-capabilities";
+    const capList = Array.isArray(agent.capabilities) ? agent.capabilities : [];
+    if (!capList.length) {
+      const empty = document.createElement("span");
+      empty.className = "chip";
+      empty.textContent = "No capabilities listed";
+      caps.appendChild(empty);
+    } else {
+      for (const cap of capList.slice(0, 6)) {
+        const chip = document.createElement("span");
+        chip.className = "chip summary-cap-chip";
+        chip.textContent = cap;
+        caps.appendChild(chip);
+      }
+      if (capList.length > 6) {
+        const more = document.createElement("span");
+        more.className = "chip";
+        more.textContent = `+${capList.length - 6}`;
+        caps.appendChild(more);
+      }
+    }
+    body.appendChild(caps);
+
+    // Live activity
+    const liveProject = projectsCache.find((p) => {
+      const exec = String(p.execution_status || "").toLowerCase();
+      const isActive = exec === "running" || exec === "planning";
+      return isActive && (p.primary_agent_id === agent.agent_id || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agent.agent_id)));
+    });
+    const liveLine = document.createElement("div");
+    liveLine.className = "summary-agent-live" + (liveProject ? " agent-live-active" : "");
+    liveLine.innerHTML = liveProject
+      ? `<span class="sal-dot"></span><span class="sal-text">Working on: ${esc(liveProject.title)}</span>`
+      : `<span class="sal-text sal-idle">Idle</span>`;
+    body.appendChild(liveLine);
+
+    card.style.cursor = "pointer";
+    card.setAttribute("role", "button");
+    card.addEventListener("click", () => {
+      setNavTab("agents");
+      openAgentDetailView(agent);
+    });
+
+    card.appendChild(avatarWrap);
+    card.appendChild(body);
+    grid.appendChild(card);
+  }
 }
 
 function openAgentDetailView(agent) {
@@ -8015,6 +8307,7 @@ function setNavTab(tab) {
   }
   if (tab === "inbox") {
     renderInbox();
+    loadInboxInvites().catch(() => {});
   }
   if (tab === "agents") {
     closeAgentDetailView();
@@ -8023,6 +8316,8 @@ function setNavTab(tab) {
   if (tab === "hub") {
     loadConnectorsList().catch(() => {});
     loadSavedConnectionsList({ silent: true }).catch(() => {});
+    renderHubAgents();
+    loadSummaryAgents().then(() => renderHubAgents()).catch(() => {});
   }
   if (tab === "issues") {
     renderIssuesGlobal();
@@ -10027,6 +10322,51 @@ function bindActions() {
   });
   $("form_external_invite")?.addEventListener("submit", (ev) => {
     createWizardExternalInvite(ev).catch((e) => showUiError("wizard_external_msg", e));
+  });
+
+  // Email autocomplete for invite form
+  (() => {
+    const emailInput = $("ext_target_email");
+    const dropdown = $("ext_email_suggestions");
+    if (!emailInput || !dropdown) return;
+    let debounceTimer = null;
+    emailInput.addEventListener("input", () => {
+      clearTimeout(debounceTimer);
+      const val = emailInput.value.trim();
+      dropdown.classList.add("hidden");
+      dropdown.innerHTML = "";
+      if (!val || val.length < 3 || !val.includes("@")) return;
+      debounceTimer = setTimeout(async () => {
+        try {
+          const res = await api(`/api/users/lookup?email=${encodeURIComponent(val)}`);
+          if (!res?.found) return;
+          dropdown.innerHTML = `
+            <div class="email-suggest-item" data-email="${esc(res.email)}">
+              <span>${esc(res.email)}</span>
+              <span class="email-suggest-badge">Hivee user</span>
+            </div>
+          `;
+          dropdown.classList.remove("hidden");
+          dropdown.querySelector(".email-suggest-item").addEventListener("click", () => {
+            emailInput.value = res.email;
+            dropdown.classList.add("hidden");
+            dropdown.innerHTML = "";
+          });
+        } catch { /* not found or not authed */ }
+      }, 350);
+    });
+    document.addEventListener("click", (e) => {
+      if (!emailInput.contains(e.target) && !dropdown.contains(e.target)) {
+        dropdown.classList.add("hidden");
+      }
+    });
+  })();
+
+  // Inbox accept modal wiring
+  $("btn_close_inbox_accept_modal")?.addEventListener("click", closeInboxAcceptModal);
+  $("btn_cancel_inbox_accept")?.addEventListener("click", closeInboxAcceptModal);
+  $("btn_confirm_inbox_accept")?.addEventListener("click", () => {
+    confirmInboxAccept().catch((e) => setMessage("inbox_accept_invite_msg", detailToText(e?.message || e), "error"));
   });
   $("btn_refresh_external_access")?.addEventListener("click", () => {
     refreshWizardExternalAccess({ silent: false }).catch((e) => showUiError("wizard_external_msg", e));
