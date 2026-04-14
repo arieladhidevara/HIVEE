@@ -653,11 +653,24 @@ def register_routes(app: FastAPI) -> None:
         main_agent_id = str(policy_row["main_agent_id"] or "").strip() if policy_row else ""
         main_agent_name = str(policy_row["main_agent_name"] or "").strip() if policy_row else ""
         if not main_agent_id:
-            conn.close()
-            raise HTTPException(
-                400,
-                "Primary owner agent is not configured for this connection. Run bootstrap first.",
-            )
+            # No policy agent set — fall back to any managed agent for this connection
+            fallback_row = conn.execute(
+                """
+                SELECT agent_id, agent_name FROM managed_agents
+                WHERE user_id = ? AND connection_id = ?
+                ORDER BY created_at ASC LIMIT 1
+                """,
+                (user_id, resolved_connection_id),
+            ).fetchone()
+            if fallback_row:
+                main_agent_id = str(fallback_row["agent_id"] or "").strip()
+                main_agent_name = str(fallback_row["agent_name"] or main_agent_id).strip() or main_agent_id
+            else:
+                conn.close()
+                raise HTTPException(
+                    400,
+                    "Primary owner agent is not configured for this connection. Run bootstrap first.",
+                )
         managed_primary = conn.execute(
             """
             SELECT agent_id, agent_name
