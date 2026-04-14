@@ -177,6 +177,13 @@ Use `output_files` for any content you produce:
 - For handoff files: `Outputs/handoffs/{your_id}→{target_id}.md`
 - Append to decisions log: `{"path": "decisions.md", "content": "\n---\n...", "append": true}`
 
+### CRITICAL: File content rules
+- **`content` must be the FINISHED document** in its target format. For `.md` files: write proper Markdown. For `.py` files: write real Python code.
+- **NEVER put JSON, a chat message, or a summary inside `content`.** The content field is what gets saved verbatim to disk.
+- **WRONG:** `"content": "{\"chat_update\": \"I wrote the plan...\"}"`
+- **RIGHT:** `"content": "# Project Plan\n\n## Milestone 1\n..."`
+- `chat_update` is for **chat only** — a short human-readable status. Deliverable content belongs in `output_files[].content`.
+
 ---
 
 ## 4. Actions — Hivee Mutation API
@@ -275,7 +282,7 @@ X-Project-Agent-Token: <your_hivee_project_token>
 2. **Always populate `chat_update`.** Even a brief status is required.
 3. **Never store final deliverables only on your local runtime.** Push everything via `output_files` or `actions: write_file`.
 4. **Never assume missing information silently.** Ask via `requires_user_input` or state assumptions in `chat_update`.
-5. **Never edit system files:** `plan.md`, `delegation.md`, `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`.
+5. **Never edit system-managed files:** `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`. Exception: primary agent MAY write `plan.md` and `delegation.md` when explicitly assigned to do so by Hivee.
 6. **Never write outside your assigned paths** (defined in `scope.md`).
 7. **Never skip `@mentions`** when handing off work or when blocked.
 8. **Never hallucinate agent IDs.** Read `agents.md` and use exact IDs.
