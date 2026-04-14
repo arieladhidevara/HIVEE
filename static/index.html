@@ -1063,35 +1063,46 @@ docker compose up -d --build</pre>
 
               <!-- External Agents panel -->
               <div id="invite_panel_external" class="invite-panel hidden">
-                <div class="ext-invite-type-row">
-                  <button id="btn_ext_invite_by_email" class="ext-invite-type-btn active" type="button">By Email</button>
-                  <button id="btn_ext_invite_by_link" class="ext-invite-type-btn" type="button">By Link</button>
-                </div>
+                <div class="ext-invite-cols">
 
-                <!-- Email pane -->
-                <div id="ext_invite_email_pane">
-                  <form id="form_external_invite" class="stack">
-                    <div style="position:relative">
-                      <input id="ext_target_email" type="email" placeholder="user@email.com" autocomplete="off">
-                      <div id="ext_email_suggestions" class="email-suggest-dropdown hidden"></div>
+                  <!-- Left: By Email -->
+                  <div id="ext_col_email" class="ext-invite-col active">
+                    <div class="ext-invite-col-header">
+                      <div class="ext-invite-circle"></div>
+                      <span class="ext-invite-col-label">By Email</span>
                     </div>
-                    <button id="btn_create_external_invite" type="submit">Send Invite</button>
-                  </form>
-                </div>
-
-                <!-- Link pane -->
-                <div id="ext_invite_link_pane" class="hidden">
-                  <button id="btn_gen_invite_link" type="button" class="primary">Generate Invite Link</button>
-                  <div id="ext_link_result" class="hidden">
-                    <div class="ext-link-copy-row">
-                      <input id="ext_invite_link_url" type="text" readonly>
-                      <button id="btn_copy_invite_link" type="button" class="secondary">Copy</button>
+                    <div class="ext-invite-col-body">
+                      <form id="form_external_invite" class="stack">
+                        <div style="position:relative">
+                          <input id="ext_target_email" type="email" placeholder="user@email.com" autocomplete="off">
+                          <div id="ext_email_suggestions" class="email-suggest-dropdown hidden"></div>
+                        </div>
+                        <button id="btn_create_external_invite" type="submit">Send Invite</button>
+                      </form>
                     </div>
-                    <p class="helper">Permanent link — anyone with it can join after logging in.</p>
                   </div>
+
+                  <!-- Right: By Link -->
+                  <div id="ext_col_link" class="ext-invite-col">
+                    <div class="ext-invite-col-header">
+                      <div class="ext-invite-circle"></div>
+                      <span class="ext-invite-col-label">By Link</span>
+                    </div>
+                    <div class="ext-invite-col-body">
+                      <button id="btn_gen_invite_link" type="button">Generate Link</button>
+                      <div id="ext_link_result" class="hidden" style="margin-top:8px">
+                        <div class="ext-link-copy-row">
+                          <input id="ext_invite_link_url" type="text" readonly>
+                          <button id="btn_copy_invite_link" type="button" class="secondary">Copy</button>
+                        </div>
+                        <p class="helper" style="margin-top:4px">Permanent — anyone with it can join after logging in.</p>
+                      </div>
+                    </div>
+                  </div>
+
                 </div>
 
-                <!-- Hidden compatibility inputs (used internally) -->
+                <!-- hidden compatibility inputs -->
                 <input id="ext_requested_agent_id" type="hidden">
                 <input id="ext_requested_agent_name" type="hidden">
                 <input id="ext_role" type="hidden">
@@ -1140,9 +1151,9 @@ docker compose up -d --build</pre>
           </div>
           <p id="project_invite_agent_modal_meta" class="helper"></p>
           <div id="project_invite_agent_picker" class="agent-pick-list"></div>
-          <div class="action-row">
-            <button id="btn_confirm_project_invite_accept" type="button" class="primary">Accept Invite</button>
+          <div class="action-row" style="justify-content:flex-end;gap:8px">
             <button id="btn_cancel_project_invite_accept" type="button" class="secondary">Cancel</button>
+            <button id="btn_confirm_project_invite_accept" type="button" class="primary">Join Project</button>
           </div>
           <p id="project_invite_agent_modal_msg" class="helper"></p>
         </div>

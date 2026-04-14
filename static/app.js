@@ -1119,6 +1119,21 @@ async function initializeProjectInviteContext({ refreshConnections = true, autoA
   }
   return projectInviteContext.info;
 }
+async function _autoOpenInviteModalIfReady() {
+  if (!projectInviteContext.active || !sessionToken) return;
+  const info = projectInviteContext.info || {};
+  if (!info.can_accept) return;
+  const conns = Array.isArray(projectInviteContext.connections) ? projectInviteContext.connections : [];
+  if (!conns.length) return;
+  // Auto-select first connection in the dropdown if nothing is selected yet
+  const connSelect = $("invite_connection_id");
+  if (connSelect && !String(connSelect.value || "").trim()) {
+    connSelect.value = String(conns[0]?.id || "");
+  }
+  await openProjectInviteAgentModal().catch((e) =>
+    setMessage("project_invite_msg", detailToText(e?.message || e), "error")
+  );
+}
 function closeProjectInviteAgentModal({ reset = true } = {}) {
   $("project_invite_agent_modal")?.classList.add("hidden");
   setMessage("project_invite_agent_modal_msg", "");
@@ -5016,6 +5031,8 @@ function _normalizeDiscoveredAgent(item, { connectionId = "", status = "active" 
   const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
   if (!id || _isDefaultPlaceholderAgent(id)) return null;
   const name = String(source.name || source.title || raw.name || raw.title || id).trim() || id;
+  // Filter out built-in placeholder agents regardless of which field exposes "default"
+  if (_isDefaultPlaceholderAgent(name)) return null;
   return {
     id,
     name,
@@ -8465,6 +8482,7 @@ async function selectProject(projectId) {
 }
 
 async function loadAgentsForWizard() {
+  if (!activeConnectionId && connectionsCache.length) activeConnectionId = connectionsCache[0].id;
   if (!activeConnectionId) throw new Error("Connect a hub first");
   const res = await api(`/api/openclaw/${activeConnectionId}/agents`);
   const rawAgents = String(res?.transport || "").toLowerCase().includes("model")
@@ -8804,6 +8822,7 @@ function showWizardAgentsStep() {
 }
 
 async function sendWizardSetupChat({ autoStart = false } = {}) {
+  if (!activeConnectionId && connectionsCache.length) activeConnectionId = connectionsCache[0].id;
   if (!activeConnectionId) throw new Error("Hub not selected");
   if (wizardChatPending) return;
   const input = $("wizard_chat_input");
@@ -9481,6 +9500,7 @@ function buildWizardSetupHistoryText() {
 }
 
 async function createProjectRecord({ title, brief, goal, setupDetails, setupChatHistory }) {
+  if (!activeConnectionId && connectionsCache.length) activeConnectionId = connectionsCache[0].id;
   if (!activeConnectionId) throw new Error("Hub not selected");
   if (!title || !brief || !goal) throw new Error("title, brief, and goal are required");
 
@@ -9624,6 +9644,7 @@ async function login(ev) {
       setMessage("project_invite_msg", detailToText(e?.message || e), "error");
     });
     if (projectInviteContext.active) {
+      await _autoOpenInviteModalIfReady();
       return;
     }
   }
@@ -9681,6 +9702,7 @@ async function signup(ev) {
       setMessage("project_invite_msg", detailToText(e?.message || e), "error");
     });
     if (projectInviteContext.active) {
+      await _autoOpenInviteModalIfReady();
       return;
     }
   }
@@ -10349,25 +10371,22 @@ function bindActions() {
   $("btn_confirm_inbox_accept")?.addEventListener("click", () => {
     confirmInboxAccept().catch((e) => setMessage("inbox_accept_invite_msg", detailToText(e?.message || e), "error"));
   });
-  // External invite: email / link tab switching
-  $("btn_ext_invite_by_email")?.addEventListener("click", () => {
-    $("btn_ext_invite_by_email")?.classList.add("active");
-    $("btn_ext_invite_by_link")?.classList.remove("active");
-    $("ext_invite_email_pane")?.classList.remove("hidden");
-    $("ext_invite_link_pane")?.classList.add("hidden");
+  // External invite: column radio toggle
+  ["ext_col_email", "ext_col_link"].forEach((colId) => {
+    $(colId)?.addEventListener("click", () => {
+      $("ext_col_email")?.classList.remove("active");
+      $("ext_col_link")?.classList.remove("active");
+      $(colId)?.classList.add("active");
+    });
   });
-  $("btn_ext_invite_by_link")?.addEventListener("click", () => {
-    $("btn_ext_invite_by_link")?.classList.add("active");
-    $("btn_ext_invite_by_email")?.classList.remove("active");
-    $("ext_invite_link_pane")?.classList.remove("hidden");
-    $("ext_invite_email_pane")?.classList.add("hidden");
+  $("btn_gen_invite_link")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    generateWizardInviteLink().catch((err) => showUiError("wizard_external_msg", err));
   });
-  $("btn_gen_invite_link")?.addEventListener("click", () => {
-    generateWizardInviteLink().catch((e) => showUiError("wizard_external_msg", e));
-  });
-  $("btn_copy_invite_link")?.addEventListener("click", () => {
+  $("btn_copy_invite_link")?.addEventListener("click", (e) => {
+    e.stopPropagation();
     _copyInviteDeliveryText($("ext_invite_link_url")?.value, "Link copied.")
-      .catch((e) => showUiError("wizard_external_msg", e));
+      .catch((err) => showUiError("wizard_external_msg", err));
   });
   $("btn_subscribe").onclick = () => subscribeEvents().catch((e) => addEvent("error", detailToText(e)));
   $("btn_run").onclick = () => runProject().catch((e) => { setMessage("chat_hint", detailToText(e), "error"); addEvent("error", detailToText(e)); });
