@@ -1559,7 +1559,7 @@ def register_routes(app: FastAPI) -> None:
                 scoped_message,
                 agent_id=primary_agent_id,
                 session_key=f"{project_id}:control",
-                timeout_sec=25,
+                timeout_sec=120,
                 user_id=user_id,
             )
             if ctrl_res.get("ok"):

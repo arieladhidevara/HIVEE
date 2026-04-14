@@ -71,7 +71,7 @@
               <label>Invite Code (from Project-Invitation.md)</label>
               <input id="invite_portal_code" type="text" placeholder="AB12CD34" autocomplete="off">
               <p id="project_invite_code_hint" class="helper"></p>
-              <label>Use Connection</label>
+              <label>Use Hub</label>
               <select id="invite_connection_id"></select>
               <label>Agent ID (optional if invite already specifies one)</label>
               <input id="invite_agent_id" type="text" placeholder="my-agent-id">
@@ -79,7 +79,7 @@
               <input id="invite_agent_name" type="text" placeholder="My Agent Name">
               <div class="action-row">
                 <button id="btn_accept_project_invite" type="button" class="primary">Continue to Agent Selection</button>
-                <button id="btn_invite_open_setup" class="secondary" type="button">Open Connector Pairing</button>
+                <button id="btn_invite_open_setup" class="secondary" type="button">Open Hub Pairing</button>
                 <button id="btn_ignore_project_invite" class="secondary" type="button">Ignore Invite</button>
               </div>
               <p id="project_invite_msg" class="helper"></p>
@@ -98,7 +98,7 @@
                   <input id="li_oc_base" type="text" placeholder="https://claw.example.com">
                   <label>OpenClaw API Key / Token</label>
                   <input id="li_oc_key" type="password" placeholder="Paste gateway token">
-                  <label>Connection Name (optional)</label>
+                  <label>Hub Name (optional)</label>
                   <input id="li_oc_name" type="text" placeholder="Owner OpenClaw">
                 </div>
                 <button id="btn_login" type="submit">Continue</button>
@@ -132,7 +132,7 @@
                   <input id="su_oc_base" type="text" placeholder="https://claw.example.com">
                   <label>OpenClaw API Key / Token</label>
                   <input id="su_oc_key" type="password" placeholder="Paste gateway token">
-                  <label>Connection Name (optional)</label>
+                  <label>Hub Name (optional)</label>
                   <input id="su_oc_name" type="text" placeholder="Owner OpenClaw">
                 </div>
                 <button id="btn_signup" type="submit">Create Account</button>
@@ -242,6 +242,14 @@
               <span>Agents</span>
             </button>
             <div id="nav_content_agents" class="nav-content hidden"></div>
+          </div>
+
+          <div class="nav-section">
+            <button type="button" class="nav-toggle" data-nav-tab="hub">
+              <svg class="icon-svg nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v6"/><path d="M12 14v6"/><path d="M4 12h6"/><path d="M14 12h6"/><circle cx="12" cy="12" r="3"/><circle cx="12" cy="4" r="1.5"/><circle cx="20" cy="12" r="1.5"/><circle cx="12" cy="20" r="1.5"/><circle cx="4" cy="12" r="1.5"/></svg>
+              <span>Hub</span>
+            </button>
+            <div id="nav_content_hub" class="nav-content hidden"></div>
           </div>
 
           <div class="nav-section">
@@ -594,12 +602,60 @@
             </div>
           </div>
 
+          <div id="center_hub" class="center-pane hidden" data-center-tab="hub">
+            <div class="hub-container">
+              <div class="account-grid">
+                <section class="account-card">
+                  <div class="account-card-head">
+                    <h4>Pair New Hub</h4>
+                  </div>
+                  <p class="account-sub">Generate a pairing token, then paste it into your hub's <code>.env</code> file as <code>HIVEE_PAIRING_TOKEN</code>.</p>
+                  <div class="stack">
+                    <label>Hub Label (optional)</label>
+                    <input id="connector_token_label" type="text" placeholder="e.g. VPS-1 Hub">
+                    <div class="action-row">
+                      <button id="btn_generate_pairing_token" type="button" class="primary">Generate Pairing Token</button>
+                    </div>
+                    <div id="connector_token_result" class="hidden">
+                      <label>Pairing Token</label>
+                      <div class="connector-token-display">
+                        <code id="connector_token_value" class="connector-token-code"></code>
+                        <button id="btn_copy_pairing_token" type="button" class="secondary" style="min-height:28px;padding:4px 12px;font-size:11px">Copy</button>
+                      </div>
+                      <p id="connector_token_expires" class="helper"></p>
+                    </div>
+                    <p id="connector_pair_msg" class="helper"></p>
+                  </div>
+                </section>
+
+                <section class="account-card">
+                  <div class="account-card-head">
+                    <h4>Connected Hubs</h4>
+                    <button id="btn_refresh_connectors" type="button" class="secondary">Refresh</button>
+                  </div>
+                  <p class="account-sub">Hubs registered to your account. Each hub bridges your local OpenClaw to Hivee Cloud.</p>
+                  <div id="connectors_list" class="connectors-list"></div>
+                  <p id="connectors_msg" class="helper"></p>
+                </section>
+
+                <section class="account-card">
+                  <div class="account-card-head">
+                    <h4>Available Hubs</h4>
+                    <button id="btn_refresh_saved_connections" type="button" class="secondary">Refresh</button>
+                  </div>
+                  <p class="account-sub">All hubs currently available to this workspace for routing, chat, and project execution.</p>
+                  <div id="saved_connections_list" class="connectors-list"></div>
+                  <p id="saved_connections_msg" class="helper"></p>
+                </section>
+              </div>
+            </div>
+          </div>
+
           <div id="center_settings" class="center-pane hidden" data-center-tab="settings">
             <div class="settings-container">
               <div class="settings-tabs">
-                <button class="settings-tab" type="button" data-settings-tab="account">Account</button>
+                <button class="settings-tab active" type="button" data-settings-tab="account">Account</button>
                 <button class="settings-tab" type="button" data-settings-tab="policy">Policy</button>
-                <button class="settings-tab active" type="button" data-settings-tab="connectors">Connectors</button>
               </div>
 
               <div id="settings_account_pane" class="settings-tab-pane hidden">
@@ -616,7 +672,7 @@
                         <strong id="acct_projects_count">0</strong>
                       </article>
                       <article class="account-stat">
-                        <span class="label">Connections</span>
+                        <span class="label">Hubs</span>
                         <strong id="acct_connections_count">0</strong>
                       </article>
                     </div>
@@ -641,7 +697,7 @@
                     </form>
                     <div class="account-danger-zone">
                       <h5>Delete Account</h5>
-                      <p class="helper">This permanently deletes your account, projects, connections, and workspace files.</p>
+                      <p class="helper">This permanently deletes your account, projects, hubs, and workspace files.</p>
                       <form id="form_delete_account" class="stack">
                         <label>Current Password</label>
                         <input id="acct_delete_pass" type="password" placeholder="Current password" required>
@@ -663,52 +719,6 @@
                 <div id="settings_policy_content" class="settings-policy-content"></div>
               </div>
 
-              <div id="settings_connectors_pane" class="settings-tab-pane">
-                <div class="account-grid">
-                  <section class="account-card">
-                    <div class="account-card-head">
-                      <h4>Pair New Connector</h4>
-                    </div>
-                    <p class="account-sub">Generate a pairing token, then paste it into your connector's <code>.env</code> file as <code>HIVEE_PAIRING_TOKEN</code>.</p>
-                    <div class="stack">
-                      <label>Token Label (optional)</label>
-                      <input id="connector_token_label" type="text" placeholder="e.g. VPS-1 Connector">
-                      <div class="action-row">
-                        <button id="btn_generate_pairing_token" type="button" class="primary">Generate Pairing Token</button>
-                      </div>
-                      <div id="connector_token_result" class="hidden">
-                        <label>Pairing Token</label>
-                        <div class="connector-token-display">
-                          <code id="connector_token_value" class="connector-token-code"></code>
-                          <button id="btn_copy_pairing_token" type="button" class="secondary" style="min-height:28px;padding:4px 12px;font-size:11px">Copy</button>
-                        </div>
-                        <p id="connector_token_expires" class="helper"></p>
-                      </div>
-                      <p id="connector_pair_msg" class="helper"></p>
-                    </div>
-                  </section>
-
-                  <section class="account-card">
-                    <div class="account-card-head">
-                      <h4>Connected Connectors</h4>
-                      <button id="btn_refresh_connectors" type="button" class="secondary">Refresh</button>
-                    </div>
-                    <p class="account-sub">Connectors registered to your account. Each connector bridges your local OpenClaw to Hivee Cloud.</p>
-                    <div id="connectors_list" class="connectors-list"></div>
-                    <p id="connectors_msg" class="helper"></p>
-                  </section>
-
-                  <section class="account-card">
-                    <div class="account-card-head">
-                      <h4>Saved Connections</h4>
-                      <button id="btn_refresh_saved_connections" type="button" class="secondary">Refresh</button>
-                    </div>
-                    <p class="account-sub">All direct OpenClaw connections and paired connectors currently available to this workspace.</p>
-                    <div id="saved_connections_list" class="connectors-list"></div>
-                    <p id="saved_connections_msg" class="helper"></p>
-                  </section>
-                </div>
-              </div>
             </div>
           </div>
         </section>
@@ -847,7 +857,7 @@
           <div class="agent-modal-body">
             <dl class="agent-detail-dl">
               <div class="agent-detail-row"><dt>Agent ID</dt><dd id="modal_agent_id">—</dd></div>
-              <div class="agent-detail-row"><dt>Connection</dt><dd id="modal_agent_connection">—</dd></div>
+              <div class="agent-detail-row"><dt>Hub</dt><dd id="modal_agent_connection">—</dd></div>
               <div class="agent-detail-row"><dt>Model</dt><dd id="modal_agent_model">—</dd></div>
             </dl>
             <div class="agent-modal-section">

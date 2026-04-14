@@ -1247,13 +1247,12 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
 
         # No real agents found - fall back to model names if available.
         if rest_model_agents:
-            rest_model_agents.sort(key=lambda a: (str(a.get("name") or "").lower(), str(a.get("id") or "").lower()))
             return {
-                "ok": True,
+                "ok": False,
                 "transport": "rest-models-fallback",
                 "path": rest_model_source_path or AGENTS_PATHS[0],
-                "agents": rest_model_agents,
-                "warning": "Only /models endpoint available; using model names as chat targets.",
+                "error": "Only model endpoints are available. Hivee will wait for real agent listing instead of showing default models.",
+                "hint": "Expose /agents on the gateway or let the connector publish an agent snapshot so Hivee can render real agent cards.",
             }
 
         return {
@@ -1261,7 +1260,7 @@ async def openclaw_list_agents(base_url: str, api_key: str) -> Dict[str, Any]:
             "error": f"Could not list agents on common paths. Last error: {last_err}",
             "hint": (
                 "This OpenClaw likely does not expose REST JSON agent listing on your base_url path. "
-                "Enable /agents or /v1/models over HTTP on the gateway."
+                "Expose /agents over HTTP on the gateway or let the hub publish an agent snapshot."
             ),
         }
 def _extract_chat_text(payload: Any) -> Optional[str]:
@@ -1654,7 +1653,7 @@ async def openclaw_ws_list_agents(base_url: str, api_key: str, timeout_sec: int 
     return {
         "ok": False,
         "error": "Legacy realtime transport is disabled in this build. Use HTTP agent endpoints.",
-        "hint": "Enable /agents or /v1/models over HTTP on the OpenClaw gateway.",
+        "hint": "Expose /agents over HTTP on the OpenClaw gateway or let the hub publish an agent snapshot.",
     }
 
 
@@ -1706,7 +1705,7 @@ async def _project_chat(
     if not connector_id:
         return {
             "ok": False,
-            "error": "No live Hivee Connector is available for this project. Pair/start a connector, then retry.",
+            "error": "No live Hivee Hub is available for this project. Pair/start a hub, then retry.",
             "transport": "none",
         }
     try:
@@ -1836,7 +1835,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         task,
         agent_id=primary_agent_id,
         session_key=f"{project_id}:project-info",
-        timeout_sec=120,
+        timeout_sec=None,
         user_id=str(row["user_id"] or ""),
         from_agent_id="hivee",
         from_label="Hivee System",
@@ -2420,7 +2419,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
         instruction,
         agent_id=primary_agent_id,
         session_key=f"{project_id}:delegate",
-        timeout_sec=120,
+        timeout_sec=None,
         user_id=str(row["user_id"] or ""),
         from_agent_id="hivee",
         from_label="Hivee System",

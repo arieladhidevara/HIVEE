@@ -961,7 +961,7 @@ function renderProjectInviteUI() {
   } else if (requiresInviteCode && !codeFromUrl && !String(codeInput?.value || "").trim()) {
     notice.textContent = "You are signed in. Enter invite code from the invitation document, then continue.";
   } else {
-    notice.textContent = "You are signed in. Choose connection, then continue to agent selection.";
+    notice.textContent = "You are signed in. Choose a hub, then continue to agent selection.";
   }
 
   const inviteDocUrl = toAbsoluteAppUrl(
@@ -1003,7 +1003,7 @@ function renderProjectInviteUI() {
   }
   if (linksHint) {
     linksHint.textContent = canAccept
-      ? "Open invitation doc if you need details, then continue with connection and agent selection."
+      ? "Open invitation doc if you need details, then continue with hub and agent selection."
       : "Open invitation doc if needed. This invitation is not currently accept-able.";
   }
 
@@ -1028,8 +1028,8 @@ function renderProjectInviteUI() {
       const opt = document.createElement("option");
       opt.value = "";
       opt.textContent = hasSession
-        ? "No paired connector found for this account"
-        : "Login first to load your paired connectors";
+        ? "No paired hub found for this account"
+        : "Login first to load your paired hubs";
       connectionSelect.appendChild(opt);
     } else {
       for (const item of rows) {
@@ -1173,7 +1173,7 @@ function renderProjectInviteAgentPicker() {
   if (!displayRows.length) {
     const empty = document.createElement("div");
     empty.className = "helper";
-    empty.textContent = "No managed agents found on this connection. Fill Agent ID manually in the invite card first.";
+    empty.textContent = "No managed agents found on this hub. Fill Agent ID manually in the invite card first.";
     picker.appendChild(empty);
     return;
   }
@@ -1290,7 +1290,7 @@ async function openProjectInviteAgentModal() {
   if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
 
   const connectionId = String($("invite_connection_id")?.value || "").trim();
-  if (!connectionId) throw new Error("Choose one of your paired connectors first.");
+  if (!connectionId) throw new Error("Choose one of your paired hubs first.");
 
   const info = projectInviteContext.info || {};
   const requiresCode = Boolean(info?.requires_invite_code);
@@ -1336,7 +1336,7 @@ async function openProjectInviteAgentModal() {
   const activeConn = projectInviteContext.connections.find((c) => String(c?.id || "").trim() === connectionId);
   const metaText = [
     `Project: ${String(info?.project_title || info?.project_id || "External Project")}`,
-    `Connection: ${String(activeConn?.name || connectionId)}`,
+    `Hub: ${String(activeConn?.name || connectionId)}`,
     lockId ? `Locked Agent: ${lockName} (${lockId})` : "Locked Agent: none",
   ].join(" | ");
   const meta = $("project_invite_agent_modal_meta");
@@ -1352,7 +1352,7 @@ async function acceptProjectInviteFromUI({ connectionId: overrideConnectionId = 
   if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
 
   const connectionId = String(overrideConnectionId || $("invite_connection_id")?.value || "").trim();
-  if (!connectionId) throw new Error("Choose one of your paired connectors first.");
+  if (!connectionId) throw new Error("Choose one of your paired hubs first.");
 
   const info = projectInviteContext.info || {};
   const requiresCode = Boolean(info?.requires_invite_code);
@@ -2788,9 +2788,9 @@ function renderConfigConnectionDetails() {
   const conn = connectionsCache.find((x) => x.id === activeConnectionId) || null;
   const nameEl = $("config_conn_name");
   const urlEl = $("config_conn_url");
-  if (nameEl) nameEl.textContent = conn?.name || "Connector";
+  if (nameEl) nameEl.textContent = conn?.name || "Hub";
   if (urlEl) urlEl.textContent = conn?.base_url || "-";
-  setMessage("config_msg", conn ? "Connection loaded." : "No connection selected.");
+  setMessage("config_msg", conn ? "Hub loaded." : "No hub selected.");
   applyConnectionStatus();
 }
 
@@ -2888,7 +2888,7 @@ async function deleteAccount(ev) {
   if (confirmText !== "DELETE") throw new Error("Type DELETE to confirm account deletion.");
 
   const ok = window.confirm(
-    "Delete account permanently? This removes all projects, connections, and workspace files."
+    "Delete account permanently? This removes all projects, hubs, and workspace files."
   );
   if (!ok) return;
 
@@ -2915,6 +2915,7 @@ function applyWorkspacePolicy(policy) {
   renderFolderBrowsers();
   syncChatContextControls();
   updateChatProjectName();
+  renderPrimaryNavAgents();
 }
 
 async function loadConnectionPolicy(connectionId) {
@@ -2971,7 +2972,7 @@ function renderConnections(connections) {
     for (const c of connectionsCache) {
       const opt = document.createElement("option");
       opt.value = c.id;
-      opt.textContent = `${c.name || "Connector"} (Connector)`;
+      opt.textContent = `${c.name || "Hub"} (Hub)`;
       sel.appendChild(opt);
     }
   }
@@ -2981,6 +2982,7 @@ function renderConnections(connections) {
     preferredConnectionId = null;
     connectionHealthy = false;
     renderConfigConnectionDetails();
+    renderPrimaryNavHub();
     return;
   }
 
@@ -2996,6 +2998,7 @@ function renderConnections(connections) {
   }
   if (sel) sel.value = activeConnectionId;
   renderConfigConnectionDetails();
+  renderPrimaryNavHub();
 }
 
 function projectNeedsApproval(project) {
@@ -3248,6 +3251,8 @@ function syncPrimaryNavState() {
   if (projectsBtn) {
     projectsBtn.classList.toggle("project-selected", inProjects && Boolean(selectedProjectId));
   }
+  renderPrimaryNavAgents();
+  renderPrimaryNavHub();
 }
 
 function syncProjectContextSidebar() {
@@ -3841,6 +3846,203 @@ function workspaceMainChatAgent() {
     role: "owner-main",
     is_primary: true,
   };
+}
+
+function fallbackSummaryAgentFromPolicy(connectionId = activeConnectionId) {
+  const main = workspaceMainChatAgent();
+  if (!main) return null;
+  return {
+    agent_id: main.id,
+    agent_name: main.name,
+    connection_id: String(connectionId || "").trim(),
+    status: "active",
+    capabilities: [],
+    model: "",
+    adapter_type: "",
+    description: "Workspace primary agent",
+    raw: null,
+    is_primary: true,
+  };
+}
+
+function normalizeNavAgentPayload(source, { primaryId = "" } = {}) {
+  const item = source && typeof source === "object" ? source : {};
+  const agentId = String(item.agent_id || item.id || "").trim();
+  if (!agentId) return null;
+  return {
+    agent_id: agentId,
+    agent_name: String(item.agent_name || item.name || agentId).trim() || agentId,
+    connection_id: String(item.connection_id || activeConnectionId || "").trim(),
+    status: String(item.status || item.execution_status || "active").trim().toLowerCase() || "active",
+    capabilities: Array.isArray(item.capabilities) ? item.capabilities : [],
+    model: String(item.model || "").trim(),
+    adapter_type: String(item.adapter_type || "").trim(),
+    description: String(item.description || item.role || "").trim(),
+    raw: item.raw && typeof item.raw === "object" ? item.raw : null,
+    is_primary: Boolean(item.is_primary) || Boolean(primaryId && agentId === String(primaryId || "").trim()),
+  };
+}
+
+function primaryNavAgentsData() {
+  const rows = [];
+  const seen = new Set();
+  const activeConn = String(activeConnectionId || "").trim();
+  const primaryId = String(workspacePolicy?.main_agent_id || selectedPrimaryAgentId || "").trim();
+  const push = (source) => {
+    const normalized = normalizeNavAgentPayload(source, { primaryId });
+    if (!normalized) return;
+    const key = `${normalized.connection_id}::${normalized.agent_id}`.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push(normalized);
+  };
+
+  push(fallbackSummaryAgentFromPolicy(activeConn));
+
+  for (const agent of Array.isArray(summaryAgents) ? summaryAgents : []) {
+    const connId = String(agent?.connection_id || "").trim();
+    if (activeConn && connId && connId !== activeConn) continue;
+    push(agent);
+  }
+
+  for (const agent of Array.isArray(currentAgents) ? currentAgents : []) {
+    const connId = String(agent?.connection_id || activeConn || "").trim();
+    if (activeConn && connId && connId !== activeConn) continue;
+    push(agent);
+  }
+
+  if (!rows.length) {
+    for (const agent of Array.isArray(selectedAssignedAgents) ? selectedAssignedAgents : []) {
+      push(agent);
+    }
+  }
+
+  rows.sort((a, b) => {
+    if (a.is_primary && !b.is_primary) return -1;
+    if (!a.is_primary && b.is_primary) return 1;
+    return String(a.agent_name || a.agent_id || "").localeCompare(String(b.agent_name || b.agent_id || ""));
+  });
+  return rows.slice(0, 6);
+}
+
+function renderPrimaryNavAgents() {
+  const content = $("nav_content_agents");
+  if (!content) return;
+  content.innerHTML = "";
+
+  const rows = primaryNavAgentsData();
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "nav-mini-empty";
+    empty.textContent = activeConnectionId
+      ? "Hub connected. Agent card will appear after bootstrap finishes."
+      : "Pair a hub to load your agent cards.";
+    content.appendChild(empty);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "nav-mini-list";
+
+  for (const agent of rows) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `nav-mini-card nav-agent-card${agent.is_primary ? " is-primary" : ""}`;
+
+    const avatarWrap = document.createElement("div");
+    avatarWrap.className = "nav-mini-avatar";
+    const palette = colorForAgent(agent.agent_id);
+    avatarWrap.style.borderColor = palette.border;
+    avatarWrap.style.background = hexToRgba(palette.hex, 0.08);
+    avatarWrap.appendChild(createAgentAvatarImg(agent.agent_id, `${agent.agent_name} mascot`));
+
+    const body = document.createElement("div");
+    body.className = "nav-mini-body";
+
+    const title = document.createElement("strong");
+    title.className = "nav-mini-title";
+    title.textContent = agent.agent_name;
+
+    const meta = document.createElement("span");
+    meta.className = "nav-mini-meta";
+    meta.textContent = agent.capabilities[0] || agent.description || (agent.is_primary ? "Primary agent" : "Managed agent");
+
+    const badge = document.createElement("span");
+    badge.className = `nav-mini-badge ${agent.is_primary ? "active" : (agent.status === "offline" ? "offline" : "idle")}`;
+    badge.textContent = agent.is_primary ? "Primary" : (agent.status || "active");
+
+    body.appendChild(title);
+    body.appendChild(meta);
+    body.appendChild(badge);
+    card.appendChild(avatarWrap);
+    card.appendChild(body);
+    card.addEventListener("click", () => openAgentDetailModal(agent));
+    list.appendChild(card);
+  }
+
+  content.appendChild(list);
+}
+
+function renderPrimaryNavHub() {
+  const content = $("nav_content_hub");
+  if (!content) return;
+  content.innerHTML = "";
+
+  if (!connectionsCache.length) {
+    const empty = document.createElement("div");
+    empty.className = "nav-mini-empty";
+    empty.textContent = "No hubs paired yet.";
+    const cta = document.createElement("button");
+    cta.type = "button";
+    cta.className = "nav-mini-cta";
+    cta.textContent = "Pair New Hub";
+    cta.addEventListener("click", () => setNavTab("hub"));
+    content.appendChild(empty);
+    content.appendChild(cta);
+    return;
+  }
+
+  const connectorDetails = new Map(
+    (Array.isArray(connectorsList) ? connectorsList : []).map((item) => [String(item?.id || "").trim(), item])
+  );
+  const list = document.createElement("div");
+  list.className = "nav-mini-list";
+
+  for (const hub of connectionsCache.slice(0, 4)) {
+    const hubId = String(hub?.id || "").trim();
+    if (!hubId) continue;
+    const details = connectorDetails.get(hubId) || {};
+    const isActive = hubId === String(activeConnectionId || "").trim();
+    const status = String(details?.status || (isActive && connectionHealthy ? "online" : "idle")).trim().toLowerCase();
+
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `nav-mini-card nav-hub-card${isActive ? " is-primary" : ""}`;
+
+    const body = document.createElement("div");
+    body.className = "nav-mini-body";
+
+    const title = document.createElement("strong");
+    title.className = "nav-mini-title";
+    title.textContent = String(hub?.name || "Hub");
+
+    const meta = document.createElement("span");
+    meta.className = "nav-mini-meta";
+    meta.textContent = String(hub?.base_url || details?.openclaw_base_url || hubId);
+
+    const badge = document.createElement("span");
+    badge.className = `nav-mini-badge ${status === "online" ? "active" : status === "offline" ? "offline" : "idle"}`;
+    badge.textContent = isActive ? `Active ${status}` : status;
+
+    body.appendChild(title);
+    body.appendChild(meta);
+    body.appendChild(badge);
+    card.appendChild(body);
+    card.addEventListener("click", () => setNavTab("hub"));
+    list.appendChild(card);
+  }
+
+  content.appendChild(list);
 }
 
 function syncChatContextControls() {
@@ -4908,8 +5110,10 @@ async function loadChatAgents() {
 
   if (!activeConnectionId) {
     chatAgents = [];
+    currentAgents = [];
     connectionHealthy = false;
     renderChatAgents([]);
+    renderPrimaryNavAgents();
     applyConnectionStatus();
     return;
   }
@@ -4925,17 +5129,17 @@ async function loadChatAgents() {
   let isModelFallback = false;
   try {
     const listed = await api(`/api/openclaw/${encodeURIComponent(activeConnectionId)}/agents`);
-    const transport = String(listed?.transport || "");
+    const transport = String(listed?.transport || "").toLowerCase();
     isModelFallback = transport.includes("model");
-    const rawAgents = Array.isArray(listed?.agents) ? listed.agents : [];
+    const rawAgents = isModelFallback ? [] : (Array.isArray(listed?.agents) ? listed.agents : []);
     workspaceAgents = rawAgents
       .map((item) => {
         const normalized = _normalizeDiscoveredAgent(item, { connectionId: activeConnectionId });
         if (!normalized) return null;
         return {
           id: normalized.id,
-          name: isModelFallback ? `${normalized.name} (model)` : normalized.name,
-          role: isModelFallback ? "model" : "workspace",
+          name: normalized.name,
+          role: "workspace",
           is_primary: false,
           raw: normalized.raw,
           connection_id: normalized.connection_id,
@@ -4946,7 +5150,7 @@ async function loadChatAgents() {
     listErr = detailToText(e?.message || e);
   }
 
-  if (mainAgent && !isModelFallback && !workspaceAgents.some((a) => String(a.id || "") === String(mainAgent.id || ""))) {
+  if (mainAgent && !workspaceAgents.some((a) => String(a.id || "") === String(mainAgent.id || ""))) {
     workspaceAgents.unshift(mainAgent);
   }
 
@@ -4962,7 +5166,9 @@ async function loadChatAgents() {
 
   if (!workspaceAgents.length) {
     chatAgents = [];
+    currentAgents = [];
     renderChatAgents([]);
+    renderPrimaryNavAgents();
     connectionHealthy = Boolean(activeConnectionId);
     applyConnectionStatus();
     if (listErr) {
@@ -4974,11 +5180,20 @@ async function loadChatAgents() {
   }
 
   chatAgents = workspaceAgents;
+  currentAgents = workspaceAgents
+    .map((agent) => ({
+      id: String(agent?.id || "").trim(),
+      name: String(agent?.name || agent?.id || "").trim(),
+      raw: agent?.raw || null,
+      connection_id: String(agent?.connection_id || activeConnectionId || "").trim(),
+    }))
+    .filter((agent) => Boolean(agent.id));
   renderChatAgents(chatAgents);
+  renderPrimaryNavAgents();
   connectionHealthy = true;
   applyConnectionStatus();
   setMessage("chat_hint", isModelFallback
-    ? `${workspaceAgents.length} model(s) available as chat targets (no real agents found — enable agent listing in OpenClaw).`
+    ? `Workspace context: showing ${currentAgents.length} real agent card(s) while hub agent discovery finishes.`
     : `Workspace context: ${workspaceAgents.length} loaded agent(s) ready for chat.`, "ok");
 }
 
@@ -5031,7 +5246,7 @@ async function sendChatPrototype() {
   const input = $("chat_input");
   if (!input) return;
   const raw = input.value.trim();
-  if (!activeConnectionId) throw new Error("Connector not selected");
+  if (!activeConnectionId) throw new Error("Hub not selected");
   if (!raw) throw new Error("Type message first");
 
   syncChatContextControls();
@@ -5054,14 +5269,14 @@ async function sendChatPrototype() {
     throw new Error(msg);
   }
   if (contextMode === "workspace" && !resolved.agent) {
-    setMessage("chat_hint", "No agent selected. Sending via default connector route.", "");
+    setMessage("chat_hint", "No agent selected. Sending via default hub route.", "");
   }
 
   $("btn_chat_send").disabled = true;
   try {
     const targetName = resolved.agent
       ? `${resolved.agent.name} (${resolved.agent.id})`
-      : (usingProjectContext ? "project auto route" : "default connector route");
+      : (usingProjectContext ? "project auto route" : "default hub route");
     let outboundMessage = resolved.message;
     if (usingProjectContext) {
       const posted = await api(`/api/projects/${encodeURIComponent(projectId)}/chat/messages`, "POST", {
@@ -5083,7 +5298,7 @@ async function sendChatPrototype() {
       agent_id: resolved.agent ? resolved.agent.id : null,
       context_mode: usingProjectContext ? "project" : "workspace",
       session_key: usingProjectContext ? projectId : "main",
-      timeout_sec: 25,
+      timeout_sec: usingProjectContext ? 120 : 25,
     };
 
     input.value = "";
@@ -5103,7 +5318,8 @@ async function sendChatPrototype() {
           appendChatMessage("agent", shown, meta, { agentId: resolvedAgentId });
         });
       } else {
-        const meta = `${res.transport || "connector"} via ${res.path || "gateway"}`;
+        const transportLabel = String(res.transport || "hub").replace(/connector/gi, "hub");
+        const meta = `${transportLabel} via ${res.path || "gateway"}`;
         appendChatMessage("assistant", shown, meta, { agentId: resolvedAgentId });
       }
     }
@@ -6665,12 +6881,33 @@ function renderTeamTree() {
 
   // Build agent list: primary agent first, then assigned agents
   const agents = [];
-  if (selectedPrimaryAgentId) {
-    const primary = currentAgents.find((a) => a.id === selectedPrimaryAgentId);
+  const primaryId = String(
+    selectedPrimaryAgentId
+      || selectedAssignedAgents.find((a) => a?.is_primary)?.id
+      || selectedAssignedAgents[0]?.id
+      || ""
+  ).trim();
+  if (primaryId) {
+    const primary =
+      selectedAssignedAgents.find((a) => String(a?.id || "").trim() === primaryId)
+      || currentAgents.find((a) => String(a?.id || "").trim() === primaryId)
+      || (() => {
+        const summary = summaryAgents.find((a) => String(a?.agent_id || "").trim() === primaryId);
+        return summary ? {
+          id: summary.agent_id,
+          name: summary.agent_name || summary.agent_id,
+          role: summary.description || "",
+          execution_status: summary.status || "active",
+        } : null;
+      })()
+      || (() => {
+        const main = workspaceMainChatAgent();
+        return main && String(main.id || "").trim() === primaryId ? main : null;
+      })();
     if (primary) agents.push({ ...primary, _role: "Primary Agent", _isRoot: true });
   }
   for (const a of selectedAssignedAgents) {
-    if (a.id !== selectedPrimaryAgentId) agents.push({ ...a, _role: a.role || "Agent", _isRoot: false });
+    if (String(a?.id || "").trim() !== primaryId) agents.push({ ...a, _role: a.role || "Agent", _isRoot: false });
   }
 
   if (!agents.length) {
@@ -7052,7 +7289,7 @@ async function generatePairingToken() {
     const displayTime = remainMin >= 60 ? `${Math.round(remainMin / 60)}h ${remainMin % 60}m` : `${remainMin} min`;
     expiresEl.textContent = `Expires: ${expiresDate.toLocaleTimeString()} (${displayTime})`;
     resultEl.classList.remove("hidden");
-    msgEl.textContent = "Token generated! Copy it and set HIVEE_PAIRING_TOKEN in your connector's .env file.";
+    msgEl.textContent = "Token generated! Copy it and set HIVEE_PAIRING_TOKEN in your hub's .env file.";
     msgEl.className = "helper ok";
   } catch (e) {
     msgEl.textContent = detailToText(e?.message || e);
@@ -7067,14 +7304,16 @@ async function loadConnectorsList() {
     const data = await api("/api/connectors");
     connectorsList = Array.isArray(data) ? data : [];
     if (msg) {
-      msg.textContent = connectorsList.length ? `${connectorsList.length} connector(s)` : "No connectors registered yet.";
+      msg.textContent = connectorsList.length ? `${connectorsList.length} hub(s)` : "No hubs registered yet.";
       msg.className = "helper";
     }
     renderConnectorsList();
+    renderPrimaryNavHub();
   } catch (e) {
     connectorsList = [];
     if (msg) { msg.textContent = detailToText(e?.message || e); msg.className = "helper error"; }
     renderConnectorsList();
+    renderPrimaryNavHub();
   }
 }
 
@@ -7085,14 +7324,16 @@ async function loadSavedConnectionsList({ silent = false } = {}) {
     const data = await api("/api/openclaw/connections");
     savedConnectionsList = Array.isArray(data) ? data : [];
     if (msg) {
-      msg.textContent = savedConnectionsList.length ? `${savedConnectionsList.length} paired connector(s)` : "No paired connectors yet.";
+      msg.textContent = savedConnectionsList.length ? `${savedConnectionsList.length} available hub(s)` : "No available hubs yet.";
       msg.className = "helper";
     }
     renderSavedConnectionsList();
+    renderPrimaryNavHub();
   } catch (e) {
     savedConnectionsList = [];
     if (msg) { msg.textContent = detailToText(e?.message || e); msg.className = "helper error"; }
     renderSavedConnectionsList();
+    renderPrimaryNavHub();
   }
 }
 
@@ -7103,13 +7344,13 @@ async function deleteSavedConnection(connectionId) {
     || connectionsCache.find((item) => String(item?.id || "").trim() === id)
     || connectorsList.find((item) => String(item?.id || "").trim() === id)
     || null;
-  const label = String(conn?.name || conn?.id || "connection").trim();
-  const confirmed = window.confirm(`Delete connection "${label}"?\nThis removes the saved connection and its managed-agent cache.`);
+  const label = String(conn?.name || conn?.id || "hub").trim();
+  const confirmed = window.confirm(`Delete hub "${label}"?\nThis removes the saved hub entry and its managed-agent cache.`);
   if (!confirmed) return;
   try {
     const res = await api(`/api/openclaw/${encodeURIComponent(id)}`, "DELETE");
     const deletedLabel = String(res?.deleted?.name || label).trim();
-    setMessage("saved_connections_msg", `Connection "${deletedLabel}" deleted.`, "ok");
+    setMessage("saved_connections_msg", `Hub "${deletedLabel}" deleted.`, "ok");
     await fetchInitial();
     await Promise.all([
       loadSavedConnectionsList({ silent: true }).catch(() => {}),
@@ -7120,7 +7361,7 @@ async function deleteSavedConnection(connectionId) {
     const detail = e?.message || e;
     let message = detailToText(detail);
     if (typeof detail === "string" && detail.includes("Connection is still in use")) {
-      message = "Connection masih dipakai project atau membership aktif. Reassign/detach dulu baru hapus.";
+        message = "Hub masih dipakai project atau membership aktif. Reassign/detach dulu baru hapus.";
     }
     setMessage("saved_connections_msg", message, "error");
     throw e;
@@ -7131,14 +7372,14 @@ function renderSavedConnectionsList() {
   const list = $("saved_connections_list");
   if (!list) return;
   if (!savedConnectionsList.length) {
-    list.innerHTML = '<p class="helper">No paired connectors yet.</p>';
+    list.innerHTML = '<p class="helper">No available hubs yet.</p>';
     return;
   }
   list.innerHTML = savedConnectionsList.map((c) => {
     const mode = String(c.mode || "connector").trim().toLowerCase();
-    const typeLabel = mode === "connector" ? "Connector" : "Legacy Direct";
+    const typeLabel = mode === "connector" ? "Hub" : "Legacy Direct";
     const activeBadge = String(activeConnectionId || "").trim() === String(c.id || "").trim() ? " | active" : "";
-    const displayName = c.name || (mode === "connector" ? "Connector" : "Legacy Direct");
+    const displayName = c.name || (mode === "connector" ? "Hub" : "Legacy Direct");
     return `
       <div class="connector-card">
         <div class="connector-card-header">
@@ -7175,7 +7416,7 @@ function renderConnectorsList() {
   const list = $("connectors_list");
   if (!list) return;
   if (!connectorsList.length) {
-    list.innerHTML = '<p class="helper">No connectors paired yet. Generate a pairing token above to get started.</p>';
+    list.innerHTML = '<p class="helper">No hubs paired yet. Generate a pairing token above to get started.</p>';
     return;
   }
   list.innerHTML = connectorsList.map((c) => {
@@ -7183,9 +7424,9 @@ function renderConnectorsList() {
     const lastSeen = c.last_seen_at ? relativeTs(c.last_seen_at) : "Never";
     return `
       <div class="connector-card">
-        <div class="connector-card-header">
+          <div class="connector-card-header">
           <div class="connector-card-info">
-            <strong class="connector-card-name">${esc(c.name || "Connector")}</strong>
+            <strong class="connector-card-name">${esc(c.name || "Hub")}</strong>
             <span class="agent-status-badge ${statusClass}"><span class="asd"></span>${esc(c.status || "offline")}</span>
           </div>
           <div class="connector-card-actions">
@@ -7215,7 +7456,7 @@ function renderConnectorsList() {
 }
 
 /* ===== SETTINGS TAB SWITCHING ===== */
-function activateSettingsTab(key = "connectors") {
+function activateSettingsTab(key = "account") {
   const tabs = Array.from(document.querySelectorAll("[data-settings-tab]"));
   if (!tabs.length) return;
 
@@ -7231,14 +7472,8 @@ function activateSettingsTab(key = "connectors") {
 
   const accountPane = $("settings_account_pane");
   const policyPane = $("settings_policy_pane");
-  const connectorsPane = $("settings_connectors_pane");
   if (accountPane) accountPane.classList.toggle("hidden", selectedKey !== "account");
   if (policyPane) policyPane.classList.toggle("hidden", selectedKey !== "policy");
-  if (connectorsPane) connectorsPane.classList.toggle("hidden", selectedKey !== "connectors");
-  if (selectedKey === "connectors") {
-    loadConnectorsList().catch(() => {});
-    loadSavedConnectionsList({ silent: true }).catch(() => {});
-  }
 }
 
 function initSettingsTabs() {
@@ -7247,11 +7482,11 @@ function initSettingsTabs() {
 
   const tabs = document.querySelectorAll("[data-settings-tab]");
   for (const tab of tabs) {
-    tab.addEventListener("click", () => activateSettingsTab(tab.dataset.settingsTab || "connectors"));
+    tab.addEventListener("click", () => activateSettingsTab(tab.dataset.settingsTab || "account"));
   }
 
   const active = document.querySelector("[data-settings-tab].active");
-  activateSettingsTab(active?.dataset?.settingsTab || "connectors");
+  activateSettingsTab(active?.dataset?.settingsTab || "account");
 }
 
 function renderSummaryAgents() {
@@ -7274,7 +7509,7 @@ function renderSummaryAgents() {
   }
 
   if (!summaryAgents.length) {
-    msg.textContent = "No managed agents found yet. Bootstrap the paired connector first.";
+    msg.textContent = "No managed agents found yet. Pair and bootstrap a hub first.";
     return;
   }
 
@@ -7489,6 +7724,7 @@ async function loadSummaryAgents({ force = false } = {}) {
   try {
     const activeConn = String(activeConnectionId || "").trim();
     let liveListed = null;
+    let liveListedTransport = "";
     const liveSourceByKey = new Map();
 
     // Keep the managed-agent index fresh for the active connection so the
@@ -7496,7 +7732,10 @@ async function loadSummaryAgents({ force = false } = {}) {
     if (activeConn) {
       try {
         liveListed = await api(`/api/openclaw/${encodeURIComponent(activeConn)}/agents`);
-        const liveAgents = Array.isArray(liveListed?.agents) ? liveListed.agents : [];
+        liveListedTransport = String(liveListed?.transport || "").toLowerCase();
+        const liveAgents = liveListedTransport.includes("model")
+          ? []
+          : (Array.isArray(liveListed?.agents) ? liveListed.agents : []);
         for (const item of liveAgents) {
           const normalized = _normalizeDiscoveredAgent(item, { connectionId: activeConn });
           if (!normalized) continue;
@@ -7562,6 +7801,25 @@ async function loadSummaryAgents({ force = false } = {}) {
     }));
 
     summaryAgents = enriched.filter((agent) => Boolean(agent.agent_id));
+    if (!summaryAgents.length) {
+      const fallback = fallbackSummaryAgentFromPolicy(activeConn);
+      if (fallback) summaryAgents = [fallback];
+    }
+    if (activeConn) {
+      const currentForConn = summaryAgents
+        .filter((agent) => {
+          const connId = String(agent?.connection_id || "").trim();
+          return !connId || connId === activeConn;
+        })
+        .map((agent) => ({
+          id: String(agent.agent_id || "").trim(),
+          name: String(agent.agent_name || agent.agent_id || "").trim(),
+          raw: agent.raw || null,
+          connection_id: String(agent.connection_id || activeConn).trim(),
+        }))
+        .filter((agent) => Boolean(agent.id));
+      if (currentForConn.length) currentAgents = currentForConn;
+    }
     summaryAgentsError = "";
   } catch (e) {
     summaryAgents = [];
@@ -7570,6 +7828,7 @@ async function loadSummaryAgents({ force = false } = {}) {
     summaryAgentsLoading = false;
     renderSummaryAgents();
     renderWizardOwnerAgents();
+    renderPrimaryNavAgents();
   }
 }
 function setProjectPane(pane) {
@@ -7646,12 +7905,16 @@ function setNavTab(tab) {
   if (tab === "agents") {
     loadSummaryAgents().catch(() => {});
   }
+  if (tab === "hub") {
+    loadConnectorsList().catch(() => {});
+    loadSavedConnectionsList({ silent: true }).catch(() => {});
+  }
   if (tab === "issues") {
     renderIssuesGlobal();
   }
   if (tab === "settings") {
     const activeSettings = document.querySelector("[data-settings-tab].active");
-    activateSettingsTab(activeSettings?.dataset?.settingsTab || "connectors");
+    activateSettingsTab(activeSettings?.dataset?.settingsTab || "account");
     loadAccountProfile({ silent: true }).catch((e) => setMessage("account_msg", detailToText(e), "error"));
   }
 }
@@ -7789,9 +8052,11 @@ async function selectProject(projectId) {
 }
 
 async function loadAgentsForWizard() {
-  if (!activeConnectionId) throw new Error("Connect OpenClaw first");
+  if (!activeConnectionId) throw new Error("Connect a hub first");
   const res = await api(`/api/openclaw/${activeConnectionId}/agents`);
-  const rawAgents = Array.isArray(res?.agents) ? res.agents : [];
+  const rawAgents = String(res?.transport || "").toLowerCase().includes("model")
+    ? []
+    : (Array.isArray(res?.agents) ? res.agents : []);
   currentAgents = rawAgents
     .map((item) => {
       const normalized = _normalizeDiscoveredAgent(item, { connectionId: activeConnectionId });
@@ -7799,6 +8064,17 @@ async function loadAgentsForWizard() {
       return { id: normalized.id, name: normalized.name, raw: normalized.raw, connection_id: normalized.connection_id };
     })
     .filter(Boolean);
+  if (!currentAgents.length) {
+    const fallback = fallbackSummaryAgentFromPolicy(activeConnectionId);
+    if (fallback) {
+      currentAgents = [{
+        id: fallback.agent_id,
+        name: fallback.agent_name,
+        raw: fallback.raw || null,
+        connection_id: fallback.connection_id,
+      }];
+    }
+  }
   renderWizardOwnerAgents();
 }
 
@@ -8101,7 +8377,7 @@ function setWizardMode(mode) {
 }
 
 async function sendWizardSetupChat({ autoStart = false } = {}) {
-  if (!activeConnectionId) throw new Error("Connector not selected");
+  if (!activeConnectionId) throw new Error("Hub not selected");
   if (wizardChatPending) return;
   const input = $("wizard_chat_input");
   if (!input) return;
@@ -8800,7 +9076,7 @@ function buildWizardSetupHistoryText() {
 }
 
 async function createProjectRecord({ title, brief, goal, setupDetails, setupChatHistory }) {
-  if (!activeConnectionId) throw new Error("Connector not selected");
+  if (!activeConnectionId) throw new Error("Hub not selected");
   if (!title || !brief || !goal) throw new Error("title, brief, and goal are required");
 
   const created = await api("/api/projects", "POST", {
@@ -9158,14 +9434,12 @@ function bindAuthMethods() {
   });
   $("btn_invite_open_setup")?.addEventListener("click", () => {
     if (!sessionToken) {
-      setMessage("project_invite_msg", "Login first, then open Settings > Connectors to pair your connector.", "");
+      setMessage("project_invite_msg", "Login first, then open Hub to pair your runtime.", "");
       return;
     }
     setView("home");
-    initSettingsTabs();
-    setNavTab("settings");
-    activateSettingsTab("connectors");
-    setMessage("connector_pair_msg", "Generate pairing token and run your connector with HIVEE_PAIRING_TOKEN.", "");
+    setNavTab("hub");
+    setMessage("connector_pair_msg", "Generate pairing token and run your hub with HIVEE_PAIRING_TOKEN.", "");
   });
   $("btn_ignore_project_invite")?.addEventListener("click", () => {
     ignoreProjectInviteFromUI();
@@ -9353,9 +9627,9 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     showEmptyProject();
     setView("home");
     applyConnectionStatus();
-    setMessage("chat_hint", "No connector paired yet. Go to Settings > Connectors to pair or manage your runtime.", "");
+    setMessage("chat_hint", "No hub paired yet. Open Hub to pair or manage your runtime.", "");
     await loadAccountProfile({ silent: true }).catch(() => {});
-    setNavTab("dashboard");
+    setNavTab("hub");
     return;
   }
 
@@ -9390,9 +9664,9 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
     applyWorkspacePolicy(null);
     setView("home");
     applyConnectionStatus();
-    setMessage("chat_hint", "OpenClaw workspace check failed. Pair and run connector first from Settings > Connectors.", "error");
+    setMessage("chat_hint", "OpenClaw workspace check failed. Pair and run your hub first from Hub.", "error");
     if (workspaceErr) setMessage("chat_hint", workspaceErr, "error");
-    setNavTab("dashboard");
+    setNavTab("hub");
     return;
   }
 
@@ -9400,6 +9674,7 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
   applyConnectionStatus();
   setView("home");
   await loadConnectionPolicy(activeConnectionId).catch(() => {});
+  await loadSummaryAgents({ force: true }).catch(() => {});
   await loadWorkspaceTree().catch(() => {});
   await loadWorkspaceFiles(DEFAULT_OWNER_FILES_PATH).catch(() => {});
 
@@ -9490,6 +9765,7 @@ function bindActions() {
       .catch((e) => setMessage("config_msg", detailToText(e), "error"))
       .finally(() => {
         loadChatAgents().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+        loadSummaryAgents({ force: true }).catch(() => {});
       });
   });
 

@@ -22,7 +22,7 @@ def _is_retired_direct_connection(connection_id: str, user_id: str, conn) -> boo
 def _raise_direct_connection_retired() -> None:
     raise HTTPException(
         410,
-        "Direct OpenClaw connections are retired. Pair/start a Hivee Connector instead.",
+        "Direct OpenClaw connections are retired. Pair/start a Hivee Hub instead.",
     )
 
 
@@ -110,7 +110,7 @@ def register_routes(app: FastAPI) -> None:
     async def connect_openclaw(request: Request, payload: ConnectIn):
         raise HTTPException(
             410,
-            "Direct OpenClaw connections are retired. Pair a Hivee Connector instead.",
+            "Direct OpenClaw connections are retired. Pair a Hivee Hub instead.",
         )
         user_id = get_session_user(request)
         primary_env = _ensure_primary_environment_for_user(user_id)
@@ -350,7 +350,7 @@ def register_routes(app: FastAPI) -> None:
             result.append(ConnectionOut(
                 id=r["id"],
                 base_url=str(r["openclaw_base_url"] or ""),
-                name=str(r["name"] or "connector"),
+                name=str(r["name"] or "Hub"),
                 mode="connector",
                 connector_id=r["id"],
             ))
@@ -615,12 +615,12 @@ def register_routes(app: FastAPI) -> None:
             main_agent_id = main_agent_id.strip() or None
             if payload.agent_id:
                 if not main_agent_id:
-                    raise HTTPException(400, "Main workspace agent is not configured. Re-run connector bootstrap.")
+                    raise HTTPException(400, "Main workspace agent is not configured. Re-run hub bootstrap.")
                 if payload.agent_id != main_agent_id:
                     raise HTTPException(403, "Workspace chat can only target your main user agent")
             effective_agent_id = main_agent_id
             if not effective_agent_id:
-                raise HTTPException(400, "Main workspace agent is not configured. Re-run connector bootstrap.")
+                raise HTTPException(400, "Main workspace agent is not configured. Re-run hub bootstrap.")
             scoped_message = _compose_guardrailed_message(payload.message.strip(), workspace_root=workspace_root)
             res = await _connector_chat_sync(
                 connector_id=connection_id,
@@ -679,7 +679,7 @@ def register_routes(app: FastAPI) -> None:
                 context_type="message",
             )
         else:
-            raise HTTPException(400, "No connector available. Connect a Hivee Connector to use workspace chat.")
+            raise HTTPException(400, "No hub available. Connect a Hivee Hub to use workspace chat.")
         if not res.get("ok"):
             raise HTTPException(400, res)
         res["resolved_agent_id"] = effective_agent_id
@@ -983,7 +983,7 @@ def register_routes(app: FastAPI) -> None:
             from services.connector_dispatch import get_user_online_connector as _get_rt_oc
             online_rt = _get_rt_oc(user_id)
             if not online_rt:
-                raise HTTPException(400, "No connector available. Connect a Hivee Connector to use agent chat.")
+                raise HTTPException(400, "No hub available. Connect a Hivee Hub to use agent chat.")
             resolved_rt_connector_id = str(online_rt["id"])
         res = await _connector_chat_sync(
             connector_id=resolved_rt_connector_id,
