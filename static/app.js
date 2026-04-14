@@ -3971,51 +3971,7 @@ function renderPrimaryNavAgents() {
 }
 
 function renderPrimaryNavHub() {
-  const content = $("nav_content_hub");
-  if (!content) return;
-  content.innerHTML = "";
-
-  if (!connectionsCache.length) {
-    const cta = document.createElement("button");
-    cta.type = "button";
-    cta.className = "nav-child-cta";
-    cta.textContent = "+ Pair New Hub";
-    cta.addEventListener("click", () => setNavTab("hub"));
-    content.appendChild(cta);
-    return;
-  }
-
-  const connectorDetails = new Map(
-    (Array.isArray(connectorsList) ? connectorsList : []).map((item) => [String(item?.id || "").trim(), item])
-  );
-  const list = document.createElement("div");
-  list.className = "nav-child-list";
-
-  for (const hub of connectionsCache.slice(0, 5)) {
-    const hubId = String(hub?.id || "").trim();
-    if (!hubId) continue;
-    const details = connectorDetails.get(hubId) || {};
-    const isActive = hubId === String(activeConnectionId || "").trim();
-    const status = String(details?.status || (isActive && connectionHealthy ? "online" : "idle")).trim().toLowerCase();
-
-    const item = document.createElement("button");
-    item.type = "button";
-    item.className = `nav-child-item${isActive ? " is-primary" : ""}`;
-
-    const dot = document.createElement("span");
-    dot.className = `nav-child-dot nav-child-status-${status === "online" ? "online" : status === "offline" ? "offline" : "idle"}`;
-
-    const label = document.createElement("span");
-    label.className = "nav-child-label";
-    label.textContent = String(hub?.name || "Hub");
-
-    item.appendChild(dot);
-    item.appendChild(label);
-    item.addEventListener("click", () => setNavTab("hub"));
-    list.appendChild(item);
-  }
-
-  content.appendChild(list);
+  // Hub nav entry is just a link to the hub page — no child list.
 }
 
 function syncChatContextControls() {
@@ -7663,43 +7619,70 @@ function openAgentDetailView(agent) {
       : '<span class="helper">No capability data yet.</span>';
   }
 
-  // Token usage chart
+  // Token usage chart — dashboard style
   const usageEl = $("agd_usage_chart");
   if (usageEl) {
-    const tokens = Math.max(0, Number(agent.usage_tokens || agent.total_tokens || 0));
-    const maxTokens = Math.max(1, ...summaryAgents.map((a) => Number(a.usage_tokens || a.total_tokens || 0)));
-    const pct = tokens > 0 ? Math.max(4, Math.round((tokens / maxTokens) * 100)) : 0;
-    const label = tokens > 999999 ? `${(tokens/1_000_000).toFixed(1)}M`
-                : tokens > 999 ? `${(tokens/1000).toFixed(1)}k` : String(tokens || "0");
+    const raw = agent.raw && typeof agent.raw === "object" ? agent.raw : {};
+    const metrics = raw.metrics && typeof raw.metrics === "object" ? raw.metrics : {};
+    const promptTok = Math.max(0, Number(metrics.total_prompt_tokens || agent.prompt_tokens || 0));
+    const completionTok = Math.max(0, Number(metrics.total_completion_tokens || agent.completion_tokens || 0));
+    const totalTok = Math.max(0, Number(agent.usage_tokens || agent.total_tokens || metrics.total_prompt_tokens + metrics.total_completion_tokens || 0));
+    const maxTok = Math.max(1, totalTok, promptTok, completionTok);
+    const fmt = (n) => n > 999999 ? `${(n/1_000_000).toFixed(1)}M` : n > 999 ? `${(n/1000).toFixed(1)}k` : String(n || "0");
+    const promptPct = totalTok > 0 ? Math.max(promptTok > 0 ? 3 : 0, Math.round((promptTok / maxTok) * 100)) : 0;
+    const completionPct = totalTok > 0 ? Math.max(completionTok > 0 ? 3 : 0, Math.round((completionTok / maxTok) * 100)) : 0;
     usageEl.innerHTML = `
-      <div class="agd-bar-row">
-        <span class="agd-bar-label">Total tokens</span>
-        <div class="agd-bar-track"><div class="agd-bar-fill" style="width:${pct}%;background:${palette.hex}"></div></div>
-        <span class="agd-bar-val">${label}</span>
+      <div class="agd-kpi-grid">
+        <div class="agd-kpi"><span class="label">Prompt</span><span class="value">${fmt(promptTok)}</span></div>
+        <div class="agd-kpi"><span class="label">Completion</span><span class="value">${fmt(completionTok)}</span></div>
+        <div class="agd-kpi"><span class="label">Total</span><span class="value">${fmt(totalTok)}</span></div>
+      </div>
+      <div class="usage-chart">
+        <div class="usage-bar-row">
+          <span style="color:var(--blue)">Prompt</span>
+          <div class="usage-bar-track"><div class="usage-bar-fill prompt" style="width:${promptPct}%"></div></div>
+          <strong>${fmt(promptTok)}</strong>
+        </div>
+        <div class="usage-bar-row">
+          <span style="color:var(--cyan)">Completion</span>
+          <div class="usage-bar-track"><div class="usage-bar-fill completion" style="width:${completionPct}%"></div></div>
+          <strong>${fmt(completionTok)}</strong>
+        </div>
       </div>
     `;
   }
 
-  // Success rate chart (from raw metrics if available)
+  // Success rate chart — dashboard style
   const successEl = $("agd_success_chart");
   if (successEl) {
     const raw = agent.raw && typeof agent.raw === "object" ? agent.raw : {};
     const metrics = raw.metrics && typeof raw.metrics === "object" ? raw.metrics : {};
-    const successes = Number(metrics.success_count || 0);
-    const failures = Number(metrics.failure_count || 0);
-    const total = successes + failures;
+    const successes = Math.max(0, Number(metrics.success_count || 0));
+    const failures  = Math.max(0, Number(metrics.failure_count || 0));
+    const total     = successes + failures;
+    const calls     = Math.max(0, Number(metrics.total_calls || total));
+    const latency   = Math.max(0, Number(metrics.total_latency_ms || 0));
+    const avgLatency = calls > 0 ? Math.round(latency / calls) : 0;
     if (total > 0) {
       const pct = Math.round((successes / total) * 100);
       const color = pct >= 80 ? "var(--cyan)" : pct >= 50 ? "var(--yellow)" : "rgba(255,100,100,0.8)";
       successEl.innerHTML = `
-        <div class="agd-bar-row">
-          <span class="agd-bar-label">Success rate</span>
-          <div class="agd-bar-track"><div class="agd-bar-fill" style="width:${pct}%;background:${color}"></div></div>
-          <span class="agd-bar-val">${pct}%</span>
+        <div class="agd-kpi-grid">
+          <div class="agd-kpi"><span class="label">Success</span><span class="value" style="color:${color}">${pct}%</span></div>
+          <div class="agd-kpi"><span class="label">Calls</span><span class="value">${calls}</span></div>
+          <div class="agd-kpi"><span class="label">Avg latency</span><span class="value">${avgLatency > 0 ? `${(avgLatency/1000).toFixed(1)}s` : "—"}</span></div>
         </div>
-        <div class="agd-bar-row" style="margin-top:6px">
-          <span class="agd-bar-label" style="opacity:.6">Calls</span>
-          <span class="agd-bar-val" style="color:var(--muted)">${successes} ok / ${failures} fail / ${total} total</span>
+        <div class="usage-chart">
+          <div class="usage-bar-row">
+            <span style="color:${color}">Success</span>
+            <div class="usage-bar-track"><div class="usage-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+            <strong>${pct}%</strong>
+          </div>
+          <div class="usage-bar-row">
+            <span style="color:rgba(255,100,100,0.8)">Failure</span>
+            <div class="usage-bar-track"><div class="usage-bar-fill" style="width:${100-pct}%;background:rgba(255,100,100,0.6)"></div></div>
+            <strong>${100-pct}%</strong>
+          </div>
         </div>
       `;
     } else {
@@ -8492,21 +8475,34 @@ function setWizardMode(mode) {
   $("btn_mode_chat")?.classList.toggle("active", wizardMode === "chat");
   $("btn_mode_manual")?.classList.toggle("active", wizardMode === "manual");
   $("wizard_step_agents")?.classList.add("hidden");
+  $("btn_wizard_next")?.classList.remove("hidden");
+  $("btn_wizard_create_now")?.classList.add("hidden");
 
   if (wizardMode === "manual") {
     $("wizard_title").textContent = "New Project (Manual)";
     $("wizard_step_chat")?.classList.add("hidden");
     $("wizard_step_project")?.classList.remove("hidden");
-    const actionBtn = $("btn_wizard_create_now");
-    if (actionBtn) actionBtn.textContent = "Create Project Now";
     return;
   }
 
   $("wizard_title").textContent = "New Project (Chat)";
   $("wizard_step_project")?.classList.add("hidden");
   $("wizard_step_chat")?.classList.remove("hidden");
-  const actionBtn = $("btn_wizard_create_now");
-  if (actionBtn) actionBtn.textContent = "Create Project Now";
+}
+
+function showWizardAgentsStep() {
+  $("wizard_step_mode")?.classList.add("hidden");
+  $("wizard_step_chat")?.classList.add("hidden");
+  $("wizard_step_project")?.classList.add("hidden");
+  $("wizard_step_agents")?.classList.remove("hidden");
+  $("wizard_external_access")?.classList.remove("hidden");
+  $("btn_wizard_next")?.classList.add("hidden");
+  $("btn_wizard_create_now")?.classList.remove("hidden");
+  $("wizard_title").textContent = "Invite Agents";
+  (async () => {
+    await loadSummaryAgents().catch(() => {});
+    await loadAgentsForWizard().catch(() => {});
+  })().catch(() => {});
 }
 
 async function sendWizardSetupChat({ autoStart = false } = {}) {
@@ -9222,11 +9218,13 @@ async function createProjectRecord({ title, brief, goal, setupDetails, setupChat
   });
 
   selectedProjectId = created.id;
-  $("wizard_step_chat").classList.add("hidden");
-  $("wizard_step_project").classList.add("hidden");
-  $("wizard_step_agents").classList.remove("hidden");
-  $("wizard_footer_actions")?.classList.add("hidden");
+  $("wizard_step_chat")?.classList.add("hidden");
+  $("wizard_step_project")?.classList.add("hidden");
+  $("wizard_step_agents")?.classList.remove("hidden");
   $("wizard_step_mode")?.classList.add("hidden");
+  $("wizard_external_access")?.classList.remove("hidden");
+  $("btn_wizard_next")?.classList.add("hidden");
+  $("btn_wizard_create_now")?.classList.add("hidden");
   $("wizard_title").textContent = "Invite Agents";
   setMessage("wizard_msg", "Project created. Invite agents and set roles.", "ok");
 
@@ -9931,6 +9929,7 @@ function bindActions() {
       sendWizardSetupChat().catch((e) => showUiError("wizard_msg", e));
     }
   });
+  $("btn_wizard_next")?.addEventListener("click", showWizardAgentsStep);
   $("btn_wizard_create_now").onclick = () => createProjectNow().catch((e) => showUiError("wizard_msg", e));
   $("btn_manage_agents").onclick = () => {
     if (!selectedProjectId) return;
@@ -10156,12 +10155,8 @@ function bindActions() {
         if (selectedProjectId) showEmptyProject();
         return;
       }
-      if (activeNavTab !== tab) {
-        setNavTab(tab);
-        if (content) content.classList.remove("hidden");
-        return;
-      }
-      if (content) content.classList.toggle("hidden");
+      setNavTab(tab);
+      if (content) content.classList.remove("hidden");
     });
   }
 

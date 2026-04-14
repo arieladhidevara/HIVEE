@@ -1704,7 +1704,7 @@ async def _project_chat(
         except Exception:
             connector_id = ""
 
-    # Direct OpenClaw projects still need a live Hivee Connector to deliver
+    # Direct OpenClaw projects still need a live Hivee Hub to deliver
     # project-scoped prompts to the runtime agent. Do not treat connection_id
     # from openclaw_connections as a connector id.
     if not connector_id and user_id:

@@ -697,8 +697,9 @@ docker compose up -d --build</pre>
                 <p class="account-sub">All hubs registered to your account.</p>
                 <div id="connectors_list" class="connectors-list"></div>
                 <p id="connectors_msg" class="helper"></p>
-                <div id="saved_connections_list" class="connectors-list" style="margin-top:8px"></div>
-                <p id="saved_connections_msg" class="helper"></p>
+                <!-- saved_connections hidden; data still loaded for connection selector -->
+                <div id="saved_connections_list" class="hidden"></div>
+                <p id="saved_connections_msg" class="hidden"></p>
               </section>
 
             </div>
@@ -1083,7 +1084,8 @@ docker compose up -d --build</pre>
           </div>
 
           <div id="wizard_footer_actions" class="action-row">
-            <button id="btn_wizard_create_now" type="button" class="primary">Create Project Now</button>
+            <button id="btn_wizard_next" type="button" class="primary">Next →</button>
+            <button id="btn_wizard_create_now" type="button" class="primary hidden">Create Project</button>
           </div>
 
           <p id="wizard_msg" class="helper"></p>

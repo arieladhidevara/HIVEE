@@ -98,7 +98,7 @@ def _resolve_connector_selection(conn, *, user_id: str, connection_id: Any) -> D
             "status": 410,
             "error": (
                 "Direct OpenClaw connections are no longer supported for projects. "
-                "Pair a Hivee Connector and retry."
+                "Pair a Hivee Hub and retry."
             ),
         }
 

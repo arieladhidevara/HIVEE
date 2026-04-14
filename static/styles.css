@@ -2879,27 +2879,33 @@ textarea[readonly]:focus {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  color: var(--text);
 }
 .agent-detail-section h5 {
   margin: 0;
-  font-size: 11px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: .07em;
   color: var(--muted);
   font-weight: 700;
 }
+.agent-detail-section .helper { color: var(--muted); font-size: 12px; }
 .agent-detail-caps { display: flex; flex-wrap: wrap; gap: 6px; }
-.agd-bar-row {
+.agd-project-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 3px 0; color: var(--text); }
+/* KPI grid for agent stats */
+.agd-kpi-grid {
   display: grid;
-  grid-template-columns: 90px 1fr auto;
-  align-items: center;
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 8px;
+  margin-bottom: 4px;
 }
-.agd-bar-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
-.agd-bar-track { height: 5px; border-radius: 999px; background: rgba(255,255,255,0.07); overflow: hidden; }
-.agd-bar-fill  { height: 100%; border-radius: 999px; transition: width 500ms; }
-.agd-bar-val   { font-size: 11px; color: var(--text); white-space: nowrap; }
-.agd-project-row { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 3px 0; }
+.agd-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agd-kpi .label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.agd-kpi .value { font-size: 18px; font-weight: 700; color: var(--text); }
 
 .agent-detail-dl { display: flex; flex-direction: column; gap: 6px; }
 .agent-detail-row { display: grid; grid-template-columns: 100px 1fr; gap: 8px; font-size: 13px; }
