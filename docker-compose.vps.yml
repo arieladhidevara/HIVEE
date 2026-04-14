@@ -24,6 +24,7 @@ services:
       - traefik.http.services.hivee.loadbalancer.server.port=8000
     environment:
       - TZ=Asia/Jakarta
+      - HIVEE_PUBLIC_URL=http://hivee-app:8000
     ports:
       - "8000:8000"
     volumes:
@@ -64,7 +65,7 @@ services:
       OPENCLAW_TOKEN: "${OPENCLAW_TOKEN:-sCirXcZyRCckVnHz9IFtHch77NKatkvp}"
       OPENCLAW_TRANSPORT: "http"
       OPENCLAW_WS_PATH: ""
-      OPENCLAW_REQUEST_TIMEOUT_MS: "60000"
+      OPENCLAW_REQUEST_TIMEOUT_MS: "300000"
       ENABLE_DOCKER_DISCOVERY: "false"
     ports:
       - "43137:43137"
