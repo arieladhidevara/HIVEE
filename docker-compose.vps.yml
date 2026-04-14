@@ -24,7 +24,7 @@ services:
       - traefik.http.services.hivee.loadbalancer.server.port=8000
     environment:
       - TZ=Asia/Jakarta
-      - HIVEE_PUBLIC_URL=https://hivee.srv1570855.hstgr.cloud
+      - HIVEE_PUBLIC_URL=https://hivee.cloud
     ports:
       - "8000:8000"
     volumes:
