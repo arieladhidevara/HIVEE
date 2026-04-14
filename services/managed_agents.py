@@ -2007,7 +2007,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
     agent_token = _issue_agent_session_token(project_id, primary_agent_id or "")
     task = (
         f"Read fundamentals.md first, then context.md and setup-chat.md.\n"
-        f"Build a complete, detailed project plan IN BAHASA INDONESIA based on the project brief, goals, and agents roster.\n"
+        f"Build a complete, detailed project plan IN ENGLISH based on the project brief, goals, and agents roster.\n"
         f"The plan must include: milestones, deliverables, agent responsibilities, handoff triggers, pit-stop approval gates, assumptions, risks, and open questions.\n"
         f"Return a JSON object with:\n"
         f"  - chat_update: brief status message ending with 'WAITING FOR USER APPROVAL'\n"
