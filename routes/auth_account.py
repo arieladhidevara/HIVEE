@@ -141,6 +141,20 @@ def register_routes(app: FastAPI) -> None:
         return redirect
     
 
+    @app.get("/api/session/token")
+    async def get_session_token(request: Request):
+        """Return the active session token so the JS can sync it from cookie into localStorage."""
+        from core.session_project_access import _bearer_token
+        token = _bearer_token(request)
+        if not token:
+            raise HTTPException(401, "No active session")
+        conn = db()
+        row = conn.execute("SELECT user_id FROM sessions WHERE token = ?", (token,)).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(401, "Invalid session token")
+        return {"token": token}
+
     @app.get("/api/me", response_model=AccountProfileOut)
     async def get_account_profile(request: Request):
         user_id = get_session_user(request)

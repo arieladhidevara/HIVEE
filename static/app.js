@@ -8497,7 +8497,7 @@ async function loadAgentsForWizard() {
     .filter(Boolean);
   if (!currentAgents.length) {
     const fallback = fallbackSummaryAgentFromPolicy(activeConnectionId);
-    if (fallback) {
+    if (fallback && !_isDefaultPlaceholderAgent(fallback.agent_id) && !_isDefaultPlaceholderAgent(fallback.agent_name)) {
       currentAgents = [{
         id: fallback.agent_id,
         name: fallback.agent_name,
@@ -10596,6 +10596,22 @@ if (oauthError) {
   clearOauthErrorParamFromUrl();
 }
 (async () => {
+  // If JS has no token but a server session cookie may exist (e.g. after OAuth redirect),
+  // try to sync it into localStorage before any auth checks.
+  if (!sessionToken) {
+    try {
+      const sess = await fetch("/api/session/token", { method: "GET", credentials: "include" });
+      if (sess.ok) {
+        const sessData = await sess.json();
+        const cookieToken = String(sessData?.token || "").trim();
+        if (cookieToken) {
+          persistSessionToken(cookieToken);
+          sessionToken = cookieToken;
+        }
+      }
+    } catch {}
+  }
+
   if (claimAuthContext.active) {
     const savedClaim = readClaimSocialContext();
     if (savedClaim) applyClaimConnectionFromContext(savedClaim);
@@ -10619,10 +10635,12 @@ if (oauthError) {
 
   if (projectInviteContext.active) {
     setView("auth");
-    initializeProjectInviteContext({ refreshConnections: true, autoAccept: false })
-      .catch((e) => {
-        setMessage("project_invite_msg", detailToText(e?.message || e), "error");
-      });
+    await initializeProjectInviteContext({ refreshConnections: true, autoAccept: false }).catch((e) => {
+      setMessage("project_invite_msg", detailToText(e?.message || e), "error");
+    });
+    if (projectInviteContext.active) {
+      await _autoOpenInviteModalIfReady();
+    }
     return;
   }
 

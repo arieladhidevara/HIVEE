@@ -102,6 +102,18 @@ def _resolve_connector_selection(conn, *, user_id: str, connection_id: Any) -> D
             ),
         }
 
+    # Fall back to any connector owned by this user
+    any_connector = conn.execute(
+        "SELECT id, user_id, name, status, openclaw_base_url FROM connectors WHERE user_id = ? ORDER BY created_at ASC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    if any_connector:
+        return {
+            "ok": True,
+            "connection_id": str(any_connector["id"] or "").strip(),
+            "connector": dict(any_connector),
+        }
+
     return {"ok": False, "status": 404, "error": "Connector not found for this user"}
 
 
