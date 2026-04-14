@@ -4997,22 +4997,27 @@ def _pick_main_agent(agents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     def _score(agent: Dict[str, Any]) -> int:
         aid = str(agent.get("id") or "").lower()
         name = str(agent.get("name") or "").lower()
+        # Reject placeholder/default agents — they are not real agents.
+        if "default" in aid:
+            return -1000
         text = f"{aid} {name}"
         score = 0
-        if aid in {"main", "primary", "default", "core"}:
+        if aid in {"main", "primary", "core"}:
             score += 120
         if "main" in text:
             score += 80
         if "primary" in text:
             score += 50
-        if "default" in text:
-            score += 40
         if "core" in text:
             score += 20
         return score
 
+    # Filter out any agent that scores below zero (pure placeholders), then rank.
+    eligible = [a for a in agents if _score(a) >= 0]
+    if not eligible:
+        return None
     ranked = sorted(
-        agents,
+        eligible,
         key=lambda a: (_score(a), str(a.get("name") or ""), str(a.get("id") or "")),
         reverse=True,
     )

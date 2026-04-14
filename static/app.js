@@ -2902,6 +2902,7 @@ async function deleteAccount(ev) {
 }
 
 function applyWorkspacePolicy(policy) {
+  const rawId = String(policy?.main_agent_id || "").trim();
   workspacePolicy = {
     workspace_root: "HIVEE",
     templates_root: "HIVEE/TEMPLATES",
@@ -2910,6 +2911,8 @@ function applyWorkspacePolicy(policy) {
     bootstrap_status: "unknown",
     workspace_tree: "",
     ...policy,
+    // Strip placeholder/default IDs so they never leak into agent cards.
+    main_agent_id: _isDefaultPlaceholderAgent(rawId) ? "" : rawId,
   };
   workspaceTreeText = String(workspacePolicy?.workspace_tree || "").trim();
   renderFolderBrowsers();
@@ -3838,7 +3841,7 @@ function activeChatContextMode() {
 
 function workspaceMainChatAgent() {
   const id = String(workspacePolicy?.main_agent_id || "").trim();
-  if (!id) return null;
+  if (!id || _isDefaultPlaceholderAgent(id)) return null;
   const name = String(workspacePolicy?.main_agent_name || id).trim() || id;
   return {
     id,
