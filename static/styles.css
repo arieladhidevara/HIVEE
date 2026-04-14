@@ -120,9 +120,8 @@ h1, h2, h3, h4, strong {
   align-items: center;
   gap: 0;
   white-space: nowrap;
-  animation: ticker-scroll 32s linear infinite;
-  width: max-content;
   will-change: transform;
+  flex-shrink: 0;
 }
 .ticker-half {
   display: inline-flex;
@@ -340,6 +339,16 @@ label {
   object-fit: contain;
   margin-bottom: 14px;
 }
+.auth-panel-logo {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 20px;
+}
+.auth-panel-logo img {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+}
 
 .auth-brand h1 {
   font-size: clamp(28px, 5vw, 40px);
@@ -350,21 +359,21 @@ label {
 /* Auth typewriter headline */
 .ahl-typewriter-wrap {
   margin: 16px 0 24px;
-  min-height: 3.2em;
+  min-height: 110px;
   display: flex;
   align-items: flex-start;
 }
 .ahl-typewriter {
-  font-size: clamp(26px, 3.4vw, 44px);
+  font-size: clamp(34px, 4.8vw, 56px);
   font-weight: 800;
   line-height: 1.1;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.03em;
   color: #fff;
   display: inline;
   white-space: nowrap;
 }
 .ahl-typewriter.long {
-  font-size: clamp(18px, 2.2vw, 28px);
+  font-size: clamp(22px, 3.2vw, 34px);
 }
 .ahl-typewriter.gradient {
   background: linear-gradient(135deg, #facc15 0%, #ff4d4d 45%, #22d3ee 100%);
@@ -373,13 +382,16 @@ label {
   background-clip: text;
 }
 .ahl-cursor {
-  font-size: clamp(26px, 3.4vw, 44px);
+  font-size: clamp(34px, 4.8vw, 56px);
   font-weight: 200;
   color: rgba(255,255,255,0.5);
   line-height: 1.1;
   animation: cursor-blink 0.65s step-end infinite;
   margin-left: 2px;
   align-self: flex-start;
+}
+.ahl-typewriter-wrap:has(.ahl-typewriter.long) .ahl-cursor {
+  font-size: clamp(22px, 3.2vw, 34px);
 }
 @keyframes cursor-blink {
   0%, 100% { opacity: 1; }
@@ -2466,11 +2478,11 @@ textarea[readonly]:focus {
   content: '';
   position: absolute;
   right: -1px;
-  top: 8%;
-  height: 84%;
+  top: 0;
+  height: 100%;
   width: 1px;
-  background: linear-gradient(to bottom, transparent 0%, #facc15 20%, #ff4d4d 50%, #22d3ee 80%, transparent 100%);
-  opacity: 0.55;
+  background: linear-gradient(to bottom, transparent 0%, #facc15 25%, #ff4d4d 55%, #22d3ee 85%, transparent 100%);
+  opacity: 0.6;
 }
 
 #view_auth .auth-panel {

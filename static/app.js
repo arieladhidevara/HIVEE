@@ -10340,7 +10340,7 @@ if (oauthError) {
     { text: "That's Hivee!",                       gradient: false, long: false },
   ];
 
-  const TYPE_MS = 20, PAUSE_MS = 1000, FADE_MS = 320;
+  const TYPE_MS = 20, PAUSE_MS = 3000, FADE_MS = 320;
   let pi = 0, ci = 0;
 
   wrap.style.transition = `opacity ${FADE_MS}ms ease`;
@@ -10372,4 +10372,38 @@ if (oauthError) {
 
   applyClasses();
   tick();
+})();
+
+/* ── Auth ticker (JS smooth loop) ── */
+(function () {
+  const track = document.querySelector(".auth-ticker-track");
+  if (!track) return;
+
+  const source = track.querySelector(".ticker-half");
+  if (!source) return;
+
+  // Fill track with enough copies to always cover viewport
+  track.innerHTML = "";
+  for (let i = 0; i < 20; i++) track.appendChild(source.cloneNode(true));
+
+  let x = 0, unitW = 0;
+  const SPEED = 0.45; // px per frame
+
+  function getUnit() {
+    const el = track.firstElementChild;
+    return el ? el.offsetWidth : 0;
+  }
+
+  function frame() {
+    if (!unitW) unitW = getUnit();
+    if (unitW) {
+      x -= SPEED;
+      if (x <= -unitW) x += unitW;
+      track.style.transform = "translateX(" + x + "px)";
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // Give images time to load so offsetWidth is accurate
+  setTimeout(() => { unitW = getUnit(); requestAnimationFrame(frame); }, 300);
 })();
