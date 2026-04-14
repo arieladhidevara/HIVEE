@@ -102,6 +102,48 @@ h1, h2, h3, h4, strong {
 
 #view_auth.active { display: grid; align-items: center; }
 
+/* ===== AUTH LOGO TICKER ===== */
+.auth-ticker-wrap {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  overflow: hidden;
+  padding: 14px 0;
+  /* fade edges */
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 8%, black 92%, transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0%, black 8%, black 92%, transparent 100%);
+}
+.auth-ticker-track {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  white-space: nowrap;
+  animation: ticker-scroll 28s linear infinite;
+  width: max-content;
+}
+.ticker-item {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.22);
+  padding: 0 6px;
+  transition: color 200ms;
+}
+.ticker-item:hover { color: rgba(255,255,255,0.55); }
+.ticker-sep {
+  font-size: 10px;
+  color: rgba(255,255,255,0.10);
+  padding: 0 8px;
+  user-select: none;
+}
+@keyframes ticker-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
 /* ===== CARD ===== */
 .card {
   border: 1px solid var(--line-2);
@@ -294,6 +336,23 @@ label {
   font-size: clamp(28px, 5vw, 40px);
   margin: 10px 0 8px;
   line-height: 1.08;
+}
+
+/* Bold auth headline */
+.auth-headline {
+  font-size: clamp(26px, 4vw, 42px) !important;
+  font-weight: 800 !important;
+  line-height: 1.15 !important;
+  margin: 16px 0 14px !important;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.auth-headline-accent {
+  color: var(--cyan);
+}
+.auth-headline-name {
+  color: rgba(255,255,255,0.5);
+  font-weight: 700;
 }
 
 .brand-copy {
