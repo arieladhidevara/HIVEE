@@ -358,13 +358,12 @@ label {
 
 /* Auth typewriter headline */
 .ahl-typewriter-wrap {
-  margin: 16px 0 24px;
-  min-height: 110px;
+  margin: 0;
   display: flex;
   align-items: flex-start;
 }
 .ahl-typewriter {
-  font-size: clamp(34px, 4.8vw, 56px);
+  font-size: clamp(26px, 3.2vw, 38px);
   font-weight: 800;
   line-height: 1.1;
   letter-spacing: -0.03em;
@@ -373,7 +372,7 @@ label {
   white-space: nowrap;
 }
 .ahl-typewriter.long {
-  font-size: clamp(22px, 3.2vw, 34px);
+  font-size: clamp(18px, 2.4vw, 28px);
 }
 .ahl-typewriter.gradient {
   background: linear-gradient(135deg, #facc15 0%, #ff4d4d 45%, #22d3ee 100%);
@@ -382,7 +381,7 @@ label {
   background-clip: text;
 }
 .ahl-cursor {
-  font-size: clamp(34px, 4.8vw, 56px);
+  font-size: clamp(26px, 3.2vw, 38px);
   font-weight: 200;
   color: rgba(255,255,255,0.5);
   line-height: 1.1;
@@ -391,7 +390,7 @@ label {
   align-self: flex-start;
 }
 .ahl-typewriter-wrap:has(.ahl-typewriter.long) .ahl-cursor {
-  font-size: clamp(22px, 3.2vw, 34px);
+  font-size: clamp(18px, 2.4vw, 28px);
 }
 @keyframes cursor-blink {
   0%, 100% { opacity: 1; }
@@ -2456,7 +2455,7 @@ textarea[readonly]:focus {
   padding: 0;
   gap: 28px;
   grid-template-columns: minmax(360px, 1fr) minmax(320px, 420px);
-  align-items: start;
+  align-items: stretch;
 }
 
 #view_auth .auth-brand,
@@ -2473,6 +2472,9 @@ textarea[readonly]:focus {
 #view_auth .auth-brand {
   padding-right: 28px;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 #view_auth .auth-brand::after {
   content: '';
