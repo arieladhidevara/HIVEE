@@ -5027,11 +5027,16 @@ function applyMention(alias) {
   input.focus();
 }
 
+function _isDefaultPlaceholderAgent(id) {
+  const low = String(id || "").trim().toLowerCase();
+  return !low || low === "default" || low === "openclaw" || low.endsWith("/default") || low.endsWith(":default");
+}
+
 function _normalizeDiscoveredAgent(item, { connectionId = "", status = "active" } = {}) {
   const source = item && typeof item === "object" ? item : {};
   const raw = source.raw && typeof source.raw === "object" ? source.raw : source;
   const id = String(source.id || source.agent_id || source.name || raw.id || raw.agent_id || "").trim();
-  if (!id) return null;
+  if (!id || _isDefaultPlaceholderAgent(id)) return null;
   const name = String(source.name || source.title || raw.name || raw.title || id).trim() || id;
   return {
     id,
@@ -8076,6 +8081,7 @@ async function loadAgentsForWizard() {
     }
   }
   renderWizardOwnerAgents();
+  renderPrimaryNavAgents();
 }
 
 function _formatAgentSpecialization(agent) {

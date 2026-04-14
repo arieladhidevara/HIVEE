@@ -144,6 +144,18 @@ async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: 
         "template_warnings": workspace.get("template_warnings") or [],
     }
 
+def _is_default_placeholder_agent(agent_id: str) -> bool:
+    """Return True for generic placeholder IDs that are not real agents."""
+    low = str(agent_id or "").strip().lower()
+    return (
+        not low
+        or low == "default"
+        or low == "openclaw"
+        or low.endswith("/default")
+        or low.endswith(":default")
+    )
+
+
 def _normalize_managed_agent_candidates(
     raw_agents: Any,
     *,
@@ -166,12 +178,14 @@ def _normalize_managed_agent_candidates(
             continue
         if not aid:
             continue
+        if _is_default_placeholder_agent(aid):
+            continue
         if aid in seen:
             continue
         seen.add(aid)
         cleaned.append({"id": aid[:180], "name": (nm or aid)[:220], "raw": raw})
     fallback_id = str(fallback_agent_id or "").strip()
-    if fallback_id and fallback_id not in seen:
+    if fallback_id and fallback_id not in seen and not _is_default_placeholder_agent(fallback_id):
         cleaned.append(
             {
                 "id": fallback_id[:180],
@@ -950,7 +964,10 @@ def _normalize_agents(agents: List[Any]) -> List[Dict[str, Any]]:
     norm: List[Dict[str, Any]] = []
     for a in agents:
         if isinstance(a, str):
-            norm.append({"id": a, "name": a})
+            aid = str(a).strip()
+            if not aid or _is_default_placeholder_agent(aid):
+                continue
+            norm.append({"id": aid, "name": aid})
         elif isinstance(a, dict):
             aid = (
                 a.get("id")
@@ -960,6 +977,8 @@ def _normalize_agents(agents: List[Any]) -> List[Dict[str, Any]]:
                 or a.get("model")
                 or "unknown"
             )
+            if _is_default_placeholder_agent(str(aid)):
+                continue
             nm = a.get("name") or a.get("title") or a.get("label") or aid
             norm.append({"id": str(aid), "name": str(nm), "raw": a})
     return norm
@@ -2074,9 +2093,38 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         if rel in {"plan.md", "outputs/plan.md"}:
             plan_text = str(f.get("content") or "").strip()
             break
-    # Fallback: if no output_files[plan.md], try chat_update, then raw text
+    # Fallback: if no output_files[plan.md], try chat_update, then raw text.
+    # Only treat as a valid plan if it came from structured output_files OR the agent
+    # explicitly signalled approval-readiness AND the text looks substantive.
+    plan_from_structured_output = bool(plan_text)
     if not plan_text:
         plan_text = str(parsed_plan.get("chat_update") or raw_plan_text).strip()
+
+    # Validate before setting AWAITING_APPROVAL — reject error responses that
+    # slipped through (e.g. LLM quota errors returned as ok:True from the hub).
+    agent_explicitly_approved = bool(
+        parsed_plan.get("requires_user_input")
+        or parsed_plan.get("needs_approval")
+        or parsed_plan.get("needs_user_approval")
+    )
+    text_looks_like_plan = (
+        len(plan_text) >= 300
+        and ("#" in plan_text or "##" in plan_text or "-" in plan_text)
+    )
+    plan_is_valid = plan_from_structured_output or agent_explicitly_approved or text_looks_like_plan
+
+    if not plan_is_valid:
+        # Response did not contain a recognisable plan — treat as failure so
+        # the UI does not show a spurious "needs approval" indicator.
+        conn.execute(
+            "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
+            (PLAN_STATUS_FAILED, plan_text[:5000], now, project_id),
+        )
+        conn.commit()
+        conn.close()
+        _refresh_project_documents(project_id)
+        await emit(project_id, "project.plan.failed", {"error": plan_text[:600]})
+        return
 
     conn.execute(
         "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
