@@ -45,6 +45,7 @@ let wizardSuggestedRoles = new Map();
 let wizardExternalInvites = [];
 let wizardExternalMemberships = [];
 let inboxInvitesCache = [];
+let inboxNotificationsCache = [];
 let inboxAcceptContext = null; // { invite, selectedAgents: Map<agentId, { agent_id, agent_name, connection_id }> }
 let wizardAgentPermissions = [];
 let wizardProjectAgents = [];
@@ -3554,9 +3555,11 @@ function eventChatMessage(kind, payload) {
   if (kind === "project.external_agent.joined") {
     const roleText = String(data.role || "").trim();
     const roleSuffix = roleText ? ` as ${roleText}` : "";
+    const memberUser = String(data.member_username || "").trim();
+    const displayAgent = memberUser ? `${memberUser}/${name}` : name;
     return {
       role: "system",
-      text: `${name} joined the project${roleSuffix}.`,
+      text: `${displayAgent} joined the project space${roleSuffix}. See Manage Agents for more information.`,
       meta: "membership",
     };
   }
@@ -5153,7 +5156,9 @@ function renderChatAgents(agents) {
       chip.type = "button";
       chip.className = "agent-mention-chip";
       const mentionAlias = aliases[0] || normalizeAlias(agent.id);
-      chip.title = `${agent.name} (${agent.id})`;
+      const chipSourceUser = String(agent.source_username || "").trim();
+      const chipDisplayName = (chipSourceUser && agent.source_type === "external") ? `${chipSourceUser}/${agent.name}` : agent.name;
+      chip.title = `${chipDisplayName} (${agent.id})`;
       const palette = projectColorMap
         ? projectPaletteForAgent(agent, projectColorMap)
         : colorForAgent(agent.id);
@@ -5168,7 +5173,8 @@ function renderChatAgents(agents) {
       };
 
       const label = document.createElement("span");
-      label.textContent = `@${mentionAlias}`;
+      const labelName = chipSourceUser && agent.source_type === "external" ? `${chipSourceUser}/${agent.name}` : agent.name;
+      label.textContent = labelName || `@${mentionAlias}`;
 
       chip.appendChild(avatar);
       chip.appendChild(label);
@@ -7091,10 +7097,16 @@ function renderTeamTree() {
     node.style.left = x + "px";
     node.style.top = y + "px";
     node.style.cursor = "pointer";
+    const agentDisplayName = (() => {
+      const n = agent.name || agent.id;
+      const su = String(agent.source_username || "").trim();
+      if (su && agent.source_type === "external") return `${su}/${n}`;
+      return n;
+    })();
     node.innerHTML = `
       <div class="org-node-status ${statusClass}"></div>
       <img class="org-node-avatar" src="${avatarSrc}" style="background:${color}22; width:28px; height:28px;" alt="${esc(agent.name || "Agent")}"/>
-      <div class="org-node-name">${esc(agent.name || agent.id)}</div>
+      <div class="org-node-name">${esc(agentDisplayName)}</div>
       <div class="org-node-role">${esc(agent._role || "Agent")}</div>
       ${liveHtml}
     `;
@@ -7207,8 +7219,9 @@ function renderInbox() {
     }
   }
 
-  // Invitations tab
+  // Invitations + notifications tabs
   renderInboxInvitations();
+  renderInboxNotifications();
 
   // Tab switching
   const tabs = document.querySelectorAll("[data-inbox-tab]");
@@ -7217,11 +7230,15 @@ function renderInbox() {
       for (const t of tabs) t.classList.toggle("active", t === tab);
       const key = tab.dataset.inboxTab;
       const invitationsPane = $("inbox_invitations_pane");
+      const notificationsPane = $("inbox_notifications_pane");
       const generalPane = $("inbox_general_pane");
       const byprojectPane = $("inbox_byproject_pane");
       if (invitationsPane) invitationsPane.classList.toggle("hidden", key !== "invitations");
+      if (notificationsPane) notificationsPane.classList.toggle("hidden", key !== "notifications");
       if (generalPane) generalPane.classList.toggle("hidden", key !== "general");
       if (byprojectPane) byprojectPane.classList.toggle("hidden", key !== "byproject");
+      // Load notifications when tab is opened
+      if (key === "notifications") loadInboxNotifications().catch(() => {});
     }, { once: true });
   }
 }
@@ -7283,6 +7300,68 @@ async function loadInboxInvites() {
     inboxInvitesCache = [];
   }
   renderInboxInvitations();
+}
+
+async function loadInboxNotifications() {
+  try {
+    const res = await api("/api/me/inbox/notifications");
+    inboxNotificationsCache = Array.isArray(res?.notifications) ? res.notifications : [];
+  } catch {
+    inboxNotificationsCache = [];
+  }
+  renderInboxNotifications();
+}
+
+function renderInboxNotifications() {
+  const list = $("inbox_notifications_list");
+  const empty = $("inbox_notifications_empty");
+  if (!list) return;
+  const items = Array.isArray(inboxNotificationsCache) ? inboxNotificationsCache : [];
+  if (!items.length) {
+    if (empty) empty.classList.remove("hidden");
+    list.innerHTML = "";
+    return;
+  }
+  if (empty) empty.classList.add("hidden");
+  list.innerHTML = items.map((notif) => {
+    const d = notif.data || {};
+    let subject = "";
+    let preview = "";
+    if (notif.kind === "invite_accepted") {
+      const agents = Array.isArray(d.agents) ? d.agents : [];
+      const agentNames = agents.map((a) => a.agent_name || a.agent_id).join(", ") || "agent";
+      const who = d.member_username || "A user";
+      const proj = d.project_title || notif.project_id || "your project";
+      subject = `${who} accepted your invite to: ${proj}`;
+      preview = agents.length ? `Agents joined: ${agentNames}` : "";
+    } else {
+      subject = notif.kind;
+    }
+    const ts = notif.created_at ? relativeTs(notif.created_at) : "";
+    const unreadCls = notif.is_read ? "" : " unread";
+    return `
+      <div class="inbox-item${unreadCls}" data-notif-id="${esc(notif.id)}" data-project-id="${esc(notif.project_id || "")}">
+        <div class="inbox-item-header">
+          <span class="inbox-item-from">Hivee</span>
+          <span class="inbox-item-time">${esc(ts)}</span>
+        </div>
+        <div class="inbox-item-subject">${esc(subject)}</div>
+        ${preview ? `<div class="inbox-item-preview">${esc(preview)}</div>` : ""}
+        ${!notif.is_read ? `<div style="margin-top:6px"><button class="secondary notif-mark-read-btn" type="button" data-notif-id="${esc(notif.id)}" style="font-size:11px;padding:3px 10px">Mark read</button></div>` : ""}
+      </div>
+    `;
+  }).join("");
+  for (const btn of list.querySelectorAll(".notif-mark-read-btn")) {
+    btn.addEventListener("click", async () => {
+      const nid = btn.dataset.notifId;
+      try {
+        await api(`/api/me/inbox/notifications/${encodeURIComponent(nid)}/read`, "POST");
+        const n = inboxNotificationsCache.find((x) => x.id === nid);
+        if (n) n.is_read = true;
+        renderInboxNotifications();
+      } catch { /* silent */ }
+    });
+  }
 }
 
 async function openInboxAcceptModal(invite) {
@@ -8509,6 +8588,7 @@ function setNavTab(tab) {
   if (tab === "inbox") {
     renderInbox();
     loadInboxInvites().catch(() => {});
+    loadInboxNotifications().catch(() => {});
   }
   if (tab === "agents") {
     closeAgentDetailView();
@@ -9328,92 +9408,126 @@ function renderWizardAgentPermissions() {
   }
 
   const colorMap = buildProjectAgentColorMap(agents);
+  const viewerUsername = _URL_USERNAME || "";
 
-  for (const item of agents) {
+  // Split: "Your Agents" = source_type owner OR source_username matches viewer, "Other Agents" = external from different user
+  const yourAgents = agents.filter((a) => {
+    if (String(a.source_type || "owner").trim() === "owner") return true;
+    const su = String(a.source_username || "").trim().toLowerCase();
+    return su && viewerUsername && su === viewerUsername.toLowerCase();
+  });
+  const otherAgents = agents.filter((a) => !yourAgents.includes(a));
+
+  function _buildAgentRow(item) {
     const agentId = String(item?.id || item?.agent_id || "").trim();
-    if (!agentId) continue;
-    const row = document.createElement("article");
-    row.className = "wizard-agent-row perm-row";
+    if (!agentId) return null;
 
     const agentName = String(item?.name || item?.agent_name || agentId).trim();
     const sourceType = String(item?.source_type || "owner").trim();
-    const sourceUsername = String(item?.source_username || "").trim() || (sourceType === "owner" ? (_URL_USERNAME || "me") : null);
+    const sourceUsername = String(item?.source_username || "").trim() || (sourceType === "owner" ? (viewerUsername || "me") : null);
     const displayName = sourceUsername ? `${sourceUsername}/${agentName}` : agentName;
-    const perms = (item?.permissions && typeof item.permissions === "object") ? item.permissions : item || {};
-    const customBadge = perms?.has_custom ? "custom" : "default";
+    const perms = (item?.permissions && typeof item.permissions === "object") ? item.permissions : {};
 
-    const headWrap = document.createElement("div");
-    headWrap.className = "wizard-agent-head";
+    const row = document.createElement("article");
+    row.className = "ma-agent-row";
+
+    // Header line: avatar + name + chips
+    const header = document.createElement("div");
+    header.className = "ma-agent-header";
+
     const avatarWrap = document.createElement("div");
-    avatarWrap.className = "wizard-agent-avatar";
+    avatarWrap.className = "ma-agent-avatar";
     const palette = projectPaletteForAgent(item, colorMap);
     avatarWrap.style.borderColor = palette.border;
     avatarWrap.style.background = palette.bg;
     avatarWrap.appendChild(createAgentAvatarImg(agentId, `${agentName} mascot`));
 
-    const headBody = document.createElement("div");
-    const titleRow = document.createElement("div");
-    titleRow.className = "wizard-agent-title";
-    const title = document.createElement("strong");
-    title.textContent = displayName;
-    const sourceChip = document.createElement("span");
-    sourceChip.className = "chip";
-    sourceChip.textContent = sourceType === "external" ? "external" : "owner";
-    titleRow.appendChild(title);
-    titleRow.appendChild(sourceChip);
+    const nameWrap = document.createElement("div");
+    nameWrap.className = "ma-agent-name-wrap";
+
+    const nameEl = document.createElement("strong");
+    nameEl.className = "ma-agent-name";
+    nameEl.textContent = displayName;
+
+    const chips = document.createElement("div");
+    chips.className = "ma-agent-chips";
     if (item?.is_primary) {
-      const primaryChip = document.createElement("span");
-      primaryChip.className = "chip primary";
-      primaryChip.textContent = "primary";
-      titleRow.appendChild(primaryChip);
+      const c = document.createElement("span");
+      c.className = "chip primary";
+      c.textContent = "primary";
+      chips.appendChild(c);
     }
-    const meta = document.createElement("p");
-    meta.className = "wizard-agent-meta";
-    meta.textContent = `Permission profile: ${customBadge}`;
-    headBody.appendChild(titleRow);
-    headBody.appendChild(meta);
-    headWrap.appendChild(avatarWrap);
-    headWrap.appendChild(headBody);
+    const roleText = String(item?.role || "").trim();
+    if (roleText) {
+      const c = document.createElement("span");
+      c.className = "chip";
+      c.textContent = roleText;
+      chips.appendChild(c);
+    }
 
-    const roleWrap = document.createElement("div");
-    roleWrap.className = "wizard-agent-role";
-    const roleLabel = document.createElement("label");
-    roleLabel.textContent = "Role";
-    const roleInput = document.createElement("input");
-    roleInput.type = "text";
-    roleInput.value = String(item?.role || "").trim();
-    roleInput.placeholder = sourceType === "external" ? "Role from external invite" : "Role in project";
-    roleInput.disabled = sourceType !== "owner";
-    roleWrap.appendChild(roleLabel);
-    roleWrap.appendChild(roleInput);
+    nameWrap.appendChild(nameEl);
+    nameWrap.appendChild(chips);
+    header.appendChild(avatarWrap);
+    header.appendChild(nameWrap);
+    row.appendChild(header);
 
-    const toggles = document.createElement("div");
-    toggles.className = "perm-toggles";
+    // Role input (owner agents only)
+    let roleInput = null;
+    if (sourceType === "owner") {
+      const roleWrap = document.createElement("div");
+      roleWrap.className = "ma-agent-field-row";
+      const roleLabel = document.createElement("label");
+      roleLabel.className = "ma-field-label";
+      roleLabel.textContent = "Role";
+      roleInput = document.createElement("input");
+      roleInput.type = "text";
+      roleInput.value = roleText;
+      roleInput.placeholder = "Role in project";
+      roleWrap.appendChild(roleLabel);
+      roleWrap.appendChild(roleInput);
+      row.appendChild(roleWrap);
+    }
 
-    const mkCheck = (label, checked) => {
+    // Permission toggles
+    const permsRow = document.createElement("div");
+    permsRow.className = "ma-perm-row";
+
+    const mkCheck = (labelText, checked) => {
       const wrap = document.createElement("label");
+      wrap.className = "ma-perm-check";
       const input = document.createElement("input");
       input.type = "checkbox";
       input.checked = Boolean(checked);
       wrap.appendChild(input);
-      wrap.appendChild(document.createTextNode(label));
-      toggles.appendChild(wrap);
+      wrap.appendChild(document.createTextNode(labelText));
+      permsRow.appendChild(wrap);
       return input;
     };
 
-    const canChatEl = mkCheck("can_chat_project", perms?.can_chat_project);
-    const canReadEl = mkCheck("can_read_files", perms?.can_read_files);
-    const canWriteEl = mkCheck("can_write_files", perms?.can_write_files);
+    const canChatEl = mkCheck("chat", perms?.can_chat_project);
+    const canReadEl = mkCheck("read files", perms?.can_read_files);
+    const canWriteEl = mkCheck("write files", perms?.can_write_files);
+    row.appendChild(permsRow);
 
-    const writePathsLabel = document.createElement("label");
-    writePathsLabel.textContent = "write_paths (comma or newline)";
+    // Write paths (collapsed into small textarea)
+    const pathsWrap = document.createElement("div");
+    pathsWrap.className = "ma-agent-field-row";
+    const pathsLabel = document.createElement("label");
+    pathsLabel.className = "ma-field-label";
+    pathsLabel.textContent = "Write paths";
     const writePathsInput = document.createElement("textarea");
     writePathsInput.className = "perm-write-paths";
+    writePathsInput.placeholder = "path/to/folder, ...";
     writePathsInput.value = Array.isArray(perms?.write_paths) ? perms.write_paths.join("\n") : "";
+    pathsWrap.appendChild(pathsLabel);
+    pathsWrap.appendChild(writePathsInput);
+    row.appendChild(pathsWrap);
 
+    // Actions
     const actions = document.createElement("div");
-    actions.className = "action-row";
-    if (sourceType === "owner") {
+    actions.className = "ma-actions";
+
+    if (sourceType === "owner" && roleInput) {
       const saveRoleBtn = document.createElement("button");
       saveRoleBtn.type = "button";
       saveRoleBtn.className = "secondary";
@@ -9422,24 +9536,22 @@ function renderWizardAgentPermissions() {
         updateOwnerAgentRole(agentId, roleInput.value, { setPrimary: false })
           .catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
       });
-
       const primaryBtn = document.createElement("button");
       primaryBtn.type = "button";
       primaryBtn.className = "secondary";
-      primaryBtn.textContent = item?.is_primary ? "Primary Agent" : "Set Primary";
+      primaryBtn.textContent = item?.is_primary ? "Primary" : "Set Primary";
       primaryBtn.disabled = Boolean(item?.is_primary);
       primaryBtn.addEventListener("click", () => {
         updateOwnerAgentRole(agentId, roleInput.value, { setPrimary: true })
           .catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
       });
-
       actions.appendChild(saveRoleBtn);
       actions.appendChild(primaryBtn);
     }
 
     const saveBtn = document.createElement("button");
     saveBtn.type = "button";
-    saveBtn.textContent = "Save Permission";
+    saveBtn.textContent = "Save Permissions";
     saveBtn.addEventListener("click", () => {
       saveWizardAgentPermission(agentId, {
         can_chat_project: Boolean(canChatEl.checked),
@@ -9448,35 +9560,46 @@ function renderWizardAgentPermissions() {
         write_paths: _parseWritePathsInput(writePathsInput.value),
       }).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
     });
-
     const resetBtn = document.createElement("button");
     resetBtn.type = "button";
     resetBtn.className = "secondary";
-    resetBtn.textContent = "Reset Default";
+    resetBtn.textContent = "Reset";
     resetBtn.addEventListener("click", () => {
       resetWizardAgentPermission(agentId).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
+    });
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "secondary danger";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", () => {
+      removeWizardProjectAgent(item).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
     });
 
     actions.appendChild(saveBtn);
     actions.appendChild(resetBtn);
-
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "secondary danger";
-    removeBtn.textContent = sourceType === "external" ? "Remove External" : "Remove Agent";
-    removeBtn.addEventListener("click", () => {
-      removeWizardProjectAgent(item).catch((e) => setMessage("wizard_external_msg", detailToText(e?.message || e), "error"));
-    });
     actions.appendChild(removeBtn);
-
-    row.appendChild(headWrap);
-    row.appendChild(roleWrap);
-    row.appendChild(toggles);
-    row.appendChild(writePathsLabel);
-    row.appendChild(writePathsInput);
     row.appendChild(actions);
-    box.appendChild(row);
+
+    return row;
   }
+
+  function _renderSection(title, list) {
+    if (!list.length) return;
+    const section = document.createElement("div");
+    section.className = "ma-section";
+    const heading = document.createElement("p");
+    heading.className = "ma-section-label";
+    heading.textContent = title;
+    section.appendChild(heading);
+    for (const item of list) {
+      const row = _buildAgentRow(item);
+      if (row) section.appendChild(row);
+    }
+    box.appendChild(section);
+  }
+
+  _renderSection("Your Agents", yourAgents);
+  _renderSection("Other Agents", otherAgents);
 }
 
 async function refreshWizardExternalAccess({ silent = false } = {}) {

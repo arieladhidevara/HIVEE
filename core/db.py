@@ -686,6 +686,20 @@ def init_db() -> None:
         """
     )
     cur.execute("CREATE INDEX IF NOT EXISTS idx_connector_command_results_command ON connector_command_results(command_id, created_at DESC)")
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_inbox_notifications (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            project_id TEXT,
+            data_json TEXT,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_user_inbox_notif_user ON user_inbox_notifications(user_id, created_at DESC)")
     cols = [r[1] for r in cur.execute("PRAGMA table_info(project_agents)").fetchall()]
     if "is_primary" not in cols:
         cur.execute("ALTER TABLE project_agents ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0")

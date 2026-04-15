@@ -607,8 +607,49 @@ def register_routes(app: FastAPI) -> None:
             "UPDATE project_external_agent_invites SET status='accepted', accepted_at=?, accepted_by_user_id=?, accepted_connection_id=?, accepted_agent_id=? WHERE id=?",
             (now, user_id, legacy_conn_id, agent_id, inv_id),
         )
+
+        # Fetch member username for notification display
+        member_username_row = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+        member_username = str(member_username_row["username"] or user_email or user_id).strip() if member_username_row else (user_email or user_id)
+        project_title_row = conn.execute("SELECT title FROM projects WHERE id = ?", (project_id,)).fetchone()
+        project_title = str(project_title_row["title"] or project_id).strip() if project_title_row else project_id
+
+        # Store inbox notification for project owner
+        notif_agents = [{"agent_id": aid, "agent_name": aname} for aid, aname in agents_to_add]
+        conn.execute(
+            """
+            INSERT INTO user_inbox_notifications (id, user_id, kind, project_id, data_json, is_read, created_at)
+            VALUES (?, ?, 'invite_accepted', ?, ?, 0, ?)
+            """,
+            (
+                new_id("notif"),
+                owner_user_id,
+                project_id,
+                json.dumps({
+                    "agents": notif_agents,
+                    "member_username": member_username,
+                    "project_title": project_title,
+                    "invite_id": inv_id,
+                }),
+                now,
+            ),
+        )
+
         conn.commit()
         conn.close()
+
+        # Emit project events so real-time chat shows system messages
+        for aid, aname in agents_to_add:
+            try:
+                await emit(project_id, "project.external_agent.joined", {
+                    "agent_id": aid,
+                    "agent_name": aname,
+                    "role": invite_role,
+                    "joined_via": "inbox_accept",
+                    "member_username": member_username,
+                })
+            except Exception:
+                pass
 
         return {
             "ok": True,
@@ -648,6 +689,50 @@ def register_routes(app: FastAPI) -> None:
         conn.execute(
             "UPDATE project_external_agent_invites SET status='declined', accepted_at=? WHERE id=?",
             (now, inv_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    @app.get("/api/me/inbox/notifications")
+    async def get_inbox_notifications(request: Request):
+        user_id = get_session_user(request)
+        conn = db()
+        rows = conn.execute(
+            """
+            SELECT id, kind, project_id, data_json, is_read, created_at
+            FROM user_inbox_notifications
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT 50
+            """,
+            (user_id,),
+        ).fetchall()
+        conn.close()
+        notifications = []
+        for r in rows:
+            data = {}
+            try:
+                data = json.loads(str(r["data_json"] or "{}"))
+            except Exception:
+                pass
+            notifications.append({
+                "id": str(r["id"]),
+                "kind": str(r["kind"]),
+                "project_id": str(r["project_id"] or ""),
+                "data": data,
+                "is_read": bool(r["is_read"]),
+                "created_at": int(r["created_at"]),
+            })
+        return {"ok": True, "notifications": notifications}
+
+    @app.post("/api/me/inbox/notifications/{notif_id}/read")
+    async def mark_notification_read(request: Request, notif_id: str):
+        user_id = get_session_user(request)
+        conn = db()
+        conn.execute(
+            "UPDATE user_inbox_notifications SET is_read = 1 WHERE id = ? AND user_id = ?",
+            (str(notif_id).strip(), user_id),
         )
         conn.commit()
         conn.close()

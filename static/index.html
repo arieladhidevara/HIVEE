@@ -514,12 +514,17 @@
             <div class="inbox-container">
               <div class="inbox-tabs">
                 <button class="inbox-tab active" type="button" data-inbox-tab="invitations">Invitations</button>
+                <button class="inbox-tab" type="button" data-inbox-tab="notifications">Notifications</button>
                 <button class="inbox-tab" type="button" data-inbox-tab="general">General</button>
                 <button class="inbox-tab" type="button" data-inbox-tab="byproject">Per Project</button>
               </div>
               <div id="inbox_invitations_pane" class="inbox-tab-pane">
                 <p class="helper" id="inbox_invitations_empty">No pending invitations.</p>
                 <div id="inbox_invitations_list" class="inbox-list"></div>
+              </div>
+              <div id="inbox_notifications_pane" class="inbox-tab-pane hidden">
+                <p class="helper" id="inbox_notifications_empty">No notifications yet.</p>
+                <div id="inbox_notifications_list" class="inbox-list"></div>
               </div>
               <div id="inbox_general_pane" class="inbox-tab-pane hidden">
                 <p class="helper" id="inbox_general_empty">No messages yet.</p>
