@@ -5109,7 +5109,7 @@ function applyMention(alias) {
 
 function _isDefaultPlaceholderAgent(id) {
   const low = String(id || "").trim().toLowerCase();
-  return !low || low.includes("default") || low === "main";
+  return !low || low.includes("default");
 }
 
 function _normalizeDiscoveredAgent(item, { connectionId = "", status = "active" } = {}) {
