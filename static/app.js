@@ -45,7 +45,7 @@ let wizardSuggestedRoles = new Map();
 let wizardExternalInvites = [];
 let wizardExternalMemberships = [];
 let inboxInvitesCache = [];
-let inboxAcceptContext = null; // { invite, selectedAgentId, selectedConnectionId }
+let inboxAcceptContext = null; // { invite, selectedAgents: Map<agentId, { agent_id, agent_name, connection_id }> }
 let wizardAgentPermissions = [];
 let wizardProjectAgents = [];
 let wizardLatestExternalInvite = null;
@@ -3685,6 +3685,42 @@ function colorForAgent(agentId) {
   };
 }
 
+// Per-project color map: owner agents → yellow, external users → blue/cyan/etc.
+// Only meaningful within a single project's agent list.
+const _PROJECT_PALETTE = ["#3B82F6", "#22D3EE", "#A78BFA", "#34D399", "#F97316"];
+function buildProjectAgentColorMap(agents) {
+  // Returns Map: source_user_id (or "__owner__") → hex color
+  const map = new Map();
+  let extIndex = 0;
+  for (const a of agents) {
+    const uid = String(a?.source_user_id || "").trim() || null;
+    const isOwner = String(a?.source_type || "owner") === "owner";
+    if (isOwner) {
+      if (!map.has("__owner__")) map.set("__owner__", "#F59E0B");
+      if (uid && !map.has(uid)) map.set(uid, "#F59E0B");
+    } else {
+      const key = uid || `__ext_${extIndex}`;
+      if (!map.has(key)) {
+        const color = _PROJECT_PALETTE[extIndex % _PROJECT_PALETTE.length];
+        map.set(key, color);
+        if (uid && !map.has(uid)) map.set(uid, color);
+        extIndex++;
+      } else if (uid && !map.has(uid)) {
+        map.set(uid, map.get(key));
+      }
+    }
+  }
+  return map;
+}
+
+function projectPaletteForAgent(agent, colorMap) {
+  const uid = String(agent?.source_user_id || "").trim() || null;
+  const isOwner = String(agent?.source_type || "owner") === "owner";
+  const key = isOwner ? "__owner__" : uid;
+  const hex = (key && colorMap.get(key)) || colorForAgent(String(agent?.id || agent?.agent_id || "")).hex;
+  return { hex, bg: hexToRgba(hex, 0.08), border: hexToRgba(hex, 0.3) };
+}
+
 function parseMessageLinks(text) {
   const raw = String(text || "");
   const re = /((?:https?:\/\/|\/api\/|\/\?)[^\s<>"']+)/g;
@@ -5100,6 +5136,12 @@ function renderChatAgents(agents) {
   chatAliasMap = new Map();
   chatById = new Map();
 
+  // Build per-project color map when in project context
+  const projectAgentsFull = contextMode === "project" ? wizardEffectiveProjectAgents() : [];
+  const projectColorMap = projectAgentsFull.length ? buildProjectAgentColorMap(projectAgentsFull) : null;
+  // Map agent id → full agent data for color lookup
+  const projectAgentById = new Map(projectAgentsFull.map((a) => [a.id, a]));
+
   for (const agent of agents) {
     chatById.set(agent.id, agent);
     const aliases = buildAliases(agent);
@@ -5113,7 +5155,10 @@ function renderChatAgents(agents) {
       chip.className = "agent-mention-chip";
       const mentionAlias = aliases[0] || normalizeAlias(agent.id);
       chip.title = `${agent.name} (${agent.id})`;
-      const palette = colorForAgent(agent.id);
+      const fullAgent = projectAgentById.get(agent.id);
+      const palette = (projectColorMap && fullAgent)
+        ? projectPaletteForAgent(fullAgent, projectColorMap)
+        : colorForAgent(agent.id);
       chip.style.setProperty("--agent-color", palette.hex);
       chip.style.borderColor = palette.border;
       chip.style.background = hexToRgba(palette.hex, 0.08);
@@ -7238,7 +7283,7 @@ async function loadInboxInvites() {
 async function openInboxAcceptModal(invite) {
   const modal = $("inbox_accept_invite_modal");
   if (!modal) return;
-  inboxAcceptContext = { invite, selectedAgentId: null, selectedConnectionId: null };
+  inboxAcceptContext = { invite, selectedAgents: new Map() };
   setMessage("inbox_accept_invite_msg", "Loading your agents...", "");
   const meta = $("inbox_accept_invite_meta");
   if (meta) meta.textContent = `Project: ${invite.project_title || invite.project_id}${invite.role ? " · Role: " + invite.role : ""}`;
@@ -7255,32 +7300,85 @@ async function openInboxAcceptModal(invite) {
   }
 
   const listEl = $("inbox_accept_agent_list");
-  if (listEl) {
-    if (!agents.length) {
-      listEl.innerHTML = `<p class="helper">No active managed agents found. Connect an agent first.</p>`;
-      setMessage("inbox_accept_invite_msg", "", "");
-      return;
-    }
-    listEl.innerHTML = agents.map((a) => `
-      <label class="agent-pick-row" style="display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:6px;cursor:pointer;border:1px solid var(--line-1);margin-bottom:4px">
-        <input type="radio" name="inbox_accept_agent" value="${esc(a.agent_id)}"
-          data-connection-id="${esc(a.connection_id)}" data-agent-name="${esc(a.agent_name)}"
-          onchange="onInboxAgentPick(this)">
-        <span style="font-size:13px;font-weight:600">${esc(a.agent_name || a.agent_id)}</span>
-        ${a.connection_name ? `<span style="font-size:11px;color:var(--muted)">${esc(a.connection_name)}</span>` : ""}
-      </label>
-    `).join("");
-  }
-  setMessage("inbox_accept_invite_msg", "", "");
-}
+  if (!listEl) return;
+  listEl.innerHTML = "";
 
-function onInboxAgentPick(radio) {
-  if (!inboxAcceptContext) return;
-  inboxAcceptContext.selectedAgentId = radio.value;
-  inboxAcceptContext.selectedConnectionId = radio.dataset.connectionId;
-  inboxAcceptContext.selectedAgentName = radio.dataset.agentName;
-  const btn = $("btn_confirm_inbox_accept");
-  if (btn) btn.disabled = false;
+  if (!agents.length) {
+    const p = document.createElement("p");
+    p.className = "helper";
+    p.textContent = "No active managed agents found. Pair and bootstrap a hub first.";
+    listEl.appendChild(p);
+    setMessage("inbox_accept_invite_msg", "", "");
+    return;
+  }
+
+  for (const a of agents) {
+    const agentId = String(a.agent_id || "").trim();
+    const agentName = String(a.agent_name || agentId).trim();
+    const connId = String(a.connection_id || "").trim();
+    const connName = String(a.connection_name || "").trim();
+
+    const item = document.createElement("article");
+    item.className = "wizard-agent-row perm-row";
+    item.style.cursor = "pointer";
+
+    const headWrap = document.createElement("div");
+    headWrap.className = "wizard-agent-head";
+    headWrap.style.alignItems = "center";
+
+    // Checkbox
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.style.cssText = "width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--cyan)";
+
+    // Avatar
+    const avatarWrap = document.createElement("div");
+    avatarWrap.className = "wizard-agent-avatar";
+    const palette = colorForAgent(agentId);
+    avatarWrap.style.borderColor = palette.border;
+    avatarWrap.style.background = hexToRgba(palette.hex, 0.08);
+    avatarWrap.appendChild(createAgentAvatarImg(agentId, `${agentName} mascot`));
+
+    // Text
+    const headBody = document.createElement("div");
+    headBody.style.minWidth = "0";
+    const titleRow = document.createElement("div");
+    titleRow.className = "wizard-agent-title";
+    const title = document.createElement("strong");
+    title.textContent = agentName;
+    titleRow.appendChild(title);
+    const metaEl = document.createElement("p");
+    metaEl.className = "wizard-agent-meta";
+    metaEl.textContent = `${agentId}${connName ? ` · ${connName}` : ""}`;
+    headBody.appendChild(titleRow);
+    headBody.appendChild(metaEl);
+
+    headWrap.appendChild(check);
+    headWrap.appendChild(avatarWrap);
+    headWrap.appendChild(headBody);
+    item.appendChild(headWrap);
+    listEl.appendChild(item);
+
+    const _updateSelection = () => {
+      if (check.checked) {
+        inboxAcceptContext.selectedAgents.set(agentId, { agent_id: agentId, agent_name: agentName, connection_id: connId });
+      } else {
+        inboxAcceptContext.selectedAgents.delete(agentId);
+      }
+      const btn = $("btn_confirm_inbox_accept");
+      if (btn) btn.disabled = inboxAcceptContext.selectedAgents.size === 0;
+    };
+
+    check.addEventListener("change", _updateSelection);
+    // Clicking the card row also toggles the checkbox
+    item.addEventListener("click", (e) => {
+      if (e.target === check) return;
+      check.checked = !check.checked;
+      _updateSelection();
+    });
+  }
+
+  setMessage("inbox_accept_invite_msg", "", "");
 }
 
 function closeInboxAcceptModal() {
@@ -7303,19 +7401,22 @@ async function declineInboxInvite(invite) {
 
 async function confirmInboxAccept() {
   if (!inboxAcceptContext) return;
-  const { invite, selectedAgentId, selectedConnectionId, selectedAgentName } = inboxAcceptContext;
-  if (!selectedAgentId || !selectedConnectionId) {
+  const { invite, selectedAgents } = inboxAcceptContext;
+  if (!selectedAgents || selectedAgents.size === 0) {
     setMessage("inbox_accept_invite_msg", "Select an agent first.", "error");
     return;
   }
+  const entries = Array.from(selectedAgents.values());
+  const firstEntry = entries[0];
   const btn = $("btn_confirm_inbox_accept");
   if (btn) btn.disabled = true;
   setMessage("inbox_accept_invite_msg", "Joining...", "");
   try {
     await api(`/api/me/inbox/invites/${encodeURIComponent(invite.id)}/accept`, "POST", {
-      connection_id: selectedConnectionId,
-      agent_id: selectedAgentId,
-      agent_name: selectedAgentName || selectedAgentId,
+      connection_id: firstEntry.connection_id,
+      agent_id: firstEntry.agent_id,
+      agent_name: firstEntry.agent_name || firstEntry.agent_id,
+      selected_agents: entries.map((e) => ({ agent_id: e.agent_id, agent_name: e.agent_name || e.agent_id })),
     });
     setMessage("inbox_accept_invite_msg", "Joined! Project will appear in your dashboard.", "ok");
     inboxInvitesCache = inboxInvitesCache.filter((i) => i.id !== invite.id);
@@ -8636,6 +8737,8 @@ function wizardEffectiveProjectAgents() {
     role: String(a?.role || "").trim(),
     is_primary: Boolean(a?.is_primary),
     source_type: String(a?.source_type || "owner").trim() || "owner",
+    source_user_id: String(a?.source_user_id || "").trim() || null,
+    source_username: String(a?.source_username || "").trim() || null,
     permissions: a?.permissions || {},
   })).filter((a) => Boolean(a.id));
 }
@@ -9219,6 +9322,8 @@ function renderWizardAgentPermissions() {
     return;
   }
 
+  const colorMap = buildProjectAgentColorMap(agents);
+
   for (const item of agents) {
     const agentId = String(item?.id || item?.agent_id || "").trim();
     if (!agentId) continue;
@@ -9227,6 +9332,8 @@ function renderWizardAgentPermissions() {
 
     const agentName = String(item?.name || item?.agent_name || agentId).trim();
     const sourceType = String(item?.source_type || "owner").trim();
+    const sourceUsername = String(item?.source_username || "").trim() || (sourceType === "owner" ? (_URL_USERNAME || "me") : null);
+    const displayName = sourceUsername ? `${sourceUsername}/${agentName}` : agentName;
     const perms = (item?.permissions && typeof item.permissions === "object") ? item.permissions : item || {};
     const customBadge = perms?.has_custom ? "custom" : "default";
 
@@ -9234,16 +9341,16 @@ function renderWizardAgentPermissions() {
     headWrap.className = "wizard-agent-head";
     const avatarWrap = document.createElement("div");
     avatarWrap.className = "wizard-agent-avatar";
-    const palette = colorForAgent(agentId);
+    const palette = projectPaletteForAgent(item, colorMap);
     avatarWrap.style.borderColor = palette.border;
-    avatarWrap.style.background = hexToRgba(palette.hex, 0.08);
+    avatarWrap.style.background = palette.bg;
     avatarWrap.appendChild(createAgentAvatarImg(agentId, `${agentName} mascot`));
 
     const headBody = document.createElement("div");
     const titleRow = document.createElement("div");
     titleRow.className = "wizard-agent-title";
     const title = document.createElement("strong");
-    title.textContent = `${agentName} (${agentId})`;
+    title.textContent = displayName;
     const sourceChip = document.createElement("span");
     sourceChip.className = "chip";
     sourceChip.textContent = sourceType === "external" ? "external" : "owner";

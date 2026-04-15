@@ -1867,12 +1867,14 @@ def register_routes(app: FastAPI) -> None:
                 raise HTTPException(404, "Project not found")
         rows = conn.execute(
             """
-            SELECT agent_id, agent_name, is_primary, role,
-                   COALESCE(source_type, 'owner') AS source_type,
-                   source_user_id, source_connection_id, joined_via_invite_id, added_at
-            FROM project_agents
-            WHERE project_id = ?
-            ORDER BY is_primary DESC, agent_name ASC
+            SELECT pa.agent_id, pa.agent_name, pa.is_primary, pa.role,
+                   COALESCE(pa.source_type, 'owner') AS source_type,
+                   pa.source_user_id, pa.source_connection_id, pa.joined_via_invite_id, pa.added_at,
+                   u.username AS source_username
+            FROM project_agents pa
+            LEFT JOIN users u ON u.id = pa.source_user_id
+            WHERE pa.project_id = ?
+            ORDER BY pa.is_primary DESC, pa.agent_name ASC
             """,
             (project_id,),
         ).fetchall()
@@ -1899,6 +1901,7 @@ def register_routes(app: FastAPI) -> None:
                     "role": str(r["role"] or ""),
                     "source_type": source_type,
                     "source_user_id": str(r["source_user_id"] or "") or None,
+                    "source_username": str(r["source_username"] or "") or None,
                     "source_connection_id": str(r["source_connection_id"] or "") or None,
                     "joined_via_invite_id": str(r["joined_via_invite_id"] or "") or None,
                     "added_at": _to_int(r["added_at"]),

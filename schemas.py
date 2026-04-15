@@ -125,10 +125,15 @@ class ProjectExternalAgentInviteAcceptIn(BaseModel):
     invite_code: Optional[str] = None
     selected_agents: Optional[List[ProjectExternalAgentInviteSelectedAgentIn]] = None
 
+class InboxInviteSelectedAgentIn(BaseModel):
+    agent_id: str
+    agent_name: Optional[str] = None
+
 class InboxInviteAcceptIn(BaseModel):
     connection_id: str
     agent_id: str
     agent_name: Optional[str] = None
+    selected_agents: Optional[List["InboxInviteSelectedAgentIn"]] = None
 
 class ProjectAgentPermissionsUpdateIn(BaseModel):
     can_chat_project: Optional[bool] = None

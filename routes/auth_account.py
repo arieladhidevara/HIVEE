@@ -520,58 +520,76 @@ def register_routes(app: FastAPI) -> None:
 
         invite_role = str(invite_row["role"] or "").strip()
 
-        # Upsert project_agents
-        existing = conn.execute(
-            "SELECT agent_id, source_type, source_user_id, source_connection_id FROM project_agents WHERE project_id = ? AND agent_id = ?",
-            (project_id, agent_id),
-        ).fetchone()
-        if existing:
-            ex_source = str(existing["source_type"] or "owner").strip()
-            ex_user = str(existing["source_user_id"] or "").strip()
-            ex_conn = str(existing["source_connection_id"] or "").strip()
-            if ex_source != "external" or ex_user != user_id or ex_conn not in (connection_id, legacy_conn_id):
-                conn.close()
-                raise HTTPException(409, f"agent_id '{agent_id}' already exists in this project under a different owner")
-            conn.execute(
-                """
-                UPDATE project_agents SET agent_name=?, role=?, source_type='external',
-                    source_user_id=?, source_connection_id=?, joined_via_invite_id=?, added_at=?
-                WHERE project_id=? AND agent_id=?
-                """,
-                (resolved_name, invite_role, user_id, legacy_conn_id, inv_id, now, project_id, agent_id),
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO project_agents
-                    (project_id, agent_id, agent_name, is_primary, role, source_type,
-                     source_user_id, source_connection_id, joined_via_invite_id, added_at)
-                VALUES (?,?,?,0,?,'external',?,?,?,?)
-                """,
-                (project_id, agent_id, resolved_name, invite_role, user_id, legacy_conn_id, inv_id, now),
-            )
+        # Build the full list of agents to add: primary + any additional from selected_agents
+        selected_agents_payload = list(payload.selected_agents or [])
+        agents_to_add = [(agent_id, agent_name)]
+        for sel in selected_agents_payload:
+            sel_id = str(getattr(sel, "agent_id", "") or "").strip()
+            if sel_id and sel_id != agent_id:
+                sel_name = str(getattr(sel, "agent_name", "") or "").strip()
+                agents_to_add.append((sel_id, sel_name))
 
-        # Upsert membership
-        membership_row = conn.execute(
-            "SELECT id FROM project_external_agent_memberships WHERE project_id=? AND member_user_id=? AND member_connection_id=? AND agent_id=?",
-            (project_id, user_id, legacy_conn_id, agent_id),
-        ).fetchone()
-        if membership_row:
-            conn.execute(
-                "UPDATE project_external_agent_memberships SET owner_user_id=?, agent_name=?, role=?, invite_id=?, status='active', updated_at=? WHERE id=?",
-                (owner_user_id, resolved_name, invite_role, inv_id, now, str(membership_row["id"])),
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO project_external_agent_memberships
-                    (id, project_id, owner_user_id, member_user_id, member_connection_id,
-                     agent_id, agent_name, role, invite_id, status, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,'active',?,?)
-                """,
-                (new_id("pmem"), project_id, owner_user_id, user_id, legacy_conn_id,
-                 agent_id, resolved_name, invite_role, inv_id, now, now),
-            )
+        def _upsert_agent(aid: str, aname: str) -> str:
+            a_row = conn.execute(
+                "SELECT agent_id, agent_name FROM managed_agents WHERE user_id = ? AND connection_id = ? AND agent_id = ?",
+                (user_id, legacy_conn_id, aid),
+            ).fetchone()
+            resolved = str((a_row["agent_name"] if a_row else None) or aname or aid).strip()
+
+            existing = conn.execute(
+                "SELECT agent_id, source_type, source_user_id, source_connection_id FROM project_agents WHERE project_id = ? AND agent_id = ?",
+                (project_id, aid),
+            ).fetchone()
+            if existing:
+                ex_source = str(existing["source_type"] or "owner").strip()
+                ex_user = str(existing["source_user_id"] or "").strip()
+                ex_conn = str(existing["source_connection_id"] or "").strip()
+                if ex_source != "external" or ex_user != user_id or ex_conn not in (connection_id, legacy_conn_id):
+                    return resolved  # already in project under different owner — skip silently
+                conn.execute(
+                    """
+                    UPDATE project_agents SET agent_name=?, role=?, source_type='external',
+                        source_user_id=?, source_connection_id=?, joined_via_invite_id=?, added_at=?
+                    WHERE project_id=? AND agent_id=?
+                    """,
+                    (resolved, invite_role, user_id, legacy_conn_id, inv_id, now, project_id, aid),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO project_agents
+                        (project_id, agent_id, agent_name, is_primary, role, source_type,
+                         source_user_id, source_connection_id, joined_via_invite_id, added_at)
+                    VALUES (?,?,?,0,?,'external',?,?,?,?)
+                    """,
+                    (project_id, aid, resolved, invite_role, user_id, legacy_conn_id, inv_id, now),
+                )
+
+            mem_row = conn.execute(
+                "SELECT id FROM project_external_agent_memberships WHERE project_id=? AND member_user_id=? AND member_connection_id=? AND agent_id=?",
+                (project_id, user_id, legacy_conn_id, aid),
+            ).fetchone()
+            if mem_row:
+                conn.execute(
+                    "UPDATE project_external_agent_memberships SET owner_user_id=?, agent_name=?, role=?, invite_id=?, status='active', updated_at=? WHERE id=?",
+                    (owner_user_id, resolved, invite_role, inv_id, now, str(mem_row["id"])),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO project_external_agent_memberships
+                        (id, project_id, owner_user_id, member_user_id, member_connection_id,
+                         agent_id, agent_name, role, invite_id, status, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,'active',?,?)
+                    """,
+                    (new_id("pmem"), project_id, owner_user_id, user_id, legacy_conn_id,
+                     aid, resolved, invite_role, inv_id, now, now),
+                )
+            return resolved
+
+        resolved_name = _upsert_agent(agent_id, agent_name)
+        for extra_id, extra_name in agents_to_add[1:]:
+            _upsert_agent(extra_id, extra_name)
 
         # Issue project agent access token
         raw_token = _new_agent_access_token()
