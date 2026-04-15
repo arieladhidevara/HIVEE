@@ -7203,6 +7203,8 @@ function renderInboxInvitations() {
         <div class="inbox-invite-actions">
           <button class="primary" type="button" style="font-size:12px;padding:4px 12px"
             onclick="openInboxAcceptModal(${JSON.stringify(inv)})">Approve</button>
+          <button class="secondary" type="button" style="font-size:12px;padding:4px 12px"
+            onclick="declineInboxInvite(${JSON.stringify(inv)})">Decline</button>
         </div>
       </div>
     `;
@@ -7272,6 +7274,17 @@ function closeInboxAcceptModal() {
   if (modal) modal.classList.add("hidden");
   inboxAcceptContext = null;
   setMessage("inbox_accept_invite_msg", "", "");
+}
+
+async function declineInboxInvite(invite) {
+  if (!invite?.id) return;
+  try {
+    await api(`/api/me/inbox/invites/${encodeURIComponent(invite.id)}/decline`, "POST");
+    inboxInvitesCache = inboxInvitesCache.filter((i) => i.id !== invite.id);
+    renderInboxInvitations();
+  } catch (e) {
+    setMessage("inbox_invitations_empty", detailToText(e?.message || e), "error");
+  }
 }
 
 async function confirmInboxAccept() {
@@ -9405,44 +9418,62 @@ async function createWizardExternalInvite(ev) {
   const targetEmail = String($("ext_target_email")?.value || "").trim();
   if (!targetEmail) throw new Error("Enter the email address to invite.");
 
-  const res = await api(`/api/projects/${selectedProjectId}/invites/external-agent`, "POST", {
-    target_email: targetEmail,
-    expires_in_sec: 7 * 24 * 3600, // 7 days for email invites
-  });
+  const sendBtn = $("btn_create_external_invite");
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = "Sending..."; }
 
-  wizardLatestExternalInvite = res || null;
-  const emailInput = $("ext_target_email");
-  if (emailInput) emailInput.value = "";
+  try {
+    const res = await api(`/api/projects/${selectedProjectId}/invites/external-agent`, "POST", {
+      target_email: targetEmail,
+      expires_in_sec: 7 * 24 * 3600,
+    });
 
-  const status = String(res?.email_delivery_status || "").trim();
-  const err = String(res?.email_delivery_error || "").trim();
-  let msg = `Invite sent to ${targetEmail}.`;
-  if (status && status !== "sent_by_primary_agent" && status !== "sent_via_smtp_fallback") {
-    msg += err ? ` Note: ${err}` : ` (delivery status: ${status})`;
+    wizardLatestExternalInvite = res || null;
+    const emailInput = $("ext_target_email");
+    if (emailInput) emailInput.value = "";
+
+    if (sendBtn) { sendBtn.textContent = "Sent"; } // stays disabled until next input
+
+    const status = String(res?.email_delivery_status || "").trim();
+    const err = String(res?.email_delivery_error || "").trim();
+    let msg = `Invite sent to ${targetEmail}.`;
+    if (status && status !== "sent_by_primary_agent" && status !== "sent_via_smtp_fallback") {
+      msg += err ? ` Note: ${err}` : ` (delivery status: ${status})`;
+    }
+    setMessage("wizard_external_msg", msg, "ok");
+    await refreshWizardExternalAccess({ silent: true });
+  } catch (e) {
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = "Send Invite"; }
+    throw e;
   }
-  setMessage("wizard_external_msg", msg, "ok");
-  await refreshWizardExternalAccess({ silent: true });
 }
 
 async function generateWizardInviteLink() {
   if (!selectedProjectId) throw new Error("Project not created yet — click 'Create & Invite Agents' first.");
 
-  const res = await api(`/api/projects/${selectedProjectId}/invites/external-agent`, "POST", {
-    expires_in_sec: 365 * 24 * 3600, // 1 year for link invites
-  });
+  const genBtn = $("btn_gen_invite_link");
+  if (genBtn) { genBtn.disabled = true; genBtn.textContent = "Generating..."; }
 
-  wizardLatestExternalInvite = res || null;
-  // Use portal_url (contains both token + code) so recipient doesn't need to enter code
-  const linkUrl = String(res?.portal_url || res?.invite_url || "").trim();
-  const linkInput = $("ext_invite_link_url");
-  if (linkInput) linkInput.value = linkUrl;
-  const resultDiv = $("ext_link_result");
-  if (resultDiv) resultDiv.classList.remove("hidden");
-  if (linkUrl && navigator.clipboard?.writeText) {
-    try { await navigator.clipboard.writeText(linkUrl); } catch { /* ignore */ }
+  try {
+    const res = await api(`/api/projects/${selectedProjectId}/invites/external-agent`, "POST", {
+      expires_in_sec: 365 * 24 * 3600,
+    });
+
+    wizardLatestExternalInvite = res || null;
+    const linkUrl = String(res?.portal_url || res?.invite_url || "").trim();
+    const linkInput = $("ext_invite_link_url");
+    if (linkInput) linkInput.value = linkUrl;
+    const resultDiv = $("ext_link_result");
+    if (resultDiv) resultDiv.classList.remove("hidden");
+    if (linkUrl && navigator.clipboard?.writeText) {
+      try { await navigator.clipboard.writeText(linkUrl); } catch { /* ignore */ }
+    }
+    if (genBtn) { genBtn.textContent = "Link Generated"; } // stays disabled
+    setMessage("wizard_external_msg", "Invite link generated. Copy and share it.", "ok");
+    await refreshWizardExternalAccess({ silent: true });
+  } catch (e) {
+    if (genBtn) { genBtn.disabled = false; genBtn.textContent = "Generate Link"; }
+    throw e;
   }
-  setMessage("wizard_external_msg", "Invite link generated. Copy and share it.", "ok");
-  await refreshWizardExternalAccess({ silent: true });
 }
 async function revokeWizardExternalInvite(inviteId) {
   if (!selectedProjectId) throw new Error("Choose project first");
@@ -10399,6 +10430,9 @@ function bindActions() {
     let debounceTimer = null;
     emailInput.addEventListener("input", () => {
       clearTimeout(debounceTimer);
+      // Re-enable Send Invite button when user types a new email
+      const sendBtn = $("btn_create_external_invite");
+      if (sendBtn && sendBtn.disabled) { sendBtn.disabled = false; sendBtn.textContent = "Send Invite"; }
       const val = emailInput.value.trim();
       dropdown.classList.add("hidden");
       dropdown.innerHTML = "";

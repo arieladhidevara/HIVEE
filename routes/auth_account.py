@@ -389,12 +389,14 @@ def register_routes(app: FastAPI) -> None:
     async def list_my_managed_agents(request: Request):
         user_id = get_session_user(request)
         conn = db()
+        # Fetch agents from old system (openclaw_connections → managed_agents)
         rows = conn.execute(
             """
             SELECT ma.agent_id, ma.agent_name, ma.connection_id, ma.status,
-                   oc.name AS connection_name
+                   COALESCE(oc.name, con.name) AS connection_name
             FROM managed_agents ma
             LEFT JOIN openclaw_connections oc ON oc.id = ma.connection_id
+            LEFT JOIN connectors con ON con.openclaw_base_url = oc.base_url AND con.user_id = ma.user_id
             WHERE ma.user_id = ? AND ma.status = 'active'
             ORDER BY ma.updated_at DESC, ma.agent_name ASC
             LIMIT 200
@@ -431,19 +433,33 @@ def register_routes(app: FastAPI) -> None:
         now = int(time.time())
         conn = db()
 
-        # Verify connection belongs to user
-        conn_row = conn.execute(
+        # Verify connection belongs to user — accept both old openclaw_connections.id and new connectors.id
+        legacy_conn_id = connection_id  # the ID used for managed_agents lookups
+        oc_row = conn.execute(
             "SELECT id FROM openclaw_connections WHERE id = ? AND user_id = ?",
             (connection_id, user_id),
         ).fetchone()
-        if not conn_row:
-            conn.close()
-            raise HTTPException(403, "Connection not found or not owned by you")
+        if not oc_row:
+            # Try as a new-system connector ID
+            con_row = conn.execute(
+                "SELECT id, openclaw_base_url FROM connectors WHERE id = ? AND user_id = ?",
+                (connection_id, user_id),
+            ).fetchone()
+            if not con_row:
+                conn.close()
+                raise HTTPException(403, "Connection not found or not owned by you")
+            # Bridge: find the corresponding openclaw_connections entry by base_url
+            base_url = str(con_row["openclaw_base_url"] or "").strip()
+            oc_bridge = conn.execute(
+                "SELECT id FROM openclaw_connections WHERE user_id = ? AND base_url = ? LIMIT 1",
+                (user_id, base_url),
+            ).fetchone() if base_url else None
+            legacy_conn_id = str(oc_bridge["id"]).strip() if oc_bridge else connection_id
 
-        # Verify agent exists on that connection
+        # Verify agent exists on that connection (using legacy_conn_id for managed_agents table)
         agent_row = conn.execute(
             "SELECT agent_id, agent_name FROM managed_agents WHERE user_id = ? AND connection_id = ? AND agent_id = ?",
-            (user_id, connection_id, agent_id),
+            (user_id, legacy_conn_id, agent_id),
         ).fetchone()
         resolved_name = str((agent_row["agent_name"] if agent_row else None) or agent_name or agent_id).strip()
 
@@ -513,7 +529,7 @@ def register_routes(app: FastAPI) -> None:
             ex_source = str(existing["source_type"] or "owner").strip()
             ex_user = str(existing["source_user_id"] or "").strip()
             ex_conn = str(existing["source_connection_id"] or "").strip()
-            if ex_source != "external" or ex_user != user_id or ex_conn != connection_id:
+            if ex_source != "external" or ex_user != user_id or ex_conn not in (connection_id, legacy_conn_id):
                 conn.close()
                 raise HTTPException(409, f"agent_id '{agent_id}' already exists in this project under a different owner")
             conn.execute(
@@ -522,7 +538,7 @@ def register_routes(app: FastAPI) -> None:
                     source_user_id=?, source_connection_id=?, joined_via_invite_id=?, added_at=?
                 WHERE project_id=? AND agent_id=?
                 """,
-                (resolved_name, invite_role, user_id, connection_id, inv_id, now, project_id, agent_id),
+                (resolved_name, invite_role, user_id, legacy_conn_id, inv_id, now, project_id, agent_id),
             )
         else:
             conn.execute(
@@ -532,13 +548,13 @@ def register_routes(app: FastAPI) -> None:
                      source_user_id, source_connection_id, joined_via_invite_id, added_at)
                 VALUES (?,?,?,0,?,'external',?,?,?,?)
                 """,
-                (project_id, agent_id, resolved_name, invite_role, user_id, connection_id, inv_id, now),
+                (project_id, agent_id, resolved_name, invite_role, user_id, legacy_conn_id, inv_id, now),
             )
 
         # Upsert membership
         membership_row = conn.execute(
             "SELECT id FROM project_external_agent_memberships WHERE project_id=? AND member_user_id=? AND member_connection_id=? AND agent_id=?",
-            (project_id, user_id, connection_id, agent_id),
+            (project_id, user_id, legacy_conn_id, agent_id),
         ).fetchone()
         if membership_row:
             conn.execute(
@@ -553,7 +569,7 @@ def register_routes(app: FastAPI) -> None:
                      agent_id, agent_name, role, invite_id, status, created_at, updated_at)
                 VALUES (?,?,?,?,?,?,?,?,?,'active',?,?)
                 """,
-                (new_id("pmem"), project_id, owner_user_id, user_id, connection_id,
+                (new_id("pmem"), project_id, owner_user_id, user_id, legacy_conn_id,
                  agent_id, resolved_name, invite_role, inv_id, now, now),
             )
 
@@ -571,7 +587,7 @@ def register_routes(app: FastAPI) -> None:
         # Mark invite accepted
         conn.execute(
             "UPDATE project_external_agent_invites SET status='accepted', accepted_at=?, accepted_by_user_id=?, accepted_connection_id=?, accepted_agent_id=? WHERE id=?",
-            (now, user_id, connection_id, agent_id, inv_id),
+            (now, user_id, legacy_conn_id, agent_id, inv_id),
         )
         conn.commit()
         conn.close()
@@ -583,6 +599,41 @@ def register_routes(app: FastAPI) -> None:
             "agent_name": resolved_name,
             "project_agent_access_token": raw_token,
         }
+
+    @app.post("/api/me/inbox/invites/{invite_id}/decline")
+    async def decline_inbox_invite(request: Request, invite_id: str):
+        user_id = get_session_user(request)
+        inv_id = str(invite_id or "").strip()
+        if not inv_id:
+            raise HTTPException(400, "invite_id is required")
+        now = int(time.time())
+        conn = db()
+        user_row = conn.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user_row:
+            conn.close()
+            raise HTTPException(404, "User not found")
+        user_email = _normalize_email(str(user_row["email"] or ""))
+        invite_row = conn.execute(
+            "SELECT id, target_email, status FROM project_external_agent_invites WHERE id = ? LIMIT 1",
+            (inv_id,),
+        ).fetchone()
+        if not invite_row:
+            conn.close()
+            raise HTTPException(404, "Invite not found")
+        target_email = _normalize_email(str(invite_row["target_email"] or ""))
+        if target_email and user_email != target_email:
+            conn.close()
+            raise HTTPException(403, "This invite was issued to a different email address")
+        if str(invite_row["status"] or "") not in ("pending", ""):
+            conn.close()
+            raise HTTPException(409, f"Invite is not pending (status={invite_row['status']})")
+        conn.execute(
+            "UPDATE project_external_agent_invites SET status='declined', accepted_at=? WHERE id=?",
+            (now, inv_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
 
     @app.post("/api/logout")
     async def logout(request: Request, response: Response):
