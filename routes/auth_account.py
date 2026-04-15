@@ -595,13 +595,4 @@ def register_routes(app: FastAPI) -> None:
         _clear_session_cookie(response)
         return {"ok": True}
 
-    @app.get("/{username}", response_class=HTMLResponse)
-    async def user_index(username: str):
-        """Serve the SPA at /{username} — enables per-account tab isolation."""
-        return FileResponse("static/index.html")
-
-    @app.get("/{username}/{rest:path}", response_class=HTMLResponse)
-    async def user_index_deep(username: str, rest: str):
-        """Serve the SPA for any deep path under /{username}/..."""
-        return FileResponse("static/index.html")
 
