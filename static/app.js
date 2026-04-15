@@ -7201,14 +7201,28 @@ function renderInboxInvitations() {
         <div class="inbox-item-subject">Invited to: <strong>${esc(title)}</strong>${esc(role)}</div>
         ${inv.note ? `<div class="inbox-item-preview">${esc(inv.note)}</div>` : ""}
         <div class="inbox-invite-actions">
-          <button class="primary" type="button" style="font-size:12px;padding:4px 12px"
-            onclick="openInboxAcceptModal(${JSON.stringify(inv)})">Approve</button>
-          <button class="secondary" type="button" style="font-size:12px;padding:4px 12px"
-            onclick="declineInboxInvite(${JSON.stringify(inv)})">Decline</button>
+          <button class="primary inbox-approve-btn" type="button" data-invite-id="${esc(inv.id)}"
+            style="font-size:12px;padding:4px 12px">Approve</button>
+          <button class="secondary inbox-decline-btn" type="button" data-invite-id="${esc(inv.id)}"
+            style="font-size:12px;padding:4px 12px">Decline</button>
         </div>
       </div>
     `;
   }).join("");
+
+  // Bind handlers after innerHTML is set — avoids JSON.stringify in onclick attributes
+  list.querySelectorAll(".inbox-approve-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const inv = inboxInvitesCache.find((i) => i.id === btn.dataset.inviteId);
+      if (inv) openInboxAcceptModal(inv).catch((e) => setMessage("inbox_accept_invite_msg", detailToText(e?.message || e), "error"));
+    });
+  });
+  list.querySelectorAll(".inbox-decline-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const inv = inboxInvitesCache.find((i) => i.id === btn.dataset.inviteId);
+      if (inv) declineInboxInvite(inv).catch((e) => setMessage("inbox_invitations_empty", detailToText(e?.message || e), "error"));
+    });
+  });
 }
 
 async function loadInboxInvites() {
