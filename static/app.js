@@ -5136,11 +5136,10 @@ function renderChatAgents(agents) {
   chatAliasMap = new Map();
   chatById = new Map();
 
-  // Build per-project color map when in project context
-  const projectAgentsFull = contextMode === "project" ? wizardEffectiveProjectAgents() : [];
-  const projectColorMap = projectAgentsFull.length ? buildProjectAgentColorMap(projectAgentsFull) : null;
-  // Map agent id → full agent data for color lookup
-  const projectAgentById = new Map(projectAgentsFull.map((a) => [a.id, a]));
+  // Build per-project color map from the agents list itself
+  const projectColorMap = (chatContextMode === "project" && agents.length)
+    ? buildProjectAgentColorMap(agents)
+    : null;
 
   for (const agent of agents) {
     chatById.set(agent.id, agent);
@@ -5155,9 +5154,8 @@ function renderChatAgents(agents) {
       chip.className = "agent-mention-chip";
       const mentionAlias = aliases[0] || normalizeAlias(agent.id);
       chip.title = `${agent.name} (${agent.id})`;
-      const fullAgent = projectAgentById.get(agent.id);
-      const palette = (projectColorMap && fullAgent)
-        ? projectPaletteForAgent(fullAgent, projectColorMap)
+      const palette = projectColorMap
+        ? projectPaletteForAgent(agent, projectColorMap)
         : colorForAgent(agent.id);
       chip.style.setProperty("--agent-color", palette.hex);
       chip.style.borderColor = palette.border;
@@ -5188,7 +5186,14 @@ async function loadChatAgents() {
   const contextMode = activeChatContextMode();
 
   if (contextMode === "project") {
-    const scoped = (selectedAssignedAgents || []).map((a) => ({ id: a.id, name: a.name, role: a.role || "", is_primary: Boolean(a.is_primary) }));
+    const scoped = (selectedAssignedAgents || []).map((a) => ({
+      id: a.id,
+      name: a.name,
+      role: a.role || "",
+      is_primary: Boolean(a.is_primary),
+      source_type: a.source_type || "owner",
+      source_user_id: a.source_user_id || null,
+    }));
     chatAgents = scoped;
     renderChatAgents(scoped);
     connectionHealthy = Boolean(activeConnectionId);
