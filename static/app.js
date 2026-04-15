@@ -100,6 +100,20 @@ const _URL_USERNAME = (() => {
 const SESSION_TOKEN_KEY = _URL_USERNAME
   ? `hivee_session_token_v2_${_URL_USERNAME}`
   : "hivee_session_token_v2";
+
+// Immediately grab OAuth token from hash fragment (set by server after OAuth redirect).
+// Store it in the namespaced localStorage slot, then strip the fragment from the URL.
+(() => {
+  const hash = window.location.hash || "";
+  const match = hash.match(/[#&]_oauth_token=([^&]*)/);
+  if (!match) return;
+  const oauthToken = decodeURIComponent(match[1] || "");
+  if (!oauthToken) return;
+  try { localStorage.setItem(SESSION_TOKEN_KEY, oauthToken); } catch {}
+  // Remove the fragment so the token isn't visible in history
+  const cleanUrl = window.location.pathname + window.location.search;
+  history.replaceState(null, "", cleanUrl);
+})();
 const CLAIM_ENV_PARAM = "claim_env_id";
 const CLAIM_CODE_PARAM = "claim_code";
 const PROJECT_INVITE_PARAM = "project_invite";
@@ -10630,8 +10644,8 @@ if (oauthError) {
   clearOauthErrorParamFromUrl();
 }
 (async () => {
-  // If JS has no token but a server session cookie may exist (e.g. after OAuth redirect),
-  // try to sync it into localStorage before any auth checks.
+  // If JS has no token, try cookie-based session sync as a last resort
+  // (covers edge cases where hash fragment wasn't available).
   if (!sessionToken) {
     try {
       const sess = await fetch("/api/session/token", { method: "GET", credentials: "include" });
@@ -10640,9 +10654,7 @@ if (oauthError) {
         const cookieToken = String(sessData?.token || "").trim();
         const cookieUsername = String(sessData?.username || "").trim();
         if (cookieToken) {
-          // Store under the namespaced key for this username
           if (cookieUsername && !_URL_USERNAME) {
-            // We're at / but have a valid session — redirect to /{username}/ preserving query
             try { localStorage.setItem(`hivee_session_token_v2_${cookieUsername}`, cookieToken); } catch {}
             _redirectToUserHome(cookieUsername, window.location.search);
             return;

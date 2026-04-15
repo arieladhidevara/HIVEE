@@ -140,15 +140,21 @@ def register_routes(app: FastAPI) -> None:
 
         _ensure_user_workspace(user_id)
         _ensure_primary_environment_for_user(user_id, email=user_email)
-        # Rewrite next_path to be under /{username}/ if it isn't already
-        if next_path and not next_path.startswith(f"/{username}"):
-            # Preserve query string from next_path (e.g. invite params) under username prefix
-            from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
-            parsed = urlparse(next_path)
-            username_prefix = f"/{username}"
-            new_path = username_prefix + (parsed.path if parsed.path not in ("", "/") else "/")
-            next_path = urlunparse(("", "", new_path, parsed.params, parsed.query, parsed.fragment))
-        redirect = _oauth_redirect_with_message(next_path)
+        # Build the final redirect URL: /{username}/ + preserved query + auth token in hash fragment
+        from urllib.parse import urlparse, urlunparse, quote as url_quote_path
+        parsed = urlparse(next_path)
+        # Strip any existing /{username} prefix to avoid doubling
+        raw_path = parsed.path if parsed.path not in ("", "/") else "/"
+        if raw_path.startswith(f"/{username}"):
+            base_path = raw_path
+        else:
+            base_path = f"/{username}/" + raw_path.lstrip("/")
+        # Embed token in hash fragment so JS can pick it up without a cookie round-trip
+        auth_fragment = f"_oauth_token={url_quote_path(token, safe='')}"
+        existing_fragment = parsed.fragment
+        fragment = f"{existing_fragment}&{auth_fragment}" if existing_fragment else auth_fragment
+        final_path = urlunparse(("", "", base_path, parsed.params, parsed.query, fragment))
+        redirect = _oauth_redirect_with_message(final_path)
         _set_session_cookie(redirect, token)
         return redirect
     
