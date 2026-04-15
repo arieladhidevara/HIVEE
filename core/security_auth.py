@@ -4,6 +4,29 @@ def _slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
     return slug or "project"
 
+def _generate_username(email: str, conn) -> str:
+    """Derive a unique URL-safe username from an email address."""
+    prefix = str(email or "").split("@")[0]
+    base = re.sub(r"[^a-z0-9]+", "-", prefix.lower()).strip("-")[:32] or "user"
+    candidate = base
+    suffix = 2
+    while True:
+        row = conn.execute("SELECT id FROM users WHERE username = ?", (candidate,)).fetchone()
+        if not row:
+            return candidate
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+
+def _ensure_user_username(user_id: str, email: str, conn) -> str:
+    """Return the user's username, generating and saving one if missing."""
+    row = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+    existing = str(row["username"] or "").strip() if row else ""
+    if existing:
+        return existing
+    username = _generate_username(email, conn)
+    conn.execute("UPDATE users SET username = ? WHERE id = ?", (username, user_id))
+    return username
+
 def detail_to_text(detail: Any) -> str:
     if detail is None:
         return ""

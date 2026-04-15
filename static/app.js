@@ -88,7 +88,18 @@ let chatAutocompleteIndex = 0;
 let chatContextMode = "workspace";
 let chatMessageKeys = new Set();
 const DEFAULT_OWNER_FILES_PATH = "";
-const SESSION_TOKEN_KEY = "hivee_session_token_v2";
+// Per-account session key: namespaced by URL username so different tabs can hold different accounts.
+// If visiting /{username}/..., the key includes the username — otherwise falls back to the shared key.
+const _URL_USERNAME = (() => {
+  const segs = window.location.pathname.split("/").filter(Boolean);
+  const first = segs[0] || "";
+  // Only treat it as a username if it doesn't look like an API/static path
+  if (first && !/^(api|static|new-user)$/i.test(first)) return first;
+  return "";
+})();
+const SESSION_TOKEN_KEY = _URL_USERNAME
+  ? `hivee_session_token_v2_${_URL_USERNAME}`
+  : "hivee_session_token_v2";
 const CLAIM_ENV_PARAM = "claim_env_id";
 const CLAIM_CODE_PARAM = "claim_code";
 const PROJECT_INVITE_PARAM = "project_invite";
@@ -266,6 +277,13 @@ function authHeaders() {
   if (!sessionToken) sessionToken = readStoredSessionToken();
   if (!sessionToken) return {};
   return { Authorization: `Bearer ${sessionToken}` };
+}
+
+function _redirectToUserHome(username, preserveSearch = "") {
+  if (!username) return;
+  const target = `/${username}/${preserveSearch || ""}`;
+  if (window.location.pathname.startsWith(`/${username}`)) return; // already there
+  window.location.replace(target);
 }
 
 function clearAuthSession() {
@@ -9649,6 +9667,10 @@ async function login(ev) {
     }
   }
 
+  if (!claimAuthContext.active) {
+    const username = String(res.username || "").trim();
+    if (username) { _redirectToUserHome(username, window.location.search); return; }
+  }
   await fetchInitial();
 }
 async function signup(ev) {
@@ -9707,6 +9729,10 @@ async function signup(ev) {
     }
   }
 
+  if (!claimAuthContext.active) {
+    const username = String(res.username || "").trim();
+    if (username) { _redirectToUserHome(username, window.location.search); return; }
+  }
   await fetchInitial();
 }
 async function startOAuth(provider) {
@@ -10021,6 +10047,14 @@ async function fetchInitial({ preferredProjectId = null } = {}) {
   if (claimAuthContext.active) {
     setView("auth");
     return;
+  }
+  // If we're at the root path (no username in URL), redirect to /{username}/ after loading profile
+  if (!_URL_USERNAME && sessionToken) {
+    try {
+      const profile = await api("/api/me");
+      const username = String(profile?.username || "").trim();
+      if (username) { _redirectToUserHome(username, window.location.search); return; }
+    } catch {}
   }
   if (projectInviteContext.active) {
     setView("auth");
@@ -10604,7 +10638,15 @@ if (oauthError) {
       if (sess.ok) {
         const sessData = await sess.json();
         const cookieToken = String(sessData?.token || "").trim();
+        const cookieUsername = String(sessData?.username || "").trim();
         if (cookieToken) {
+          // Store under the namespaced key for this username
+          if (cookieUsername && !_URL_USERNAME) {
+            // We're at / but have a valid session — redirect to /{username}/ preserving query
+            try { localStorage.setItem(`hivee_session_token_v2_${cookieUsername}`, cookieToken); } catch {}
+            _redirectToUserHome(cookieUsername, window.location.search);
+            return;
+          }
           persistSessionToken(cookieToken);
           sessionToken = cookieToken;
         }

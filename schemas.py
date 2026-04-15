@@ -25,10 +25,12 @@ class OAuthProvidersOut(BaseModel):
 
 class SessionOut(BaseModel):
     token: str
+    username: str = ""
 
 class AccountProfileOut(BaseModel):
     id: str
     email: str
+    username: str = ""
     created_at: int
     workspace_root: str
     projects_count: int = 0

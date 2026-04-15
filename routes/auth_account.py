@@ -16,6 +16,7 @@ def register_routes(app: FastAPI) -> None:
                 "INSERT INTO users (id, email, password, created_at) VALUES (?,?,?,?)",
                 (user_id, email, _hash_password(payload.password), int(time.time())),
             )
+            username = _ensure_user_username(user_id, email, conn)
             token = _issue_user_session(conn, user_id)
             conn.commit()
         except sqlite3.IntegrityError:
@@ -25,8 +26,8 @@ def register_routes(app: FastAPI) -> None:
         _ensure_user_workspace(user_id)
         _ensure_primary_environment_for_user(user_id, email=email)
         _set_session_cookie(response, token)
-        return SessionOut(token=token)
-    
+        return SessionOut(token=token, username=username)
+
     @app.post("/api/login", response_model=SessionOut)
     async def login(payload: LoginIn, response: Response):
         email = _normalize_email(payload.email)
@@ -38,13 +39,15 @@ def register_routes(app: FastAPI) -> None:
         if not row or not _verify_password_and_upgrade(conn, str(row["id"]), payload.password, str(row["password"] or "")):
             conn.close()
             raise HTTPException(401, "Invalid email/password")
-        token = _issue_user_session(conn, str(row["id"]))
+        user_id = str(row["id"])
+        token = _issue_user_session(conn, user_id)
+        username = _ensure_user_username(user_id, str(row["email"] or email), conn)
         conn.commit()
         conn.close()
-        _ensure_user_workspace(row["id"])
-        _ensure_primary_environment_for_user(str(row["id"]), email=str(row["email"] or email))
+        _ensure_user_workspace(user_id)
+        _ensure_primary_environment_for_user(user_id, email=str(row["email"] or email))
         _set_session_cookie(response, token)
-        return SessionOut(token=token)
+        return SessionOut(token=token, username=username)
     
     @app.post("/api/oauth/{provider}/start", response_model=OAuthStartOut)
     async def oauth_start(request: Request, provider: str, payload: OAuthStartIn):
@@ -130,12 +133,21 @@ def register_routes(app: FastAPI) -> None:
                 display_name=str(profile.get("display_name") or ""),
             )
             token = _issue_user_session(conn, user_id)
+            username = _ensure_user_username(user_id, user_email, conn)
             conn.commit()
         finally:
             conn.close()
-    
+
         _ensure_user_workspace(user_id)
         _ensure_primary_environment_for_user(user_id, email=user_email)
+        # Rewrite next_path to be under /{username}/ if it isn't already
+        if next_path and not next_path.startswith(f"/{username}"):
+            # Preserve query string from next_path (e.g. invite params) under username prefix
+            from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+            parsed = urlparse(next_path)
+            username_prefix = f"/{username}"
+            new_path = username_prefix + (parsed.path if parsed.path not in ("", "/") else "/")
+            next_path = urlunparse(("", "", new_path, parsed.params, parsed.query, parsed.fragment))
         redirect = _oauth_redirect_with_message(next_path)
         _set_session_cookie(redirect, token)
         return redirect
@@ -143,17 +155,26 @@ def register_routes(app: FastAPI) -> None:
 
     @app.get("/api/session/token")
     async def get_session_token(request: Request):
-        """Return the active session token so the JS can sync it from cookie into localStorage."""
+        """Return the active session token + username so JS can sync cookie session into localStorage."""
         from core.session_project_access import _bearer_token
         token = _bearer_token(request)
         if not token:
             raise HTTPException(401, "No active session")
         conn = db()
-        row = conn.execute("SELECT user_id FROM sessions WHERE token = ?", (token,)).fetchone()
-        conn.close()
-        if not row:
+        sess_row = conn.execute("SELECT user_id FROM sessions WHERE token = ?", (token,)).fetchone()
+        if not sess_row:
+            conn.close()
             raise HTTPException(401, "Invalid session token")
-        return {"token": token}
+        user_row = conn.execute("SELECT email, username FROM users WHERE id = ?", (str(sess_row["user_id"]),)).fetchone()
+        if not user_row:
+            conn.close()
+            raise HTTPException(401, "User not found")
+        username = str(user_row["username"] or "").strip()
+        if not username:
+            username = _ensure_user_username(str(sess_row["user_id"]), str(user_row["email"] or ""), conn)
+            conn.commit()
+        conn.close()
+        return {"token": token, "username": username}
 
     @app.get("/api/me", response_model=AccountProfileOut)
     async def get_account_profile(request: Request):
@@ -162,12 +183,16 @@ def register_routes(app: FastAPI) -> None:
         workspace_root = _user_home_dir(user_id).resolve()
         conn = db()
         row = conn.execute(
-            "SELECT id, email, created_at FROM users WHERE id = ?",
+            "SELECT id, email, username, created_at FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
         if not row:
             conn.close()
             raise HTTPException(404, "User not found")
+        username = str(row["username"] or "").strip()
+        if not username:
+            username = _ensure_user_username(user_id, str(row["email"] or ""), conn)
+            conn.commit()
         project_count_row = conn.execute(
             "SELECT COUNT(1) AS c FROM projects WHERE user_id = ?",
             (user_id,),
@@ -180,6 +205,7 @@ def register_routes(app: FastAPI) -> None:
         return AccountProfileOut(
             id=str(row["id"]),
             email=str(row["email"] or ""),
+            username=username,
             created_at=int(row["created_at"] or 0),
             workspace_root=workspace_root.as_posix(),
             projects_count=int((project_count_row or {"c": 0})["c"] or 0),
@@ -562,4 +588,14 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
         _clear_session_cookie(response)
         return {"ok": True}
-    
+
+    @app.get("/{username}", response_class=HTMLResponse)
+    async def user_index(username: str):
+        """Serve the SPA at /{username} — enables per-account tab isolation."""
+        return FileResponse("static/index.html")
+
+    @app.get("/{username}/{rest:path}", response_class=HTMLResponse)
+    async def user_index_deep(username: str, rest: str):
+        """Serve the SPA for any deep path under /{username}/..."""
+        return FileResponse("static/index.html")
+

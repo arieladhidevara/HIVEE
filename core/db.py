@@ -763,6 +763,10 @@ def init_db() -> None:
     task_cols = [r[1] for r in cur.execute("PRAGMA table_info(project_tasks)").fetchall()]
     if "weight_pct" not in task_cols:
         cur.execute("ALTER TABLE project_tasks ADD COLUMN weight_pct INTEGER NOT NULL DEFAULT 0")
+    user_cols = [r[1] for r in cur.execute("PRAGMA table_info(users)").fetchall()]
+    if "username" not in user_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN username TEXT")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
     conn.commit()
     conn.close()
 
