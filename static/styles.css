@@ -1849,7 +1849,7 @@ label {
   grid-template-columns: 44px 1fr auto;
   gap: 10px;
   align-items: center;
-  background: rgba(255, 255, 255, 0.015);
+  background: var(--bg);
 }
 .owner-agent-row .meta { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
 
@@ -1903,11 +1903,11 @@ label {
 .wizard-external-access { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px; display: grid; gap: 10px; }
 .wizard-external-access h4 { font-size: 11px; margin: 0; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
 .wizard-split-grid  { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.wizard-mini-card   { border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, 0.015); padding: 12px; display: grid; gap: 8px; }
+.wizard-mini-card   { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); padding: 12px; display: grid; gap: 8px; }
 .wizard-mini-card h5 { font-size: 11px; margin: 0; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); }
 .wizard-simple-list,
 .wizard-perm-list   { display: grid; gap: 6px; }
-.wizard-list-item   { border: 1px solid var(--line); border-radius: 9px; background: rgba(255, 255, 255, 0.015); padding: 10px; display: grid; gap: 4px; }
+.wizard-list-item   { border: 1px solid var(--line); border-radius: 9px; background: var(--bg); padding: 10px; display: grid; gap: 4px; }
 .wizard-list-item .meta  { color: var(--muted); font-size: 12px; line-height: 1.4; }
 .wizard-list-item .title { font-size: 13px; font-weight: 700; color: var(--text); }
 .perm-row           { border: 1px solid var(--line); border-radius: 9px; background: var(--bg); padding: 10px; display: grid; gap: 8px; }

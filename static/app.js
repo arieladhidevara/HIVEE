@@ -5109,7 +5109,7 @@ function applyMention(alias) {
 
 function _isDefaultPlaceholderAgent(id) {
   const low = String(id || "").trim().toLowerCase();
-  return !low || low.includes("default");
+  return !low || low.includes("default") || low === "main";
 }
 
 function _normalizeDiscoveredAgent(item, { connectionId = "", status = "active" } = {}) {
@@ -5199,6 +5199,7 @@ async function loadChatAgents() {
       is_primary: Boolean(a.is_primary),
       source_type: a.source_type || "owner",
       source_user_id: a.source_user_id || null,
+      source_username: a.source_username || null,
     }));
     chatAgents = scoped;
     renderChatAgents(scoped);
@@ -6983,12 +6984,13 @@ function renderTeamTree() {
   const nodesEl = $("team_tree_nodes");
   if (!wrapper || !canvas || !svgEl || !nodesEl) return;
 
-  // Build agent list: primary agent first, then assigned agents
+  // Build agent list: primary agent first, then assigned agents (filter out "main" placeholder agent)
   const agents = [];
+  const assignedNonMain = selectedAssignedAgents.filter((a) => !_isDefaultPlaceholderAgent(a?.id) && !_isDefaultPlaceholderAgent(a?.name));
   const primaryId = String(
     selectedPrimaryAgentId
-      || selectedAssignedAgents.find((a) => a?.is_primary)?.id
-      || selectedAssignedAgents[0]?.id
+      || assignedNonMain.find((a) => a?.is_primary)?.id
+      || assignedNonMain[0]?.id
       || ""
   ).trim();
   if (primaryId) {
@@ -7008,9 +7010,11 @@ function renderTeamTree() {
         const main = workspaceMainChatAgent();
         return main && String(main.id || "").trim() === primaryId ? main : null;
       })();
-    if (primary) agents.push({ ...primary, _role: "Primary Agent", _isRoot: true });
+    if (primary && !_isDefaultPlaceholderAgent(primary.id) && !_isDefaultPlaceholderAgent(primary.name)) {
+      agents.push({ ...primary, _role: "Primary Agent", _isRoot: true });
+    }
   }
-  for (const a of selectedAssignedAgents) {
+  for (const a of assignedNonMain) {
     if (String(a?.id || "").trim() !== primaryId) agents.push({ ...a, _role: a.role || "Agent", _isRoot: false });
   }
 
@@ -8825,7 +8829,7 @@ function wizardEffectiveProjectAgents() {
     source_user_id: String(a?.source_user_id || "").trim() || null,
     source_username: String(a?.source_username || "").trim() || null,
     permissions: a?.permissions || {},
-  })).filter((a) => Boolean(a.id));
+  })).filter((a) => Boolean(a.id) && !_isDefaultPlaceholderAgent(a.id) && !_isDefaultPlaceholderAgent(a.name));
 }
 
 function wizardOwnerAgents() {
@@ -9410,11 +9414,14 @@ function renderWizardAgentPermissions() {
   const colorMap = buildProjectAgentColorMap(agents);
   const viewerUsername = _URL_USERNAME || "";
 
-  // Split: "Your Agents" = source_type owner OR source_username matches viewer, "Other Agents" = external from different user
+  // Split: "Your Agents" = agents whose source_username matches the viewer, "Other Agents" = everyone else.
+  // This is relative to the viewer — User A and User B see different "Your Agents" sections.
+  // Fallback: if source_username is null/empty (legacy records with source_type="owner"), treat as viewer's.
   const yourAgents = agents.filter((a) => {
-    if (String(a.source_type || "owner").trim() === "owner") return true;
     const su = String(a.source_username || "").trim().toLowerCase();
-    return su && viewerUsername && su === viewerUsername.toLowerCase();
+    if (su && viewerUsername) return su === viewerUsername.toLowerCase();
+    // No source_username: treat as viewer's only if source_type is "owner" (legacy owner agents)
+    return String(a.source_type || "owner").trim() === "owner";
   });
   const otherAgents = agents.filter((a) => !yourAgents.includes(a));
 
