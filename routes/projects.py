@@ -82,25 +82,33 @@ def _resolve_connector_selection(conn, *, user_id: str, connection_id: Any) -> D
         (requested_id, user_id),
     ).fetchone()
     if connector_row:
+        legacy_id = _find_legacy_connection_id(conn, user_id=user_id, openclaw_base_url=str(connector_row["openclaw_base_url"] or "").strip())
         return {
             "ok": True,
             "connection_id": str(connector_row["id"] or "").strip() or requested_id,
+            "legacy_connection_id": legacy_id,
             "connector": dict(connector_row),
         }
 
     legacy_direct = conn.execute(
-        "SELECT id FROM openclaw_connections WHERE id = ? AND user_id = ? LIMIT 1",
+        "SELECT id, base_url FROM openclaw_connections WHERE id = ? AND user_id = ? LIMIT 1",
         (requested_id, user_id),
     ).fetchone()
     if legacy_direct:
-        return {
-            "ok": False,
-            "status": 410,
-            "error": (
-                "Direct OpenClaw connections are no longer supported for projects. "
-                "Pair a Hivee Hub and retry."
-            ),
-        }
+        # Old-system ID passed — try to find a matching new-system connector by base_url
+        legacy_base_url = str(legacy_direct["base_url"] or "").strip()
+        matching_connector = conn.execute(
+            "SELECT id, user_id, name, status, openclaw_base_url FROM connectors WHERE user_id = ? AND openclaw_base_url = ? LIMIT 1",
+            (user_id, legacy_base_url),
+        ).fetchone() if legacy_base_url else None
+        if matching_connector:
+            return {
+                "ok": True,
+                "connection_id": str(matching_connector["id"]).strip(),
+                "legacy_connection_id": str(legacy_direct["id"]).strip(),
+                "connector": dict(matching_connector),
+            }
+        # Legacy ID with no matching connector — fall through to any connector fallback
 
     # Fall back to any connector owned by this user
     any_connector = conn.execute(
@@ -108,13 +116,26 @@ def _resolve_connector_selection(conn, *, user_id: str, connection_id: Any) -> D
         (user_id,),
     ).fetchone()
     if any_connector:
+        legacy_id = _find_legacy_connection_id(conn, user_id=user_id, openclaw_base_url=str(any_connector["openclaw_base_url"] or "").strip())
         return {
             "ok": True,
             "connection_id": str(any_connector["id"] or "").strip(),
+            "legacy_connection_id": legacy_id,
             "connector": dict(any_connector),
         }
 
     return {"ok": False, "status": 404, "error": "Connector not found for this user"}
+
+
+def _find_legacy_connection_id(conn, *, user_id: str, openclaw_base_url: str) -> str:
+    """Return the openclaw_connections.id that maps to a given base URL, or empty string."""
+    if not openclaw_base_url:
+        return ""
+    row = conn.execute(
+        "SELECT id FROM openclaw_connections WHERE user_id = ? AND base_url = ? LIMIT 1",
+        (user_id, openclaw_base_url),
+    ).fetchone()
+    return str(row["id"]).strip() if row else ""
 
 
 def _invite_email_settings() -> Dict[str, Any]:
@@ -513,7 +534,11 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
         resolved_connection_id = str(selection.get("connection_id") or "").strip()
-        policy = conn.execute(
+        legacy_conn_id = str(selection.get("legacy_connection_id") or "").strip()
+        policy = (
+            conn.execute("SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?", (legacy_conn_id, user_id)).fetchone()
+            if legacy_conn_id else None
+        ) or conn.execute(
             "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (resolved_connection_id, user_id),
         ).fetchone()
@@ -559,7 +584,11 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
         resolved_connection_id = str(selection.get("connection_id") or "").strip()
-        policy = conn.execute(
+        legacy_conn_id = str(selection.get("legacy_connection_id") or "").strip()
+        policy = (
+            conn.execute("SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?", (legacy_conn_id, user_id)).fetchone()
+            if legacy_conn_id else None
+        ) or conn.execute(
             "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
             (resolved_connection_id, user_id),
         ).fetchone()
@@ -657,23 +686,35 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
         resolved_connection_id = str(selection.get("connection_id") or "").strip()
+        # For legacy tables (connection_policies, managed_agents) that reference openclaw_connections.id
+        legacy_conn_id = str(selection.get("legacy_connection_id") or "").strip()
 
-        policy_row = conn.execute(
-            "SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1",
-            (resolved_connection_id, user_id),
-        ).fetchone()
+        def _query_policy(cid: str):
+            return conn.execute(
+                "SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1",
+                (cid, user_id),
+            ).fetchone()
+
+        def _query_fallback_agent(cid: str):
+            return conn.execute(
+                """
+                SELECT agent_id, agent_name FROM managed_agents
+                WHERE user_id = ? AND connection_id = ?
+                ORDER BY discovered_at ASC LIMIT 1
+                """,
+                (user_id, cid),
+            ).fetchone()
+
+        # Try legacy ID first (openclaw_connections), then fall back to connector ID
+        policy_row = (_query_policy(legacy_conn_id) if legacy_conn_id else None) or _query_policy(resolved_connection_id)
         main_agent_id = str(policy_row["main_agent_id"] or "").strip() if policy_row else ""
         main_agent_name = str(policy_row["main_agent_name"] or "").strip() if policy_row else ""
         if not main_agent_id:
             # No policy agent set — fall back to any managed agent for this connection
-            fallback_row = conn.execute(
-                """
-                SELECT agent_id, agent_name FROM managed_agents
-                WHERE user_id = ? AND connection_id = ?
-                ORDER BY created_at ASC LIMIT 1
-                """,
-                (user_id, resolved_connection_id),
-            ).fetchone()
+            fallback_row = (
+                (_query_fallback_agent(legacy_conn_id) if legacy_conn_id else None)
+                or _query_fallback_agent(resolved_connection_id)
+            )
             if fallback_row:
                 main_agent_id = str(fallback_row["agent_id"] or "").strip()
                 main_agent_name = str(fallback_row["agent_name"] or main_agent_id).strip() or main_agent_id
@@ -683,6 +724,8 @@ def register_routes(app: FastAPI) -> None:
                     400,
                     "Primary owner agent is not configured for this connection. Run bootstrap first.",
                 )
+        # Use whichever connection_id the policy/managed_agents row lives under
+        policy_conn_id = legacy_conn_id or resolved_connection_id
         managed_primary = conn.execute(
             """
             SELECT agent_id, agent_name
@@ -690,7 +733,7 @@ def register_routes(app: FastAPI) -> None:
             WHERE user_id = ? AND connection_id = ? AND agent_id = ?
             LIMIT 1
             """,
-            (user_id, resolved_connection_id, main_agent_id),
+            (user_id, policy_conn_id, main_agent_id),
         ).fetchone()
         # Use the managed row's name if available; otherwise fall back to the
         # policy name or the raw agent ID.  Do NOT block project creation just
@@ -2818,8 +2861,14 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
         connection_id = str(selection.get("connection_id") or "").strip() or connection_id
+        legacy_conn_id = str(selection.get("legacy_connection_id") or "").strip()
+        # Use legacy ID for tables that reference openclaw_connections; fall back to connector ID
+        policy_conn_id = legacy_conn_id or connection_id
 
-        policy_row = conn.execute(
+        policy_row = (
+            conn.execute("SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1", (legacy_conn_id, member_user_id)).fetchone()
+            if legacy_conn_id else None
+        ) or conn.execute(
             "SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1",
             (connection_id, member_user_id),
         ).fetchone()
@@ -2831,7 +2880,7 @@ def register_routes(app: FastAPI) -> None:
             ORDER BY updated_at DESC, agent_name ASC
             LIMIT 500
             """,
-            (member_user_id, connection_id),
+            (member_user_id, policy_conn_id),
         ).fetchall()
         managed_name_by_id = {
             str(r["agent_id"] or "").strip(): str(r["agent_name"] or "").strip()

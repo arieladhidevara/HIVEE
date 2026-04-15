@@ -1054,6 +1054,8 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         conn = db()
         if connection_id:
+            cid = str(connection_id).strip()
+            # If connector ID (new system), resolve to openclaw_connections.id (legacy) for managed_agents lookup
             rows = conn.execute(
                 """
                 SELECT connection_id, env_id, agent_id, agent_name, status, root_path, provisioned_at, updated_at
@@ -1061,8 +1063,29 @@ def register_routes(app: FastAPI) -> None:
                 WHERE user_id = ? AND connection_id = ?
                 ORDER BY updated_at DESC, agent_name ASC
                 """,
-                (user_id, str(connection_id).strip()),
+                (user_id, cid),
             ).fetchall()
+            if not rows:
+                # Try bridging: look up connector's base_url and find legacy openclaw_connections entry
+                connector_row = conn.execute(
+                    "SELECT openclaw_base_url FROM connectors WHERE id = ? AND user_id = ? LIMIT 1",
+                    (cid, user_id),
+                ).fetchone()
+                if connector_row and connector_row["openclaw_base_url"]:
+                    legacy_row = conn.execute(
+                        "SELECT id FROM openclaw_connections WHERE user_id = ? AND base_url = ? LIMIT 1",
+                        (user_id, str(connector_row["openclaw_base_url"]).strip()),
+                    ).fetchone()
+                    if legacy_row:
+                        rows = conn.execute(
+                            """
+                            SELECT connection_id, env_id, agent_id, agent_name, status, root_path, provisioned_at, updated_at
+                            FROM managed_agents
+                            WHERE user_id = ? AND connection_id = ?
+                            ORDER BY updated_at DESC, agent_name ASC
+                            """,
+                            (user_id, str(legacy_row["id"]).strip()),
+                        ).fetchall()
         else:
             rows = conn.execute(
                 """

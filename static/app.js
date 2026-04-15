@@ -297,6 +297,11 @@ function _redirectToUserHome(username, preserveSearch = "") {
   if (!username) return;
   const target = `/${username}/${preserveSearch || ""}`;
   if (window.location.pathname.startsWith(`/${username}`)) return; // already there
+  // Pre-copy the session token to the destination namespaced key so it's available after reload
+  const dstKey = `hivee_session_token_v2_${username}`;
+  if (SESSION_TOKEN_KEY !== dstKey && sessionToken) {
+    try { localStorage.setItem(dstKey, sessionToken); } catch {}
+  }
   window.location.replace(target);
 }
 
@@ -995,7 +1000,12 @@ function renderProjectInviteUI() {
   } else if (requiresInviteCode && !codeFromUrl && !String(codeInput?.value || "").trim()) {
     notice.textContent = "You are signed in. Enter invite code from the invitation document, then continue.";
   } else {
-    notice.textContent = "You are signed in. Choose a hub, then continue to agent selection.";
+    const conns = Array.isArray(projectInviteContext.connections) ? projectInviteContext.connections : [];
+    if (hasSession && canAccept && !conns.length) {
+      notice.textContent = "You are signed in but have no paired hub. Pair a hub first using the 'Open Hub Pairing' button below.";
+    } else {
+      notice.textContent = "You are signed in. Choose a hub, then click Continue.";
+    }
   }
 
   const inviteDocUrl = toAbsoluteAppUrl(
@@ -1075,7 +1085,7 @@ function renderProjectInviteUI() {
         const opt = document.createElement("option");
         opt.value = id;
         const name = String(item?.name || "").trim();
-        const base = String(item?.base_url || "").trim();
+        const base = String(item?.openclaw_base_url || item?.base_url || "").trim();
         opt.textContent = name ? `${name} (${id})` : `${id}${base ? ` - ${base}` : ""}`;
         connectionSelect.appendChild(opt);
       }
@@ -1105,10 +1115,10 @@ function renderProjectInviteUI() {
   }
 
   if (acceptBtn) {
-    const hasConnection = Boolean(String(connectionSelect?.value || "").trim());
     const codeValue = String(codeInput?.value || "").trim();
     const hasRequiredCode = !requiresInviteCode || Boolean(codeValue);
-    acceptBtn.disabled = !hasSession || !canAccept || !hasConnection || !hasRequiredCode;
+    // Only disable for session/code/acceptability — not for missing connection (show error on click instead)
+    acceptBtn.disabled = !hasSession || !canAccept || !hasRequiredCode;
   }
 }
 
@@ -1120,7 +1130,7 @@ async function loadProjectInviteConnections() {
     return [];
   }
   try {
-    const rows = await api("/api/openclaw/connections");
+    const rows = await api("/api/connectors");
     projectInviteContext.connections = Array.isArray(rows) ? rows : [];
   } catch {
     projectInviteContext.connections = [];
@@ -1341,8 +1351,14 @@ async function openProjectInviteAgentModal() {
   if (!projectInviteContext.active) throw new Error("No active project invite.");
   if (!sessionToken) throw new Error("Login or sign up first before accepting invite.");
 
-  const connectionId = String($("invite_connection_id")?.value || "").trim();
-  if (!connectionId) throw new Error("Choose one of your paired hubs first.");
+  // Auto-select the first available connection if the dropdown is empty
+  const connSelect = $("invite_connection_id");
+  const conns = Array.isArray(projectInviteContext.connections) ? projectInviteContext.connections : [];
+  if (connSelect && !String(connSelect.value || "").trim() && conns.length) {
+    connSelect.value = String(conns[0]?.id || "");
+  }
+  const connectionId = String(connSelect?.value || "").trim();
+  if (!connectionId) throw new Error("No hub paired yet. Use 'Open Hub Pairing' to connect a hub first.");
 
   const info = projectInviteContext.info || {};
   const requiresCode = Boolean(info?.requires_invite_code);
