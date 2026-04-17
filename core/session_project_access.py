@@ -321,10 +321,14 @@ def _resolve_project_workspace_access(
     required_scope: Optional[str] = None,
 ) -> Dict[str, Any]:
     session_user: Optional[str] = None
+    has_project_agent_headers = bool(
+        str(request.headers.get("X-Project-Agent-Id") or "").strip()
+        and str(request.headers.get("X-Project-Agent-Token") or "").strip()
+    )
     try:
         session_user = get_optional_session_user(request)
     except HTTPException:
-        if not str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip():
+        if not str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip() and not has_project_agent_headers:
             raise
         session_user = None
     a2a_access = _resolve_optional_a2a_agent_session(request, required_scope=required_scope or "env.read")

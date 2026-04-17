@@ -595,11 +595,14 @@ def register_routes(app: FastAPI) -> None:
         raw_token = _new_agent_access_token()
         conn.execute(
             """
-            INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, created_at)
-            VALUES (?,?,?,?)
-            ON CONFLICT(project_id, agent_id) DO UPDATE SET token_hash=excluded.token_hash, created_at=excluded.created_at
+            INSERT INTO project_agent_access_tokens (project_id, agent_id, token_hash, token_plain, created_at)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(project_id, agent_id) DO UPDATE SET
+                token_hash = excluded.token_hash,
+                token_plain = excluded.token_plain,
+                created_at = excluded.created_at
             """,
-            (project_id, agent_id, _hash_access_token(raw_token), now),
+            (project_id, agent_id, _hash_access_token(raw_token), raw_token, now),
         )
 
         # Mark invite accepted

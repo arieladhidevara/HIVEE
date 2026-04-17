@@ -1959,6 +1959,12 @@ async def _project_chat(
     except Exception:
         project_id = ""
     hivee_api_base = _get_hivee_api_base(project_id) if project_id else ""
+    project_agent_token = ""
+    if project_id and agent_id:
+        try:
+            project_agent_token = _issue_agent_session_token(project_id, str(agent_id or "").strip())
+        except Exception:
+            project_agent_token = ""
     return await connector_chat_sync(
         connector_id=connector_id,
         message=message,
@@ -1970,6 +1976,8 @@ async def _project_chat(
         context_type=context_type or "message",
         project_id=project_id,
         hivee_api_base=hivee_api_base,
+        project_agent_id=str(agent_id or "").strip(),
+        project_agent_token=project_agent_token,
     )
 async def _ensure_project_info_document(project_id: str, *, force: bool = False) -> Dict[str, Any]:
     conn = db()

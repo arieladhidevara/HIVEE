@@ -1,4 +1,5 @@
 import base64
+import os
 
 from core.workspace_paths import *
 from core.security_auth import _new_agent_access_token, _hash_access_token
@@ -5275,7 +5276,13 @@ def _write_project_scope_file(
 
 
 def _get_hivee_api_base(project_id: str) -> str:
-    return f"https://hivee.cloud/api/projects/{project_id}"
+    base_origin = str(
+        os.getenv("HIVEE_API_BASE_URL")
+        or os.getenv("PUBLIC_BASE_URL")
+        or os.getenv("APP_BASE_URL")
+        or "https://hivee.cloud"
+    ).strip().rstrip("/")
+    return f"{base_origin}/api/projects/{project_id}"
 
 
 def _issue_agent_session_token(project_id: str, agent_id: str) -> str:
