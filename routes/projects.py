@@ -1130,9 +1130,9 @@ def register_routes(app: FastAPI) -> None:
         )
 
         # Update fundamentals.md and state.md to reflect new plan status
+        role_rows = _project_agent_rows_from_id(project_id)
         try:
             project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
-            role_rows = _project_agent_rows_from_id(project_id)
             hivee_api_base = _get_hivee_api_base(project_id)
             phase = "execution" if payload.approve else "planning"
             exec_status = EXEC_STATUS_RUNNING if payload.approve else EXEC_STATUS_IDLE
@@ -1158,6 +1158,57 @@ def register_routes(app: FastAPI) -> None:
             pass
 
         if payload.approve:
+            if primary_id := next(
+                (
+                    str(r.get("agent_id") or "").strip()
+                    for r in role_rows
+                    if bool(r.get("is_primary")) and str(r.get("agent_id") or "").strip()
+                ),
+                "",
+            ):
+                try:
+                    chat_conn = db()
+                    try:
+                        approval_message = _create_project_chat_message(
+                            chat_conn,
+                            project_id=project_id,
+                            author_type="user",
+                            author_id=user_id,
+                            author_label="owner",
+                            text=(
+                                f"@{primary_id} approved. Continue the approved plan into detailed execution now: "
+                                "refine the breakdown, write/update `delegation.md`, update `progress_map.json` nodes/groups, "
+                                "assign each agent, and mention them in chat when their scope is ready."
+                            ),
+                            metadata={"source": "plan.approve", "action": "approve"},
+                            mentions=[primary_id],
+                            created_at=now,
+                        )
+                        chat_conn.commit()
+                    finally:
+                        chat_conn.close()
+                    await emit(project_id, "project.chat.message", approval_message)
+                    for target in (approval_message.get("mentions") or [])[:PROJECT_CHAT_MENTION_MAX]:
+                        mention_payload = {
+                            "message_id": str(approval_message.get("id") or ""),
+                            "project_id": project_id,
+                            "target": target,
+                            "author_type": str(approval_message.get("author_type") or ""),
+                            "author_id": approval_message.get("author_id"),
+                            "author_label": approval_message.get("author_label"),
+                            "text": str(approval_message.get("text") or "")[:500],
+                            "created_at": int(approval_message.get("created_at") or now),
+                        }
+                        await emit(project_id, "project.chat.mention", mention_payload)
+                        asyncio.ensure_future(_dispatch_chat_mention_to_connector(
+                            project_id=project_id,
+                            mention_target=target,
+                            message_text=str(approval_message.get("text") or "")[:500],
+                            from_agent_id=str(approval_message.get("author_id") or "owner"),
+                            from_label=str(approval_message.get("author_label") or "owner"),
+                        ))
+                except Exception:
+                    pass
             await emit(project_id, "project.plan.approved", {"project_id": project_id})
             asyncio.create_task(_delegate_project_tasks(project_id))
         else:

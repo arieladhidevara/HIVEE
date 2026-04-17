@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -c \"import ast; ast.parse\\(open\\('services/project_utils.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python -c ':*)"
-    ]
-  }
-}

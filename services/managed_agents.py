@@ -2233,9 +2233,10 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         _refresh_project_documents(project_id)
         await emit(project_id, "project.plan.failed", {"error": msg})
         return
+    generation_started_at = int(time.time())
     conn.execute(
         "UPDATE projects SET plan_status = ?, plan_updated_at = ? WHERE id = ?",
-        (PLAN_STATUS_GENERATING, int(time.time()), project_id),
+        (PLAN_STATUS_GENERATING, generation_started_at, project_id),
     )
     conn.commit()
     conn.close()
@@ -2344,6 +2345,34 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
 
     now = int(time.time())
     conn = db()
+    current_state = conn.execute(
+        "SELECT plan_status, plan_updated_at FROM projects WHERE id = ?",
+        (project_id,),
+    ).fetchone()
+    current_plan_status = _coerce_plan_status((current_state or {}).get("plan_status"))
+    current_plan_updated_at = int((current_state or {}).get("plan_updated_at") or 0)
+    if current_plan_status != PLAN_STATUS_GENERATING or current_plan_updated_at != generation_started_at:
+        conn.close()
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="plan.generation.ignored",
+            text=(
+                "Ignored stale plan-generation result because project state changed "
+                f"to `{current_plan_status}` while the agent was still planning."
+            )[:1200],
+            payload={
+                "generation_started_at": generation_started_at,
+                "current_plan_status": current_plan_status,
+                "current_plan_updated_at": current_plan_updated_at,
+            },
+        )
+        await emit(
+            project_id,
+            "project.plan.generation_ignored",
+            {"status": current_plan_status, "updated_at": current_plan_updated_at},
+        )
+        return
     if not res.get("ok"):
         error_text = detail_to_text(res.get("error") or res.get("details") or "Failed to generate project plan")
         conn.execute(

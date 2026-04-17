@@ -1488,6 +1488,24 @@ async def _dispatch_chat_mention_to_connector(
     if not connector_id:
         return
 
+    resolved_hivee_api_base = str(hivee_api_base or "").strip() or _get_hivee_api_base(project_id)
+    project_agent_id = ""
+    project_agent_token = ""
+    conn = db()
+    try:
+        agent_row = conn.execute(
+            "SELECT agent_id FROM project_agents WHERE project_id = ? AND agent_id = ? LIMIT 1",
+            (project_id, target),
+        ).fetchone()
+    finally:
+        conn.close()
+    if agent_row:
+        project_agent_id = target
+        try:
+            project_agent_token = _issue_agent_session_token(project_id, target)
+        except Exception:
+            project_agent_token = ""
+
     # Build a notification message to deliver to the mentioned agent
     notification = (
         f"[MENTION from @{from_agent_id}]\n\n"
@@ -1508,7 +1526,9 @@ async def _dispatch_chat_mention_to_connector(
             from_label=from_label,
             context_type="mention",
             project_id=project_id,
-            hivee_api_base=hivee_api_base,
+            hivee_api_base=resolved_hivee_api_base,
+            project_agent_id=project_agent_id,
+            project_agent_token=project_agent_token,
         )
     except Exception as exc:
         print(f"[mention_dispatch] Failed to dispatch @{target} in project {project_id}: {exc}", flush=True)
