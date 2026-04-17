@@ -3481,6 +3481,10 @@ function eventSummary(kind, payload) {
   const data = payload && typeof payload === "object" ? payload : {};
   const name = data.agent_name || data.agent_id || "agent";
   if (kind === "project.delegation.started") return "Primary agent started delegation.";
+  if (kind === "project.subplan.phase_started") return "Sub-plan phase started.";
+  if (kind === "project.subplan.phase_complete") return "Sub-plan phase completed.";
+  if (kind === "agent.subplan.submitted") return `${name} submitted a sub-plan for review.`;
+  if (kind === "agent.subplan.reviewed") return `${name} sub-plan ${data.approved ? "approved" : "needs revision"}.`;
   if (kind === "project.delegation.ready") return `Delegation ready. Reports: ${Number(data.processed_agents || 0)} success, ${Number(data.failed_agents || 0)} failed.`;
   if (kind === "project.delegation.failed") return `Delegation failed: ${detailToText(data.error || payload)}`;
   if (kind === "project.delegation.stopped") return "Delegation stopped by user.";
@@ -3515,6 +3519,12 @@ function eventChatMessage(kind, payload) {
   const data = payload && typeof payload === "object" ? payload : {};
   const name = data.agent_name || data.agent_id || "agent";
   if (kind === "project.delegation.started") return { role: "agent", agentId: data.agent_id || "primary", text: "I am delegating tasks to invited agents now.", meta: "primary agent" };
+  if (kind === "project.subplan.phase_started") {
+    return { role: "system", text: "Sub-plan phase started. Each delegated agent is drafting a detailed execution breakdown for review.", meta: "workflow" };
+  }
+  if (kind === "project.subplan.phase_complete") {
+    return { role: "system", text: "Sub-plan phase complete. Approved breakdowns are ready and execution is moving forward.", meta: "workflow" };
+  }
   if (kind === "agent.primary.update") {
     const raw = String(data.text || "").trim();
     const looksStructured =
