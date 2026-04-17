@@ -4958,9 +4958,23 @@ async function controlProjectExecution(action) {
     selectedProjectData.execution_updated_at = res.updated_at;
   }
   renderProjectPlanInfo();
-  const verb = action === "resume" ? "resumed" : `${action}ed`;
-  setMessage("chat_hint", `Project ${verb}.`, "ok");
-  addEvent(`project.execution.${action}`, { project_id: selectedProjectId, status: res.status, progress_pct: res.progress_pct });
+  const status = String(res?.status || "").toLowerCase();
+  const summary = detailToText(res?.summary || "").trim();
+  let eventKind = `project.execution.${action}`;
+  let fallbackMessage = action === "resume" ? "Project resumed." : `Project ${action}ed.`;
+  let tone = "ok";
+  if (action === "resume" && status === "paused") {
+    eventKind = "project.execution.pause";
+    fallbackMessage = "Project masih paused; primary agent masih butuh input.";
+    tone = "error";
+  }
+  setMessage("chat_hint", summary || fallbackMessage, tone);
+  addEvent(eventKind, {
+    project_id: selectedProjectId,
+    status: res.status,
+    progress_pct: res.progress_pct,
+    summary: summary || fallbackMessage,
+  });
 }
 
 async function refreshSelectedProjectData() {

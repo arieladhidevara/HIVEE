@@ -1201,6 +1201,7 @@ def _project_protocol_markdown(*, title: str, brief: str, goal: str) -> str:
 
 
 def _artifact_sync_rule_lines(*, project_root: Optional[str] = None) -> List[str]:
+    project_root_hint = _root_hint_for_agent(project_root)
     lines = [
         "Artifact sync policy:",
         "- Persist every deliverable and handoff artifact into Hivee project files via `output_files`.",
@@ -1210,8 +1211,8 @@ def _artifact_sync_rule_lines(*, project_root: Optional[str] = None) -> List[str
         "- If external tools/runtime produce artifacts, copy full final content back into `output_files`.",
         f"- Preferred artifact-sync roots: `{USER_OUTPUTS_DIRNAME}`, `{PROJECT_INFO_DIRNAME}`, `agents`, `logs`.",
     ]
-    if project_root:
-        lines.append(f"- Hivee source-of-truth project root: `{project_root}`.")
+    if project_root_hint:
+        lines.append(f"- Hivee source-of-truth project root: `{project_root_hint}`.")
     return lines
 
 def _project_context_instruction(
@@ -5118,20 +5119,43 @@ def _pick_main_agent(agents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return ranked[0]
 
 def _workspace_policy_lines(workspace_root: str, project_root: Optional[str] = None) -> List[str]:
+    workspace_root_hint = _root_hint_for_agent(workspace_root, fallback=HIVEE_ROOT)
+    project_root_hint = _root_hint_for_agent(project_root)
     lines = [
         "User workspace preference:",
-        f"- Keep operations within `{workspace_root}` whenever possible.",
-        f"- Ask for owner approval before accessing paths outside `{workspace_root}`.",
+        f"- Keep operations within `{workspace_root_hint}` whenever possible.",
+        f"- Ask for owner approval before accessing paths outside `{workspace_root_hint}`.",
     ]
-    if project_root:
+    if project_root_hint:
         lines.extend(
             [
-                f"- For this project, use `{project_root}` as the default working directory.",
+                f"- For this project, use `{project_root_hint}` as the default working directory.",
                 "- Ask project owner first before touching paths outside the project root.",
             ]
         )
     lines.append("- If permission is needed, ask a clear question first and wait for confirmation.")
     return lines
+
+
+def _root_hint_for_agent(raw_path: Optional[str], *, fallback: str = "") -> str:
+    raw = str(raw_path or "").strip().replace("\\", "/")
+    if not raw:
+        return str(fallback or "").strip()
+    low = raw.lower().strip("/")
+    hivee_low = HIVEE_ROOT.lower()
+    if low == hivee_low:
+        return HIVEE_ROOT
+    hivee_segment = f"/{hivee_low}/"
+    segment_idx = low.find(hivee_segment.strip("/"))
+    if segment_idx >= 0:
+        slash_idx = raw.lower().find(hivee_segment)
+        if slash_idx >= 0:
+            return raw[slash_idx + 1 :].strip("/")
+    hivee_leaf = f"/{hivee_low}"
+    if raw.lower().endswith(hivee_leaf):
+        return HIVEE_ROOT
+    cleaned = _clean_relative_project_path(raw)
+    return cleaned or str(fallback or "").strip()
 
 def _build_fundamentals_session_prompt(
     *,

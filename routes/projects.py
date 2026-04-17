@@ -1601,6 +1601,7 @@ def register_routes(app: FastAPI) -> None:
             primary_agent_id = str(row["main_agent_id"] or "").strip() or None
     
         control_summary = f"Execution action `{action}` accepted."
+        event_kind = f"execution.{action}"
         if primary_agent_id:
             command_text = {
                 "pause": "Owner pressed PAUSE. Pause current execution and wait for resume instruction.",
@@ -1632,7 +1633,26 @@ def register_routes(app: FastAPI) -> None:
                 user_id=user_id,
             )
             if ctrl_res.get("ok"):
-                control_summary = str(ctrl_res.get("text") or control_summary)[:1000]
+                raw_ctrl_text = str(ctrl_res.get("text") or "").strip()
+                parsed_ctrl = _extract_agent_report_payload(raw_ctrl_text)
+                parsed_summary = str(parsed_ctrl.get("chat_update") or "").strip()
+                parsed_requires_input = bool(parsed_ctrl.get("requires_user_input"))
+                parsed_pause_reason = str(parsed_ctrl.get("pause_reason") or "").strip()
+                parsed_resume_hint = str(parsed_ctrl.get("resume_hint") or "").strip()
+                if action == "resume" and parsed_requires_input:
+                    event_kind = "execution.pause"
+                    new_status = EXEC_STATUS_PAUSED
+                    new_progress = _clamp_progress((state or {}).get("progress_pct") if state else current_progress)
+                    state = _set_project_execution_state(project_id, status=new_status, progress_pct=new_progress)
+                    reason_text = parsed_pause_reason or parsed_summary or "Primary agent still needs more input before continuing."
+                    control_summary = f"Resume requested, but primary agent is still blocked: {reason_text[:700]}"
+                    if parsed_resume_hint:
+                        control_summary += f" Next: {parsed_resume_hint[:220]}"
+                else:
+                    if parsed_summary:
+                        control_summary = parsed_summary[:1000]
+                    elif raw_ctrl_text and not (raw_ctrl_text.startswith("{") and raw_ctrl_text.endswith("}")):
+                        control_summary = raw_ctrl_text[:1000]
                 ptk, ctk, _ = _extract_usage_counts(ctrl_res)
                 if ptk <= 0:
                     ptk = _estimate_tokens_from_text(scoped_message)
@@ -1646,13 +1666,13 @@ def register_routes(app: FastAPI) -> None:
         _append_project_daily_log(
             owner_user_id=user_id,
             project_root=str(row["project_root"] or ""),
-            kind=f"execution.{action}",
+            kind=event_kind,
             text=control_summary,
             payload={"status": new_status, "progress_pct": new_progress},
         )
         await emit(
             project_id,
-            f"project.execution.{action}",
+            f"project.{event_kind}",
             {"status": new_status, "progress_pct": new_progress, "summary": control_summary},
         )
         final = state or {
@@ -1665,6 +1685,7 @@ def register_routes(app: FastAPI) -> None:
             status=_coerce_execution_status(final.get("status")),
             progress_pct=_clamp_progress(final.get("progress_pct")),
             updated_at=final.get("updated_at"),
+            summary=control_summary[:1000],
         )
     
     @app.post("/api/projects/{project_id}/agents")

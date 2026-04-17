@@ -185,6 +185,7 @@ class ProjectExecutionOut(BaseModel):
     status: str
     progress_pct: int
     updated_at: Optional[int] = None
+    summary: Optional[str] = None
 
 class ProjectExecutionControlIn(BaseModel):
     action: str = Field(..., description="pause | resume | stop")
