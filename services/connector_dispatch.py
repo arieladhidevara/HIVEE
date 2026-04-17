@@ -103,14 +103,18 @@ def latest_connector_result(command_id: str) -> Optional[Dict[str, Any]]:
 
 
 def get_user_online_connector(user_id: str) -> Optional[Dict[str, Any]]:
-    """Return the best online connector for a user, preferring ones with
+    """Return the best live connector for a user, preferring ones with
     internal/Docker OpenClaw URLs over public HTTPS URLs (which often can't chat)."""
     conn = db()
     rows = conn.execute(
         """
         SELECT * FROM connectors
-        WHERE user_id = ? AND status = 'online'
-        ORDER BY last_seen_at DESC
+        WHERE user_id = ? AND status IN ('online', 'active')
+        ORDER BY CASE
+            WHEN status = 'online' THEN 0
+            WHEN status = 'active' THEN 1
+            ELSE 2
+        END, last_seen_at DESC
         """,
         (user_id,),
     ).fetchall()

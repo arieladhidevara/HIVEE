@@ -1783,15 +1783,30 @@ async def _project_chat(
     except Exception:
         connector_id = ""
 
+    candidate_connection_id = ""
+    try:
+        candidate_connection_id = str(row["connection_id"] or "").strip()
+    except Exception:
+        candidate_connection_id = ""
+
     if not connector_id and backend_mode == "connector":
+        connector_id = candidate_connection_id
+
+    if not connector_id and candidate_connection_id:
+        conn = db()
         try:
-            connector_id = str(row["connection_id"] or "").strip()
-        except Exception:
-            connector_id = ""
+            connector_row = conn.execute(
+                "SELECT id FROM connectors WHERE id = ? LIMIT 1",
+                (candidate_connection_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if connector_row:
+            connector_id = candidate_connection_id
 
     # Direct OpenClaw projects still need a live Hivee Hub to deliver
-    # project-scoped prompts to the runtime agent. Do not treat connection_id
-    # from openclaw_connections as a connector id.
+    # project-scoped prompts to the runtime agent. Only trust connection_id
+    # when it currently resolves to a real connector row.
     if not connector_id and user_id:
         try:
             online_connector = get_user_online_connector(user_id)
