@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 
 from services.project_utils import *
@@ -86,6 +87,138 @@ def _applied_actions_include_kind(applied_actions: Any, expected_kind: str) -> b
         if current_kind == normalized_expected:
             return True
     return False
+
+
+def _read_project_delegation_state(project_id: str) -> Dict[str, Any]:
+    conn = db()
+    try:
+        task_rows = conn.execute(
+            """
+            SELECT id, title, assignee_agent_id, weight_pct
+            FROM project_tasks
+            WHERE project_id = ?
+            ORDER BY created_at ASC, updated_at ASC
+            """,
+            (project_id,),
+        ).fetchall()
+        mention_rows = conn.execute(
+            """
+            SELECT DISTINCT mention_target
+            FROM project_chat_mentions
+            WHERE project_id = ?
+            """,
+            (project_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    task_payload = []
+    task_assignees: Set[str] = set()
+    for row in task_rows:
+        task_id = str(row["id"] or "").strip()
+        assignee = str(row["assignee_agent_id"] or "").strip()
+        if assignee:
+            task_assignees.add(assignee)
+        if not task_id:
+            continue
+        task_payload.append(
+            {
+                "id": task_id,
+                "title": str(row["title"] or "").strip(),
+                "assignee_agent_id": assignee,
+                "weight_pct": max(0, min(100, int(row["weight_pct"] or 0))),
+            }
+        )
+
+    mention_targets = {
+        str(row["mention_target"] or "").strip()
+        for row in mention_rows
+        if str(row["mention_target"] or "").strip()
+    }
+    return {
+        "task_rows": task_payload,
+        "task_assignees": task_assignees,
+        "mention_targets": mention_targets,
+    }
+
+
+def _build_minimal_progress_map(
+    *,
+    task_rows: List[Dict[str, Any]],
+    parallel_groups: List[List[str]],
+    by_id: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    nodes: List[Dict[str, Any]] = []
+    node_ids_by_agent: Dict[str, List[str]] = {}
+
+    if task_rows:
+        for row in task_rows:
+            node_id = str(row.get("id") or "").strip()
+            if not node_id:
+                continue
+            agent_id = str(row.get("assignee_agent_id") or "").strip()
+            title = str(row.get("title") or "").strip() or f"Task for {agent_id or 'agent'}"
+            node = {
+                "id": node_id,
+                "label": title[:160],
+                "agent": agent_id,
+                "weight_pct": max(0, min(100, int(row.get("weight_pct") or 0))),
+                "depends_on": [],
+            }
+            nodes.append(node)
+            if agent_id:
+                node_ids_by_agent.setdefault(agent_id, []).append(node_id)
+    else:
+        agent_ids = list(by_id.keys())
+        total_agents = len(agent_ids)
+        base_weight = (100 // total_agents) if total_agents else 0
+        remainder = (100 - (base_weight * total_agents)) if total_agents else 0
+        for idx, aid in enumerate(agent_ids):
+            row_item = by_id.get(aid) or {}
+            label = (
+                str(row_item.get("role") or "").strip()
+                or str(row_item.get("agent_name") or "").strip()
+                or aid
+            )
+            node_id = f"delegation-{_safe_agent_filename(aid)}"
+            node = {
+                "id": node_id,
+                "label": label[:160],
+                "agent": aid,
+                "weight_pct": base_weight + (1 if idx < remainder else 0),
+                "depends_on": [],
+            }
+            nodes.append(node)
+            node_ids_by_agent.setdefault(aid, []).append(node_id)
+
+    node_map = {str(node.get("id") or ""): node for node in nodes if str(node.get("id") or "").strip()}
+    groups: List[List[str]] = []
+    prev_group_ids: List[str] = []
+
+    for grp in parallel_groups:
+        group_ids: List[str] = []
+        seen_group: Set[str] = set()
+        for aid in grp:
+            for node_id in node_ids_by_agent.get(str(aid).strip(), []):
+                if not node_id or node_id in seen_group:
+                    continue
+                seen_group.add(node_id)
+                group_ids.append(node_id)
+        if not group_ids:
+            continue
+        groups.append(group_ids)
+        if prev_group_ids:
+            for node_id in group_ids:
+                node = node_map.get(node_id)
+                if node is None:
+                    continue
+                node["depends_on"] = list(prev_group_ids)
+        prev_group_ids = list(group_ids)
+
+    if not groups and nodes:
+        groups = [[str(node.get("id") or "")] for node in nodes if str(node.get("id") or "").strip()]
+
+    return {"nodes": nodes, "groups": groups}
 def _upsert_connection_policy(
     connection_id: str,
     user_id: str,
@@ -2901,6 +3034,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
 
     # Apply all actions from agent response: creates tasks, posts chat @mentions, writes files
     actions_raw = parsed.get("actions") if isinstance(parsed.get("actions"), list) else []
+    action_result: Dict[str, Any] = {"applied": [], "skipped": []}
     if actions_raw:
         action_result = _apply_project_actions(
             owner_user_id=str(row["user_id"]),
@@ -2924,12 +3058,6 @@ async def _delegate_project_tasks(project_id: str) -> None:
             allow_paths=None,
         )
 
-    # Fallback: if agent didn't create task cards via actions, create them ourselves per agent
-    existing_tasks_count = 0
-    for act in actions_raw:
-        if _normalize_agent_action_kind(act.get("type")) == "create_task":
-            existing_tasks_count += 1
-
     # Legacy task_map from old payload format (backward compat)
     payload_legacy = _parse_delegation_payload(primary_reply)
     raw_tasks = payload_legacy.get("agent_tasks")
@@ -2947,6 +3075,9 @@ async def _delegate_project_tasks(project_id: str) -> None:
     parallel_groups = _parse_parallel_groups(parsed, by_id)
 
     agent_order = list(by_id.keys())
+    delegation_state = _read_project_delegation_state(project_id)
+    task_assignees = set(delegation_state.get("task_assignees") or set())
+    delegated_mentions = set(delegation_state.get("mention_targets") or set())
     assigned_task_map: Dict[str, str] = {}
     assigned_mentions_map: Dict[str, List[str]] = {}
     agents_dir = project_dir / "agents"
@@ -2967,11 +3098,11 @@ async def _delegate_project_tasks(project_id: str) -> None:
         fname = _safe_agent_filename(aid) + ".md"
         (agents_dir / fname).write_text(task_text.strip() + "\n", encoding="utf-8")
         assigned_count += 1
-        mention_targets = sorted({m for m in re.findall(r"@([a-zA-Z0-9._-]+)", task_text) if m and m != aid})[:8]
-        assigned_mentions_map[aid] = mention_targets
+        task_mentions = sorted({m for m in re.findall(r"@([a-zA-Z0-9._-]+)", task_text) if m and m != aid})[:8]
+        assigned_mentions_map[aid] = task_mentions
 
-        # Fallback: if agent didn't post a chat @mention for this agent, do it now
-        if existing_tasks_count == 0:
+        # Fallback: if this agent does not yet have a chat mention, post one now.
+        if aid not in delegated_mentions:
             fallback_chat_result = _apply_project_actions(
                 owner_user_id=str(row["user_id"]),
                 project_id=project_id,
@@ -2987,7 +3118,12 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 actor_label=f"agent:{primary_agent_id}",
             )
             await _emit_project_action_results(project_id, fallback_chat_result.get("applied") or [])
-            # Fallback task card creation
+
+            if _applied_actions_include_kind(fallback_chat_result.get("applied") or [], "post_chat_message"):
+                delegated_mentions.add(aid)
+
+        # Fallback: if this agent still has no task card, create one now.
+        if aid not in task_assignees:
             fallback_task_result = _apply_project_actions(
                 owner_user_id=str(row["user_id"]),
                 project_id=project_id,
@@ -3006,6 +3142,8 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 actor_label=f"agent:{primary_agent_id}",
             )
             await _emit_project_action_results(project_id, fallback_task_result.get("applied") or [])
+            if _applied_actions_include_kind(fallback_task_result.get("applied") or [], "create_task"):
+                task_assignees.add(aid)
 
         await emit(
             project_id,
@@ -3016,7 +3154,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 "role": role,
                 "task_file": f"agents/{fname}",
                 "task_preview": task_text[:500],
-                "mentions": mention_targets,
+                "mentions": task_mentions,
             },
         )
         _append_project_daily_log(
@@ -3024,7 +3162,36 @@ async def _delegate_project_tasks(project_id: str) -> None:
             project_root=str(row["project_root"] or ""),
             kind="agent.task.assigned",
             text=f"{aid}: {task_text[:800]}",
-            payload={"task_file": f"agents/{fname}", "mentions": mention_targets},
+            payload={"task_file": f"agents/{fname}", "mentions": task_mentions},
+        )
+
+    delegation_state = _read_project_delegation_state(project_id)
+    progress_map_candidate = ""
+    for f in output_files:
+        rel = _clean_relative_project_path(str(f.get("path") or ""))
+        if (rel or "").replace("\\", "/").split("/")[-1].lower() == "progress_map.json":
+            progress_map_candidate = str(f.get("content") or "").strip()
+            break
+
+    progress_map_payload: Optional[Dict[str, Any]] = None
+    if progress_map_candidate:
+        try:
+            parsed_progress_map = json.loads(progress_map_candidate)
+            if isinstance(parsed_progress_map, dict) and isinstance(parsed_progress_map.get("nodes"), list):
+                progress_map_payload = parsed_progress_map
+        except Exception:
+            progress_map_payload = None
+    if not isinstance(progress_map_payload, dict):
+        progress_map_payload = _build_minimal_progress_map(
+            task_rows=list(delegation_state.get("task_rows") or []),
+            parallel_groups=parallel_groups,
+            by_id=by_id,
+        )
+    if isinstance(progress_map_payload, dict):
+        progress_map_path = project_dir / "progress_map.json"
+        progress_map_path.write_text(
+            json.dumps(progress_map_payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
         )
 
     _write_project_agent_roles_file(
