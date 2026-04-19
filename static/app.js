@@ -3691,6 +3691,20 @@ function handleProjectEvent(kind, payload) {
   } else if (kind === "project.execution.resume" || kind === "project.execution.resumed_after_pause") {
     setMessage("chat_hint", "Execution resumed.", "ok");
   }
+  if (
+    selectedProjectId &&
+    [
+      "project.plan.generating",
+      "project.plan.ready",
+      "project.plan.failed",
+      "project.plan.approved",
+      "project.plan.awaiting_approval",
+      "project.plan.generation_ignored",
+    ].includes(String(kind))
+  ) {
+    loadProjectPlan(selectedProjectId).catch(() => {});
+    loadProjectReadiness(selectedProjectId).catch(() => {});
+  }
   if (selectedProjectId && /^(project\.|run\.|agent\.)/.test(String(kind))) {
     scheduleProjectDataRefresh();
     scheduleProjectActivityRefresh();

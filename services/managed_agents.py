@@ -2572,13 +2572,24 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
     except Exception:
         pass
 
-    _refresh_project_documents(project_id)
     _append_project_daily_log(
         owner_user_id=str(row["user_id"]),
         project_root=str(row["project_root"] or ""),
         kind="plan.ready",
         text=(plan_text or "")[:1600],
     )
+    try:
+        _refresh_project_documents(project_id)
+    except Exception as exc:
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="plan.refresh.warning",
+            text=(
+                "Project plan was saved, but document refresh failed: "
+                f"{detail_to_text(exc)[:800]}"
+            ),
+        )
     await emit(project_id, "project.plan.ready", {"status": PLAN_STATUS_AWAITING_APPROVAL, "preview": plan_text[:1000]})
 
 async def _run_agent_subplan_phase(
