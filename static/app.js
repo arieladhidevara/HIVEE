@@ -50,6 +50,8 @@ let inboxAcceptContext = null; // { invite, selectedAgents: Map<agentId, { agent
 let wizardAgentPermissions = [];
 let wizardProjectAgents = [];
 let wizardLatestExternalInvite = null;
+let wizardDraftProjectId = null;
+let wizardFinalizePending = false;
 let runtimePollHandle = null;
 let projectFilesCurrentPath = "";
 let projectFilePreviewPath = "";
@@ -9047,6 +9049,8 @@ function openWizard(newProject = true) {
   $("project_wizard").classList.remove("hidden");
   setMessage("wizard_msg", "");
   if (newProject) {
+    wizardDraftProjectId = null;
+    wizardFinalizePending = false;
     $("wizard_title").textContent = "New Project";
     $("wizard_step_mode").classList.remove("hidden");
     $("wizard_step_chat").classList.remove("hidden");
@@ -9070,6 +9074,11 @@ function openWizard(newProject = true) {
     if (log) log.innerHTML = "";
     const chatInput = $("wizard_chat_input");
     if (chatInput) chatInput.value = "";
+    if ($("btn_wizard_next")) $("btn_wizard_next").textContent = "Create & Invite Agents";
+    if ($("btn_wizard_create_now")) {
+      $("btn_wizard_create_now").textContent = "Create Project";
+      $("btn_wizard_create_now").disabled = false;
+    }
     $("btn_mode_chat")?.classList.add("active");
     $("btn_mode_manual")?.classList.remove("active");
     setWizardMode("chat");
@@ -9093,6 +9102,8 @@ function openWizard(newProject = true) {
 function closeWizard() {
   $("project_wizard").classList.add("hidden");
   wizardChatPending = false;
+  wizardFinalizePending = false;
+  wizardDraftProjectId = null;
 }
 
 function appendWizardChatMessage(role, text, meta = "") {
@@ -9149,6 +9160,8 @@ function showWizardAgentsStep() {
   $("wizard_external_access")?.classList.remove("hidden");
   $("btn_wizard_next")?.classList.add("hidden");
   $("btn_wizard_create_now")?.classList.remove("hidden");
+  $("btn_wizard_create_now")?.removeAttribute("disabled");
+  if ($("btn_wizard_create_now")) $("btn_wizard_create_now").textContent = "Create Project";
   $("wizard_title").textContent = "Invite Agents";
   (async () => {
     await loadSummaryAgents().catch(() => {});
@@ -9916,6 +9929,7 @@ async function createProjectRecord({ title, brief, goal, setupDetails, setupChat
     connection_id: activeConnectionId,
   });
 
+  wizardDraftProjectId = created.id;
   selectedProjectId = created.id;
   $("wizard_step_chat")?.classList.add("hidden");
   $("wizard_step_project")?.classList.add("hidden");
@@ -9923,15 +9937,55 @@ async function createProjectRecord({ title, brief, goal, setupDetails, setupChat
   $("wizard_step_mode")?.classList.add("hidden");
   $("wizard_external_access")?.classList.remove("hidden");
   $("btn_wizard_next")?.classList.add("hidden");
-  $("btn_wizard_create_now")?.classList.add("hidden");
+  $("btn_wizard_create_now")?.classList.remove("hidden");
+  $("btn_wizard_create_now")?.removeAttribute("disabled");
+  if ($("btn_wizard_create_now")) $("btn_wizard_create_now").textContent = "Create Project";
   $("wizard_title").textContent = "Invite Agents";
-  setMessage("wizard_msg", "Project created. Invite agents and set roles.", "ok");
+  setMessage("wizard_msg", "Project draft created. Invite agents, then click Create Project to start the plan.", "ok");
 
   await fetchInitial({ preferredProjectId: created.id });
   await selectProject(created.id);
   await loadSummaryAgents().catch(() => {});
   await refreshWizardExternalAccess({ silent: true }).catch(() => {});
   await loadAgentsForWizard().catch(() => {});
+}
+
+async function finalizeWizardProject() {
+  const projectId = String(wizardDraftProjectId || selectedProjectId || "").trim();
+  if (!projectId) throw new Error("Project draft not found yet.");
+  if (wizardFinalizePending) return;
+
+  const selected = getSelectedAgents();
+  if (!selected.ids.length) {
+    throw new Error("Invite at least one owner agent before creating the project.");
+  }
+
+  const button = $("btn_wizard_create_now");
+  const originalLabel = button?.textContent || "Create Project";
+  wizardFinalizePending = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Creating...";
+  }
+
+  try {
+    await api(`/api/projects/${projectId}/agents`, "POST", {
+      agent_ids: selected.ids,
+      agent_names: selected.names,
+      agent_roles: selected.roles,
+      primary_agent_id: selected.primary,
+    });
+    selectedProjectId = projectId;
+    await regenerateProjectPlan();
+    setMessage("chat_hint", "Main agent is generating the project plan now.", "ok");
+    closeWizard();
+  } finally {
+    wizardFinalizePending = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  }
 }
 
 async function createProjectFromManual() {
@@ -10647,7 +10701,7 @@ function bindActions() {
     }
   });
   $("btn_wizard_next")?.addEventListener("click", () => createProjectNow().catch((e) => showUiError("wizard_msg", e)));
-  $("btn_wizard_create_now").onclick = () => createProjectNow().catch((e) => showUiError("wizard_msg", e));
+  $("btn_wizard_create_now").onclick = () => finalizeWizardProject().catch((e) => showUiError("wizard_msg", e));
   $("btn_manage_agents").onclick = () => {
     if (!selectedProjectId) return;
     openWizard(false);

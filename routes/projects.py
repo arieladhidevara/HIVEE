@@ -746,7 +746,6 @@ def register_routes(app: FastAPI) -> None:
 
         pid = new_id("prj")
         now = int(time.time())
-        plan_requested_at = now
         setup_details = _normalize_setup_details(payload.setup_details or {})
         setup_chat_history_text = str(payload.setup_chat_history or "").replace("\r", "").strip()[:120_000]
         workspace = _ensure_user_workspace(user_id)
@@ -787,8 +786,8 @@ def register_routes(app: FastAPI) -> None:
                 payload.goal,
                 json.dumps(setup_details, ensure_ascii=False),
                 "",
-                PLAN_STATUS_GENERATING,
-                plan_requested_at,
+                PLAN_STATUS_PENDING,
+                now,
                 None,
                 EXEC_STATUS_IDLE,
                 0,
@@ -845,7 +844,7 @@ def register_routes(app: FastAPI) -> None:
             project_id=pid,
             title=payload.title,
             phase="setup",
-            plan_status=PLAN_STATUS_GENERATING,
+            plan_status=PLAN_STATUS_PENDING,
             execution_status=EXEC_STATUS_IDLE,
             hivee_api_base=hivee_api_base,
             role_rows=[{"agent_id": main_agent_id, "agent_name": main_agent_name, "role": "Primary owner agent", "is_primary": True}],
@@ -857,7 +856,7 @@ def register_routes(app: FastAPI) -> None:
         _write_project_state_file(
             project_dir,
             phase="setup",
-            plan_status=PLAN_STATUS_GENERATING,
+            plan_status=PLAN_STATUS_PENDING,
             execution_status=EXEC_STATUS_IDLE,
             progress_pct=0,
             agents=[{"agent_id": main_agent_id, "agent_name": main_agent_name}],
@@ -872,8 +871,6 @@ def register_routes(app: FastAPI) -> None:
         await emit(pid, "project.created", {"title": payload.title})
         await emit(pid, "project.agents_set", {"count": 1, "primary_agent_id": main_agent_id, "auto_seeded": True})
         await emit(pid, "project.scope_initialized", {"project_root": project_root})
-        asyncio.create_task(_generate_project_plan(pid, force=True))
-        await emit(pid, "project.plan.regenerate_requested", {"project_id": pid, "source": "project_created"})
         _append_project_daily_log(
             owner_user_id=user_id,
             project_root=project_root,
@@ -891,9 +888,9 @@ def register_routes(app: FastAPI) -> None:
             workspace_root=workspace_root,
             project_root=project_root,
             setup_details=setup_details,
-            plan_status=PLAN_STATUS_GENERATING,
+            plan_status=PLAN_STATUS_PENDING,
             plan_text="",
-            plan_updated_at=plan_requested_at,
+            plan_updated_at=now,
             plan_approved_at=None,
             execution_status=EXEC_STATUS_IDLE,
             progress_pct=0,
@@ -1899,9 +1896,9 @@ def register_routes(app: FastAPI) -> None:
                 "primary_agent_id": primary_id,
             })
         else:
-            # No approved plan yet — always regenerate when the owner roster changes.
-            # Bump plan_updated_at so any in-flight generation result is treated as stale.
-            regeneration_requested_at = int(time.time())
+            # No approved plan yet — roster changes invalidate any draft/generating plan
+            # until the owner explicitly starts plan generation again.
+            reset_requested_at = int(time.time())
             _conn = db()
             _conn.execute(
                 """
@@ -1910,18 +1907,16 @@ def register_routes(app: FastAPI) -> None:
                 WHERE id = ?
                 """,
                 (
-                    PLAN_STATUS_GENERATING,
+                    PLAN_STATUS_PENDING,
                     "",
-                    regeneration_requested_at,
+                    reset_requested_at,
                     EXEC_STATUS_IDLE,
-                    regeneration_requested_at,
+                    reset_requested_at,
                     project_id,
                 ),
             )
             _conn.commit()
             _conn.close()
-            asyncio.create_task(_generate_project_plan(project_id, force=True))
-            await emit(project_id, "project.plan.regenerate_requested", {"project_id": project_id, "source": "agents_set"})
 
         return {"ok": True, "primary_agent_id": primary_id, "agent_access_tokens": issued_tokens}
 
