@@ -3181,10 +3181,11 @@ function renderProjects(projects) {
       for (const p of projectsCache) {
         const needsApproval = projectNeedsApproval(p);
         const status = String(p.execution_status || "idle").toLowerCase();
+        const displayStatus = projectDisplayStatus(p.plan_status, status);
         const pct = clampProgress(p.progress_pct || 0);
         const brief = shortText(String(p.brief || p.goal || ""), 90);
         const tokens = Math.max(0, Number(p.usage_total_tokens || 0));
-        const statusLabel = executionStatusLabel(status);
+        const statusLabel = displayStatus.label;
         const tokenStr = tokens > 999999 ? `${(tokens / 1000000).toFixed(1)}M tok` : tokens > 999 ? `${(tokens / 1000).toFixed(1)}k tok` : tokens > 0 ? `${tokens} tok` : "";
 
         const card = document.createElement("button");
@@ -3194,7 +3195,7 @@ function renderProjects(projects) {
         const pcHeader = document.createElement("div");
         pcHeader.className = "pc-header";
         const statusPill = document.createElement("span");
-        statusPill.className = `pc-status-pill ${status}`;
+        statusPill.className = `pc-status-pill ${displayStatus.key}`;
         statusPill.innerHTML = `<span class="pc-status-dot"></span>${statusLabel}`;
         if (needsApproval) {
           const badge = document.createElement("span");
@@ -3218,7 +3219,7 @@ function renderProjects(projects) {
         const progressTrack = document.createElement("div");
         progressTrack.className = "pc-progress-track";
         const progressFill = document.createElement("div");
-        progressFill.className = `pc-progress-fill ${status}`;
+        progressFill.className = `pc-progress-fill ${displayStatus.key}`;
         progressFill.style.width = `${pct}%`;
         progressTrack.appendChild(progressFill);
 
@@ -4220,6 +4221,25 @@ function executionStatusLabel(status) {
   return "Idle";
 }
 
+function projectDisplayStatus(planStatus, executionStatus) {
+  const plan = String(planStatus || "").toLowerCase();
+  const exec = String(executionStatus || "").toLowerCase();
+  if (exec === "running") return { key: "running", label: "Running" };
+  if (exec === "paused") return { key: "paused", label: "Paused" };
+  if (exec === "stopped") return { key: "stopped", label: "Stopped" };
+  if (exec === "completed") return { key: "completed", label: "Completed" };
+  if (plan === "failed") return { key: "failed", label: "Plan Failed" };
+  if (plan === "awaiting_approval") return { key: "planning", label: "Waiting Approval" };
+  if (plan === "generating" || plan === "pending") return { key: "planning", label: "Planning" };
+  if (plan === "approved" && exec === "idle") return { key: "idle", label: "Ready" };
+  return { key: "idle", label: "Idle" };
+}
+
+function projectLooksActive(planStatus, executionStatus) {
+  const display = projectDisplayStatus(planStatus, executionStatus);
+  return display.key === "running" || display.key === "planning";
+}
+
 function esc(str) {
   return String(str ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -4529,7 +4549,7 @@ function renderLiveStatus() {
   if (!dot || !text) return;
 
   if (!selectedProjectData) {
-    dot.classList.remove("approved", "completed");
+    dot.classList.remove("approved", "completed", "planning");
     dot.classList.add("idle");
     text.textContent = "Idle";
     text.classList.remove("connected", "disconnected");
@@ -4537,10 +4557,10 @@ function renderLiveStatus() {
     return;
   }
 
+  const displayStatus = projectDisplayStatus(selectedProjectData.plan_status, selectedProjectData.execution_status);
   const planApproved = String(selectedProjectData.plan_status || "").toLowerCase() === "approved";
-  const exec = String(selectedProjectData.execution_status || "").toLowerCase();
-  const done = exec === "completed" || exec === "stopped";
-  dot.classList.remove("approved", "completed", "idle");
+  const done = displayStatus.key === "completed" || displayStatus.key === "stopped";
+  dot.classList.remove("approved", "completed", "idle", "planning");
   text.classList.remove("neutral", "connected", "disconnected");
   if (done) {
     dot.classList.add("completed");
@@ -4548,9 +4568,27 @@ function renderLiveStatus() {
     text.classList.add("disconnected");
     return;
   }
-  if (planApproved) {
+  if (displayStatus.key === "failed") {
+    dot.classList.add("completed");
+    text.textContent = "Plan Failed";
+    text.classList.add("disconnected");
+    return;
+  }
+  if (displayStatus.key === "planning") {
+    dot.classList.add("planning");
+    text.textContent = displayStatus.label;
+    text.classList.add("neutral");
+    return;
+  }
+  if (displayStatus.key === "running") {
     dot.classList.add("approved");
     text.textContent = "Active";
+    text.classList.add("connected");
+    return;
+  }
+  if (planApproved) {
+    dot.classList.add("approved");
+    text.textContent = "Ready";
     text.classList.add("connected");
     return;
   }
@@ -4769,14 +4807,25 @@ function renderProjectExecutionInfo() {
 
   const status = String(selectedProjectData.execution_status || "idle").toLowerCase();
   const planStatus = String(selectedProjectData.plan_status || "pending").toLowerCase();
+  const displayStatus = projectDisplayStatus(planStatus, status);
   const pct = clampProgress(selectedProjectData.progress_pct || 0);
   progressLabel.textContent = `${pct}%`;
-  statusEl.textContent = `Status: ${executionStatusLabel(status)}`;
+  statusEl.textContent = `Status: ${displayStatus.label}`;
   if (progressFill) progressFill.style.width = `${pct}%`;
   const progressBar = $("detail_progress_bar");
   if (progressBar) {
     progressBar.style.width = `${pct}%`;
-    const barColor = status === "running" ? "var(--cyan)" : status === "paused" ? "var(--orange)" : status === "completed" ? "var(--cyan)" : status === "stopped" ? "var(--red)" : "var(--muted)";
+    const barColor = displayStatus.key === "running"
+      ? "var(--cyan)"
+      : displayStatus.key === "planning"
+        ? "var(--yellow)"
+        : displayStatus.key === "paused"
+          ? "var(--orange)"
+          : displayStatus.key === "completed"
+            ? "var(--cyan)"
+            : displayStatus.key === "stopped" || displayStatus.key === "failed"
+              ? "var(--red)"
+              : "var(--muted)";
     progressBar.style.background = barColor;
   }
 
@@ -7111,8 +7160,7 @@ function renderTeamTree() {
 
     // Live activity for this agent
     const liveProject = projectsCache.find((p) => {
-      const pExec = String(p.execution_status || "").toLowerCase();
-      const isActive = pExec === "running" || pExec === "planning";
+      const isActive = projectLooksActive(p.plan_status, p.execution_status);
       const isAssigned = p.primary_agent_id === agent.id || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agent.id));
       return isActive && isAssigned;
     });
@@ -8024,8 +8072,7 @@ function renderSummaryAgents() {
 
     // Live activity line
     const liveProject = projectsCache.find((p) => {
-      const exec = String(p.execution_status || "").toLowerCase();
-      const isActive = exec === "running" || exec === "planning";
+      const isActive = projectLooksActive(p.plan_status, p.execution_status);
       const isAssigned = p.primary_agent_id === agent.agent_id || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agent.agent_id));
       return isActive && isAssigned;
     });
@@ -8145,8 +8192,7 @@ function renderHubAgents() {
 
     // Live activity
     const liveProject = projectsCache.find((p) => {
-      const exec = String(p.execution_status || "").toLowerCase();
-      const isActive = exec === "running" || exec === "planning";
+      const isActive = projectLooksActive(p.plan_status, p.execution_status);
       return isActive && (p.primary_agent_id === agent.agent_id || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agent.agent_id)));
     });
     const liveLine = document.createElement("div");
@@ -8300,7 +8346,7 @@ function openAgentDetailView(agent) {
     projEl.innerHTML = agentProjects.length
       ? agentProjects.map((p) => `
           <div class="agd-project-row">
-            <span class="pc-status-pill ${String(p.execution_status||"idle").toLowerCase()}">${executionStatusLabel(String(p.execution_status||"idle"))}</span>
+            <span class="pc-status-pill ${projectDisplayStatus(p.plan_status, p.execution_status).key}">${projectDisplayStatus(p.plan_status, p.execution_status).label}</span>
             <span>${esc(p.title)}</span>
           </div>`).join("")
       : '<span class="helper">Not assigned to any project yet.</span>';
@@ -8310,8 +8356,7 @@ function openAgentDetailView(agent) {
   const actEl = $("agd_activity");
   if (actEl) {
     const liveProject = projectsCache.find((p) => {
-      const exec = String(p.execution_status||"").toLowerCase();
-      return (exec === "running" || exec === "planning") &&
+      return projectLooksActive(p.plan_status, p.execution_status) &&
         (p.primary_agent_id === agentId || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agentId)));
     });
     actEl.innerHTML = liveProject
@@ -8367,8 +8412,7 @@ function openAgentDetailModal(agent) {
   const activitySection = $("modal_agent_activity");
   if (activitySection) {
     const liveProject = projectsCache.find((p) => {
-      const pExec = String(p.execution_status || "").toLowerCase();
-      const isActive = pExec === "running" || pExec === "planning";
+      const isActive = projectLooksActive(p.plan_status, p.execution_status);
       return isActive && (p.primary_agent_id === agent.agent_id || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agent.agent_id)));
     });
     activitySection.innerHTML = liveProject
@@ -8395,7 +8439,7 @@ function openAgentDetailModal(agent) {
     projEl.innerHTML = agentProjects.length
       ? agentProjects.map((p) => `
           <div class="agent-modal-project-row">
-            <span class="pc-status-pill ${String(p.execution_status || "idle").toLowerCase()}">${executionStatusLabel(String(p.execution_status || "idle"))}</span>
+            <span class="pc-status-pill ${projectDisplayStatus(p.plan_status, p.execution_status).key}">${projectDisplayStatus(p.plan_status, p.execution_status).label}</span>
             <span>${esc(p.title)}</span>
           </div>
         `).join("")

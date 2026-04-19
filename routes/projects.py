@@ -746,6 +746,7 @@ def register_routes(app: FastAPI) -> None:
 
         pid = new_id("prj")
         now = int(time.time())
+        plan_requested_at = now
         setup_details = _normalize_setup_details(payload.setup_details or {})
         setup_chat_history_text = str(payload.setup_chat_history or "").replace("\r", "").strip()[:120_000]
         workspace = _ensure_user_workspace(user_id)
@@ -786,8 +787,8 @@ def register_routes(app: FastAPI) -> None:
                 payload.goal,
                 json.dumps(setup_details, ensure_ascii=False),
                 "",
-                PLAN_STATUS_PENDING,
-                int(time.time()),
+                PLAN_STATUS_GENERATING,
+                plan_requested_at,
                 None,
                 EXEC_STATUS_IDLE,
                 0,
@@ -844,7 +845,7 @@ def register_routes(app: FastAPI) -> None:
             project_id=pid,
             title=payload.title,
             phase="setup",
-            plan_status=PLAN_STATUS_PENDING,
+            plan_status=PLAN_STATUS_GENERATING,
             execution_status=EXEC_STATUS_IDLE,
             hivee_api_base=hivee_api_base,
             role_rows=[{"agent_id": main_agent_id, "agent_name": main_agent_name, "role": "Primary owner agent", "is_primary": True}],
@@ -856,7 +857,7 @@ def register_routes(app: FastAPI) -> None:
         _write_project_state_file(
             project_dir,
             phase="setup",
-            plan_status=PLAN_STATUS_PENDING,
+            plan_status=PLAN_STATUS_GENERATING,
             execution_status=EXEC_STATUS_IDLE,
             progress_pct=0,
             agents=[{"agent_id": main_agent_id, "agent_name": main_agent_name}],
@@ -871,6 +872,8 @@ def register_routes(app: FastAPI) -> None:
         await emit(pid, "project.created", {"title": payload.title})
         await emit(pid, "project.agents_set", {"count": 1, "primary_agent_id": main_agent_id, "auto_seeded": True})
         await emit(pid, "project.scope_initialized", {"project_root": project_root})
+        asyncio.create_task(_generate_project_plan(pid, force=True))
+        await emit(pid, "project.plan.regenerate_requested", {"project_id": pid, "source": "project_created"})
         _append_project_daily_log(
             owner_user_id=user_id,
             project_root=project_root,
@@ -888,9 +891,9 @@ def register_routes(app: FastAPI) -> None:
             workspace_root=workspace_root,
             project_root=project_root,
             setup_details=setup_details,
-            plan_status=PLAN_STATUS_PENDING,
+            plan_status=PLAN_STATUS_GENERATING,
             plan_text="",
-            plan_updated_at=int(time.time()),
+            plan_updated_at=plan_requested_at,
             plan_approved_at=None,
             execution_status=EXEC_STATUS_IDLE,
             progress_pct=0,
@@ -1895,13 +1898,25 @@ def register_routes(app: FastAPI) -> None:
                 "added": added_agent_ids,
                 "primary_agent_id": primary_id,
             })
-        elif current_plan_status != PLAN_STATUS_GENERATING:
-            # No approved plan yet — generate plan now that agents are set
-            # Reset execution_status to IDLE so a stale RUNNING state doesn't block approval
+        else:
+            # No approved plan yet — always regenerate when the owner roster changes.
+            # Bump plan_updated_at so any in-flight generation result is treated as stale.
+            regeneration_requested_at = int(time.time())
             _conn = db()
             _conn.execute(
-                "UPDATE projects SET plan_status = ?, execution_status = ?, execution_updated_at = ? WHERE id = ?",
-                (PLAN_STATUS_GENERATING, EXEC_STATUS_IDLE, int(time.time()), project_id),
+                """
+                UPDATE projects
+                SET plan_status = ?, plan_text = ?, plan_updated_at = ?, execution_status = ?, execution_updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    PLAN_STATUS_GENERATING,
+                    "",
+                    regeneration_requested_at,
+                    EXEC_STATUS_IDLE,
+                    regeneration_requested_at,
+                    project_id,
+                ),
             )
             _conn.commit()
             _conn.close()

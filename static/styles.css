@@ -1047,6 +1047,7 @@ label {
 /* ===== LIVE STATUS DOT ===== */
 .live-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .live-status-dot.approved { background: var(--cyan);  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.2); }
+.live-status-dot.planning { background: var(--yellow); box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.18); }
 .live-status-dot.completed{ background: var(--red);   box-shadow: 0 0 0 3px rgba(255, 77,  77,  0.2); }
 
 /* ===== CENTER STAGE ===== */
