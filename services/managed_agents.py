@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 
 from services.project_utils import *
 
@@ -1904,6 +1905,14 @@ async def _project_chat(
     """Route a project chat through the correct connector for this project/user."""
     from services.connector_dispatch import connector_chat_sync, get_user_online_connector
 
+    def _sanitize_hivee_dispatch_text(raw_text: Any) -> str:
+        text = str(raw_text or "").replace("\r", "")
+        if not text:
+            return ""
+        text = re.sub(r"(?im)^(hivee_project_token:\s*).*$", r"\1[REDACTED]", text)
+        text = re.sub(r"(?im)^(\s*X-Project-Agent-Token:\s*).*$", r"\1[REDACTED]", text)
+        return text
+
     backend_mode = ""
     try:
         backend_mode = str(row["backend_mode"] or "").strip().lower()
@@ -1965,7 +1974,47 @@ async def _project_chat(
             project_agent_token = _issue_agent_session_token(project_id, str(agent_id or "").strip())
         except Exception:
             project_agent_token = ""
-    return await connector_chat_sync(
+
+    owner_user_id = ""
+    project_root = ""
+    try:
+        owner_user_id = str(row["user_id"] or "").strip()
+    except Exception:
+        owner_user_id = ""
+    try:
+        project_root = str(row["project_root"] or "").strip()
+    except Exception:
+        project_root = ""
+
+    should_log_hivee_dispatch = (
+        bool(project_id)
+        and bool(owner_user_id)
+        and bool(project_root)
+        and str(from_agent_id or "").strip().lower() == "hivee"
+        and str(context_type or "").strip().lower() != "message"
+    )
+    if should_log_hivee_dispatch:
+        _append_project_daily_log(
+            owner_user_id=owner_user_id,
+            project_root=project_root,
+            kind="chat.hivee",
+            text=(
+                f"DISPATCH[{str(context_type or 'message').strip() or 'message'}]\n"
+                f"SESSION: {session_key}\n"
+                f"TARGET_AGENT: {str(agent_id or 'auto').strip() or 'auto'}\n"
+                f"FROM: {str(from_label or 'Hivee System').strip() or 'Hivee System'}\n"
+                f"PROMPT:\n{_sanitize_hivee_dispatch_text(message)}"
+            ).strip(),
+            payload={
+                "direction": "request",
+                "session_key": str(session_key or "").strip(),
+                "context_type": str(context_type or "").strip() or "message",
+                "agent_id": str(agent_id or "").strip() or None,
+                "from_label": str(from_label or "Hivee System").strip() or "Hivee System",
+            },
+        )
+
+    res = await connector_chat_sync(
         connector_id=connector_id,
         message=message,
         agent_id=agent_id,
@@ -1979,6 +2028,34 @@ async def _project_chat(
         project_agent_id=str(agent_id or "").strip(),
         project_agent_token=project_agent_token,
     )
+    if should_log_hivee_dispatch:
+        result_text = str(
+            res.get("text")
+            or res.get("error")
+            or res.get("details")
+            or ""
+        ).replace("\r", "").strip()
+        _append_project_daily_log(
+            owner_user_id=owner_user_id,
+            project_root=project_root,
+            kind="chat.hivee",
+            text=(
+                f"RESULT[{str(context_type or 'message').strip() or 'message'}]\n"
+                f"SESSION: {session_key}\n"
+                f"TARGET_AGENT: {str(agent_id or 'auto').strip() or 'auto'}\n"
+                f"OK: {'yes' if res.get('ok') else 'no'}\n"
+                f"AGENT({str(agent_id or 'auto').strip() or 'auto'}): {result_text or '(empty response)'}"
+            ).strip(),
+            payload={
+                "direction": "response",
+                "session_key": str(session_key or "").strip(),
+                "context_type": str(context_type or "").strip() or "message",
+                "agent_id": str(agent_id or "").strip() or None,
+                "ok": bool(res.get("ok")),
+                "error": str(res.get("error") or "")[:500] or None,
+            },
+        )
+    return res
 async def _ensure_project_info_document(project_id: str, *, force: bool = False) -> Dict[str, Any]:
     conn = db()
     row = conn.execute(
