@@ -2468,129 +2468,172 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         await emit(project_id, "project.plan.failed", {"error": error_text[:1200]})
         return
 
-    raw_plan_text = str(res.get("text") or "").strip()
-    if not raw_plan_text:
-        raw_plan_text = detail_to_text(res.get("frames") or "Plan generated with empty text")
+    try:
+        raw_plan_text = str(res.get("text") or "").strip()
+        if not raw_plan_text:
+            raw_plan_text = detail_to_text(res.get("frames") or "Plan generated with empty text")
 
-    # Parse the agent's JSON response and extract actual plan content from output_files
-    parsed_plan = _extract_agent_report_payload(raw_plan_text)
-    plan_text = ""
-    plan_writes = parsed_plan.get("output_files") if isinstance(parsed_plan.get("output_files"), list) else []
-    for f in plan_writes:
-        rel = str(f.get("path") or "").strip().lower().lstrip("/")
-        if rel in {"plan.md", "outputs/plan.md"}:
-            plan_text = str(f.get("content") or "").strip()
-            break
-    # Fallback: if no output_files[plan.md], try chat_update, then raw text.
-    # Only treat as a valid plan if it came from structured output_files OR the agent
-    # explicitly signalled approval-readiness AND the text looks substantive.
-    plan_from_structured_output = bool(plan_text)
-    if not plan_text:
-        plan_text = str(parsed_plan.get("chat_update") or raw_plan_text).strip()
+        # Parse the agent's JSON response and extract actual plan content from output_files
+        parsed_plan = _extract_agent_report_payload(raw_plan_text)
+        plan_text = ""
+        plan_writes = parsed_plan.get("output_files") if isinstance(parsed_plan.get("output_files"), list) else []
+        for f in plan_writes:
+            if not isinstance(f, dict):
+                continue
+            rel = str(f.get("path") or "").strip().lower().lstrip("/")
+            if rel in {"plan.md", "outputs/plan.md"}:
+                plan_text = str(f.get("content") or "").strip()
+                break
+        # Fallback: if no output_files[plan.md], try chat_update, then raw text.
+        # Only treat as a valid plan if it came from structured output_files OR the agent
+        # explicitly signalled approval-readiness AND the text looks substantive.
+        plan_from_structured_output = bool(plan_text)
+        if not plan_text:
+            plan_text = str(parsed_plan.get("chat_update") or raw_plan_text).strip()
 
-    # Validate before setting AWAITING_APPROVAL — reject error responses that
-    # slipped through (e.g. LLM quota errors returned as ok:True from the hub).
-    agent_explicitly_approved = bool(
-        parsed_plan.get("requires_user_input")
-        or parsed_plan.get("needs_approval")
-        or parsed_plan.get("needs_user_approval")
-    )
-    text_looks_like_plan = (
-        len(plan_text) >= 300
-        and ("#" in plan_text or "##" in plan_text or "-" in plan_text)
-    )
-    plan_is_valid = plan_from_structured_output or agent_explicitly_approved or text_looks_like_plan
+        # Validate before setting AWAITING_APPROVAL — reject error responses that
+        # slipped through (e.g. LLM quota errors returned as ok:True from the hub).
+        agent_explicitly_approved = bool(
+            parsed_plan.get("requires_user_input")
+            or parsed_plan.get("needs_approval")
+            or parsed_plan.get("needs_user_approval")
+        )
+        text_looks_like_plan = (
+            len(plan_text) >= 300
+            and ("#" in plan_text or "##" in plan_text or "-" in plan_text)
+        )
+        plan_is_valid = plan_from_structured_output or agent_explicitly_approved or text_looks_like_plan
 
-    if not plan_is_valid:
-        # Response did not contain a recognisable plan — treat as failure so
-        # the UI does not show a spurious "needs approval" indicator.
+        if not plan_is_valid:
+            # Response did not contain a recognisable plan — treat as failure so
+            # the UI does not show a spurious "needs approval" indicator.
+            conn.execute(
+                "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
+                (PLAN_STATUS_FAILED, plan_text[:5000], now, project_id),
+            )
+            conn.commit()
+            conn.close()
+            _refresh_project_documents(project_id)
+            await emit(project_id, "project.plan.failed", {"error": plan_text[:600]})
+            return
+
         conn.execute(
             "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
-            (PLAN_STATUS_FAILED, plan_text[:5000], now, project_id),
+            (PLAN_STATUS_AWAITING_APPROVAL, plan_text[:20000], now, project_id),
         )
         conn.commit()
         conn.close()
-        _refresh_project_documents(project_id)
-        await emit(project_id, "project.plan.failed", {"error": plan_text[:600]})
-        return
-
-    conn.execute(
-        "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
-        (PLAN_STATUS_AWAITING_APPROVAL, plan_text[:20000], now, project_id),
-    )
-    conn.commit()
-    conn.close()
-
-    # Save plan.md to project folder
-    try:
-        project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
-        plan_md_content = f"# Project Plan\n> Generated by primary agent. Awaiting user approval.\n\n{plan_text}"
-        plan_actions = parsed_plan.get("actions") if isinstance(parsed_plan.get("actions"), list) else []
-        # Apply all file writes from agent (including plan.md itself)
-        if plan_writes:
-            _apply_project_file_writes(
-                owner_user_id=str(row["user_id"]),
-                project_root=str(row["project_root"] or ""),
-                writes=plan_writes,
-                default_prefix="",
-                allow_paths=None,
-            )
-        else:
-            (project_dir / "plan.md").write_text(plan_md_content, encoding="utf-8")
-        # Always keep legacy path in sync
-        (project_dir / PROJECT_PLAN_FILE).write_text(plan_md_content, encoding="utf-8")
-        applied_plan_actions: Dict[str, Any] = {"applied": [], "skipped": []}
-        if plan_actions:
-            applied_plan_actions = _apply_project_actions(
-                owner_user_id=str(row["user_id"]),
-                project_id=project_id,
-                project_root=str(row["project_root"] or ""),
-                actions=plan_actions,
-                allow_paths=None,
-                actor_type="project_agent",
-                actor_id=str(primary_agent_id or ""),
-                actor_label=f"agent:{primary_agent_id}",
-            )
-            await _emit_project_action_results(project_id, applied_plan_actions.get("applied") or [])
-        # Fallback: if primary did not post to chat, post a ready notice now.
-        if not _applied_actions_include_kind(applied_plan_actions.get("applied") or [], "post_chat_message"):
-            plan_notice_result = _apply_project_actions(
-                owner_user_id=str(row["user_id"]),
-                project_id=project_id,
-                project_root=str(row["project_root"] or ""),
-                actions=[{
-                    "type": "post_chat_message",
-                    "text": "@owner Plan is ready for your review. Saved to `plan.md`. Please approve or request changes.",
-                    "mentions": ["owner"],
-                }],
-                allow_paths=None,
-                actor_type="project_agent",
-                actor_id=str(primary_agent_id or ""),
-                actor_label=f"agent:{primary_agent_id}",
-            )
-            await _emit_project_action_results(project_id, plan_notice_result.get("applied") or [])
-    except Exception:
-        pass
-
-    _append_project_daily_log(
-        owner_user_id=str(row["user_id"]),
-        project_root=str(row["project_root"] or ""),
-        kind="plan.ready",
-        text=(plan_text or "")[:1600],
-    )
-    try:
-        _refresh_project_documents(project_id)
-    except Exception as exc:
+        _set_project_execution_state(project_id, status=EXEC_STATUS_IDLE, progress_pct=10)
         _append_project_daily_log(
             owner_user_id=str(row["user_id"]),
             project_root=str(row["project_root"] or ""),
-            kind="plan.refresh.warning",
-            text=(
-                "Project plan was saved, but document refresh failed: "
-                f"{detail_to_text(exc)[:800]}"
-            ),
+            kind="plan.persisted",
+            text="Project plan draft saved. Waiting for owner approval.",
         )
-    await emit(project_id, "project.plan.ready", {"status": PLAN_STATUS_AWAITING_APPROVAL, "preview": plan_text[:1000]})
+        await emit(
+            project_id,
+            "project.plan.awaiting_approval",
+            {"project_id": project_id, "status": PLAN_STATUS_AWAITING_APPROVAL},
+        )
+
+        # Save plan.md to project folder
+        try:
+            project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
+            plan_md_content = f"# Project Plan\n> Generated by primary agent. Awaiting user approval.\n\n{plan_text}"
+            plan_actions = parsed_plan.get("actions") if isinstance(parsed_plan.get("actions"), list) else []
+            # Apply all file writes from agent (including plan.md itself)
+            if plan_writes:
+                _apply_project_file_writes(
+                    owner_user_id=str(row["user_id"]),
+                    project_root=str(row["project_root"] or ""),
+                    writes=plan_writes,
+                    default_prefix="",
+                    allow_paths=None,
+                )
+            else:
+                (project_dir / "plan.md").write_text(plan_md_content, encoding="utf-8")
+            # Always keep legacy path in sync
+            (project_dir / PROJECT_PLAN_FILE).write_text(plan_md_content, encoding="utf-8")
+            applied_plan_actions: Dict[str, Any] = {"applied": [], "skipped": []}
+            if plan_actions:
+                applied_plan_actions = _apply_project_actions(
+                    owner_user_id=str(row["user_id"]),
+                    project_id=project_id,
+                    project_root=str(row["project_root"] or ""),
+                    actions=plan_actions,
+                    allow_paths=None,
+                    actor_type="project_agent",
+                    actor_id=str(primary_agent_id or ""),
+                    actor_label=f"agent:{primary_agent_id}",
+                )
+                await _emit_project_action_results(project_id, applied_plan_actions.get("applied") or [])
+            # Fallback: if primary did not post to chat, post a ready notice now.
+            if not _applied_actions_include_kind(applied_plan_actions.get("applied") or [], "post_chat_message"):
+                plan_notice_result = _apply_project_actions(
+                    owner_user_id=str(row["user_id"]),
+                    project_id=project_id,
+                    project_root=str(row["project_root"] or ""),
+                    actions=[{
+                        "type": "post_chat_message",
+                        "text": "@owner Plan is ready for your review. Saved to `plan.md`. Please approve or request changes.",
+                        "mentions": ["owner"],
+                    }],
+                    allow_paths=None,
+                    actor_type="project_agent",
+                    actor_id=str(primary_agent_id or ""),
+                    actor_label=f"agent:{primary_agent_id}",
+                )
+                await _emit_project_action_results(project_id, plan_notice_result.get("applied") or [])
+        except Exception:
+            pass
+
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="plan.ready",
+            text=(plan_text or "")[:1600],
+        )
+        try:
+            _refresh_project_documents(project_id)
+        except Exception as exc:
+            _append_project_daily_log(
+                owner_user_id=str(row["user_id"]),
+                project_root=str(row["project_root"] or ""),
+                kind="plan.refresh.warning",
+                text=(
+                    "Project plan was saved, but document refresh failed: "
+                    f"{detail_to_text(exc)[:800]}"
+                ),
+            )
+        await emit(project_id, "project.plan.ready", {"status": PLAN_STATUS_AWAITING_APPROVAL, "preview": plan_text[:1000]})
+    except Exception as exc:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        error_text = f"Unexpected error while finalizing generated project plan: {detail_to_text(exc)}"
+        fail_now = int(time.time())
+        fail_conn = db()
+        try:
+            fail_row = fail_conn.execute(
+                "SELECT plan_status FROM projects WHERE id = ?",
+                (project_id,),
+            ).fetchone()
+            if _coerce_plan_status((fail_row or {}).get("plan_status")) == PLAN_STATUS_GENERATING:
+                fail_conn.execute(
+                    "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
+                    (PLAN_STATUS_FAILED, error_text[:5000], fail_now, project_id),
+                )
+                fail_conn.commit()
+        finally:
+            fail_conn.close()
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="plan.finalize.error",
+            text=error_text[:1200],
+        )
+        await emit(project_id, "project.plan.failed", {"error": error_text[:600]})
 
 async def _run_agent_subplan_phase(
     project_id: str,
