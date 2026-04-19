@@ -1,5 +1,6 @@
 from hivee_shared import *
 from services.connector_dispatch import connector_chat_sync as _connector_chat_sync
+from services.project_utils import _project_planning_session_key
 
 
 def _get_connector_row(connection_id: str, user_id: str, conn) -> Optional[Dict]:
@@ -852,6 +853,7 @@ def register_routes(app: FastAPI) -> None:
         project_root = str(project_scope["project_root"]) if (project_scope and project_scope["project_root"]) else None
         project_instruction = None
         write_allow_paths = None
+        connector_session_key = session_key
         if project_scope:
             if project_access_mode == "member":
                 if a2a_access:
@@ -959,6 +961,13 @@ def register_routes(app: FastAPI) -> None:
                 )
             else:
                 write_allow_paths = []
+            connector_session_key = _project_planning_session_key(
+                session_key,
+                plan_status=project_scope["plan_status"],
+                agent_id=effective_agent_id,
+                primary_agent_id=project_primary_agent_id,
+                default_session_key=session_key,
+            )
         else:
             effective_agent_id = str(payload.agent_id or "").strip() or None
             if not effective_agent_id:
@@ -967,6 +976,7 @@ def register_routes(app: FastAPI) -> None:
                 elif workspace_agent_ids:
                     effective_agent_id = workspace_agent_ids[0]
             session_key = "main"
+            connector_session_key = session_key
             if not effective_agent_id:
                 effective_agent_id = None
 
@@ -989,7 +999,7 @@ def register_routes(app: FastAPI) -> None:
             connector_id=resolved_rt_connector_id,
             message=scoped_message,
             agent_id=effective_agent_id,
-            session_key=session_key,
+            session_key=connector_session_key,
             timeout_sec=payload.timeout_sec,
             from_agent_id="hivee",
             from_label="Hivee Runtime",
@@ -1069,7 +1079,7 @@ def register_routes(app: FastAPI) -> None:
                     connector_id=resolved_rt_connector_id,
                     message=followup_prompt,
                     agent_id=effective_agent_id,
-                    session_key=session_key,
+                    session_key=connector_session_key,
                     timeout_sec=max(10, min(payload.timeout_sec, 60)),
                     from_agent_id="hivee",
                     from_label="Hivee Runtime",
@@ -1153,7 +1163,7 @@ def register_routes(app: FastAPI) -> None:
                     connector_id=resolved_rt_connector_id,
                     message=rescue_prompt,
                     agent_id=effective_agent_id,
-                    session_key=session_key,
+                    session_key=connector_session_key,
                     timeout_sec=max(10, min(payload.timeout_sec, 60)),
                     from_agent_id="hivee",
                     from_label="Hivee Runtime",

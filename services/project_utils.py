@@ -1491,11 +1491,27 @@ async def _dispatch_chat_mention_to_connector(
     resolved_hivee_api_base = str(hivee_api_base or "").strip() or _get_hivee_api_base(project_id)
     project_agent_id = ""
     project_agent_token = ""
+    project_plan_status: Any = None
+    primary_agent_id = ""
     conn = db()
     try:
         agent_row = conn.execute(
             "SELECT agent_id FROM project_agents WHERE project_id = ? AND agent_id = ? LIMIT 1",
             (project_id, target),
+        ).fetchone()
+        project_row = conn.execute(
+            "SELECT plan_status FROM projects WHERE id = ? LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        primary_row = conn.execute(
+            """
+            SELECT agent_id
+            FROM project_agents
+            WHERE project_id = ?
+            ORDER BY is_primary DESC, agent_name ASC
+            LIMIT 1
+            """,
+            (project_id,),
         ).fetchone()
     finally:
         conn.close()
@@ -1505,6 +1521,10 @@ async def _dispatch_chat_mention_to_connector(
             project_agent_token = _issue_agent_session_token(project_id, target)
         except Exception:
             project_agent_token = ""
+    if project_row:
+        project_plan_status = project_row["plan_status"]
+    if primary_row:
+        primary_agent_id = str(primary_row["agent_id"] or "").strip()
 
     # Build a notification message to deliver to the mentioned agent
     notification = (
@@ -1514,13 +1534,20 @@ async def _dispatch_chat_mention_to_connector(
         f"This message was addressed to you (@{target}) in the project chat. "
         f"Respond via `post_chat_message` action if action is needed."
     )
+    dispatch_session_key = _project_planning_session_key(
+        project_id,
+        plan_status=project_plan_status,
+        agent_id=target,
+        primary_agent_id=primary_agent_id,
+        default_session_key=f"{project_id}:mention",
+    )
 
     try:
         await connector_chat_sync(
             connector_id=connector_id,
             message=notification,
             agent_id=target,
-            session_key=f"{project_id}:mention",
+            session_key=dispatch_session_key,
             timeout_sec=30,
             from_agent_id=from_agent_id,
             from_label=from_label,
@@ -2911,6 +2938,26 @@ def _coerce_plan_status(value: Any) -> str:
     }:
         return raw
     return PLAN_STATUS_PENDING
+
+
+def _project_planning_session_key(
+    project_id: str,
+    *,
+    plan_status: Any,
+    agent_id: Optional[str],
+    primary_agent_id: Optional[str],
+    default_session_key: Optional[str] = None,
+) -> str:
+    resolved_project_id = str(project_id or "").strip()
+    fallback_session_key = str(default_session_key or resolved_project_id).strip() or resolved_project_id
+    if not resolved_project_id:
+        return fallback_session_key
+    normalized_plan_status = _coerce_plan_status(plan_status)
+    target_agent_id = str(agent_id or "").strip()
+    primary_id = str(primary_agent_id or "").strip()
+    if normalized_plan_status != PLAN_STATUS_APPROVED and target_agent_id and primary_id and target_agent_id == primary_id:
+        return f"{resolved_project_id}:plan"
+    return fallback_session_key
 
 def _coerce_execution_status(value: Any) -> str:
     raw = str(value or "").strip().lower()
