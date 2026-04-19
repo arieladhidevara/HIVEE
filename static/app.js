@@ -2560,6 +2560,9 @@ function renderProjectActivityFeed() {
     const who = String(item?.actor_label || item?.actor_id || item?.actor_type || "system").trim();
     const kind = String(item?.event_type || "event").trim();
     const summary = String(item?.summary || "").trim();
+    const payload = item?.payload && typeof item.payload === "object" ? item.payload : {};
+    const fullText = String(payload?.full_text || "").replace(/\r/g, "").trim();
+    const hasFullText = Boolean(fullText && fullText !== summary);
     const meta = activityEventMeta(kind);
 
     const tItem = document.createElement("div");
@@ -2607,6 +2610,19 @@ function renderProjectActivityFeed() {
     body.appendChild(header);
     body.appendChild(whoEl);
     body.appendChild(summaryEl);
+    if (hasFullText) {
+      const detailWrap = document.createElement("details");
+      detailWrap.className = "timeline-detail";
+      if (kind === "chat.hivee") detailWrap.open = true;
+      const detailSummary = document.createElement("summary");
+      detailSummary.textContent = kind === "chat.hivee" ? "Full Hivee dispatch" : "Full event";
+      const detailPre = document.createElement("pre");
+      detailPre.className = "timeline-pre";
+      detailPre.textContent = fullText;
+      detailWrap.appendChild(detailSummary);
+      detailWrap.appendChild(detailPre);
+      body.appendChild(detailWrap);
+    }
 
     tItem.appendChild(dotCol);
     tItem.appendChild(body);

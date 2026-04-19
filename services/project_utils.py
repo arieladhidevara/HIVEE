@@ -3387,6 +3387,9 @@ def _append_project_activity_event(
     body = str(text or "").strip()
     payload_obj = payload if isinstance(payload, dict) else {}
     summary = body[:1000] if body else event_type
+    stored_payload = dict(payload_obj)
+    if body and (len(body) > len(summary) or "\n" in body):
+        stored_payload.setdefault("full_text", body)
 
     actor_type = "system"
     actor_id = None
@@ -3427,7 +3430,7 @@ def _append_project_activity_event(
                 actor_label,
                 event_type,
                 summary,
-                json.dumps(payload_obj, ensure_ascii=False),
+                json.dumps(stored_payload, ensure_ascii=False),
                 int(time.time()),
             ),
         )
