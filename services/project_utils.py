@@ -1248,7 +1248,9 @@ def _project_context_instruction(
     role_rows: Optional[List[Dict[str, Any]]] = None,
     project_root: Optional[str] = None,
     plan_status: str = PLAN_STATUS_PENDING,
+    hivee_api_base: str = "",
 ) -> str:
+    base = (hivee_api_base or "").rstrip("/")
     sections = [
         "Project context (always align your answer to this):",
         f"- Title: {title}",
@@ -1281,6 +1283,9 @@ def _project_context_instruction(
         sections.append("- If execution is blocked by missing user info/approval, pause and ask the owner clearly.")
         sections.append("- For pause points, return JSON with `requires_user_input=true`, `pause_reason`, and optional `resume_hint`.")
         sections.append("- If owner explicitly says SKIP for missing info, make reasonable assumptions and continue execution.")
+    if base:
+        sections.append(f"- Hivee project API base: `{base}`.")
+        sections.append(f"- Read project files via `GET {base}/files/<file_path>` using your project agent headers.")
     sections.extend(_artifact_sync_rule_lines(project_root=project_root))
     sections.append("- When handing off dependencies, mention the related invited agent explicitly using @agent_id.")
     sections.append(
@@ -5538,9 +5543,17 @@ def _compose_guardrailed_message(
     workspace_root: str,
     project_root: Optional[str] = None,
     task_instruction: Optional[str] = None,
+    hivee_api_base: str = "",
 ) -> str:
     clean_user_message = (user_message or "").strip() or "Continue."
     sections: List[str] = ["\n".join(_workspace_policy_lines(workspace_root, project_root))]
+    base = (hivee_api_base or "").rstrip("/")
+    if base:
+        sections.append(
+            "Hivee project API:\n"
+            f"- Base URL: `{base}`\n"
+            f"- Project files are available at `GET {base}/files/<file_path>` when project agent headers are present."
+        )
     if task_instruction:
         sections.append(task_instruction.strip())
     sections.append(f"User message:\n{clean_user_message}")

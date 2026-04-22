@@ -875,6 +875,7 @@ def register_routes(app: FastAPI) -> None:
                 role_rows=role_rows,
                 project_root=str(project_scope["project_root"] or ""),
                 plan_status=_coerce_plan_status(project_scope["plan_status"]),
+                hivee_api_base=_get_hivee_api_base(session_key),
             )
             roster_text = _agent_roster_markdown(role_rows)
             sections = [project_instruction, roster_text]
@@ -982,6 +983,7 @@ def register_routes(app: FastAPI) -> None:
             workspace_root=workspace_root,
             project_root=project_root,
             task_instruction=project_instruction,
+            hivee_api_base=str(connector_hivee_context.get("hivee_api_base") or ""),
         )
         if connector_row:
             resolved_rt_connector_id = connection_id
