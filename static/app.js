@@ -3667,6 +3667,23 @@ function handleProjectEvent(kind, payload) {
       agentLiveState[evtAgentId].status = "failed";
       agentLiveState[evtAgentId].note = String(data.error || "").trim().slice(0, 80);
       renderAgentLiveCards();
+    } else if (kind === "agent.subplan.submitted") {
+      if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      agentLiveState[evtAgentId].status = "subplan_submitted";
+      agentLiveState[evtAgentId].subplanPreview = String(data.preview || "").trim();
+      agentLiveState[evtAgentId].subplanStatus = "pending_review";
+      agentLiveState[evtAgentId].note = "Sub-plan submitted for primary review.";
+      renderAgentLiveCards();
+    } else if (kind === "agent.subplan.reviewed") {
+      if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      const approved = Boolean(data.approved);
+      agentLiveState[evtAgentId].status = approved ? "subplan_approved" : "subplan_revising";
+      agentLiveState[evtAgentId].subplanStatus = approved ? "approved" : "needs_revision";
+      const feedback = String(data.feedback || "").trim().slice(0, 180);
+      agentLiveState[evtAgentId].note = approved
+        ? "Sub-plan approved by primary."
+        : (feedback ? `Revising sub-plan: ${feedback}` : "Revising sub-plan after feedback.");
+      renderAgentLiveCards();
     }
   }
 
@@ -3690,6 +3707,13 @@ function handleProjectEvent(kind, payload) {
     setMessage("chat_hint", detailToText(payload?.reason || "Execution paused. Waiting for approval/input."), "error");
   } else if (kind === "project.execution.resume" || kind === "project.execution.resumed_after_pause") {
     setMessage("chat_hint", "Execution resumed.", "ok");
+  } else if (kind === "project.delegation.ready") {
+    const ownerMsg = String(payload?.owner_message || "").trim();
+    setMessage("chat_hint", ownerMsg || "Project completed. All delegated agents reported back.", "ok");
+  } else if (kind === "project.delegation.started") {
+    setMessage("chat_hint", "Primary agent is delegating tasks to invited agents...", "ok");
+  } else if (kind === "project.subplan.phase_started") {
+    setMessage("chat_hint", "Agents are drafting detailed sub-plans...", "ok");
   }
   if (
     selectedProjectId &&
@@ -6374,6 +6398,25 @@ function renderAgentLiveCards() {
       noteEl.className = "alc-note";
       noteEl.textContent = live.note;
       card.appendChild(noteEl);
+    }
+
+    if (live?.subplanPreview) {
+      const spEl = document.createElement("div");
+      spEl.className = "alc-subplan";
+      const badgeText = live.subplanStatus === "approved"
+        ? "Sub-plan approved"
+        : live.subplanStatus === "needs_revision"
+          ? "Sub-plan needs revision"
+          : "Sub-plan pending review";
+      const badge = document.createElement("div");
+      badge.className = `alc-subplan-badge ${live.subplanStatus || "pending_review"}`;
+      badge.textContent = badgeText;
+      const preview = document.createElement("div");
+      preview.className = "alc-subplan-preview";
+      preview.textContent = live.subplanPreview.slice(0, 320);
+      spEl.appendChild(badge);
+      spEl.appendChild(preview);
+      card.appendChild(spEl);
     }
 
     card.appendChild(tokensEl);

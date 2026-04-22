@@ -2810,6 +2810,12 @@ textarea[readonly]:focus {
 .alc-task   { font-size: 11px; color: var(--muted); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .alc-note   { font-size: 10px; color: var(--fg); opacity: 0.55; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-style: italic; }
 .alc-tokens { font-size: 10px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 5px; }
+.alc-subplan { display: grid; gap: 4px; padding: 6px 7px; border-radius: 7px; background: rgba(255,255,255,0.03); border: 1px solid var(--line); }
+.alc-subplan-badge { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.alc-subplan-badge.approved { color: var(--cyan); }
+.alc-subplan-badge.needs_revision { color: var(--orange); }
+.alc-subplan-badge.pending_review { color: var(--yellow); }
+.alc-subplan-preview { font-size: 10px; color: var(--fg); opacity: 0.7; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
 .live-update-row { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.4; }
 .live-update-row:last-child { border-bottom: none; }
 .lu-time { color: var(--muted); flex: 0 0 auto; font-variant-numeric: tabular-nums; }

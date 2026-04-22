@@ -1,7 +1,7 @@
 from hivee_shared import *
 from email.message import EmailMessage
 import smtplib
-from services.managed_agents import _delegate_project_tasks, _project_chat, _onboard_agents_into_project
+from services.managed_agents import _delegate_project_tasks, _project_chat, _onboard_agents_into_project, _generate_project_plan
 
 
 def _new_project_external_invite_token() -> str:
@@ -556,13 +556,12 @@ def register_routes(app: FastAPI) -> None:
             start_mode=bool(payload.start),
         )
         session_key = (payload.session_key or "new-project").strip() or "new-project"
-        timeout = max(10, min(payload.timeout_sec, 45 if payload.optimize_tokens else 90))
         res = await _connector_chat_sync(
             connector_id=resolved_connection_id,
             message=instruction,
             agent_id=effective_agent_id,
             session_key=f"project-setup:{session_key}",
-            timeout_sec=timeout,
+            timeout_sec=None,
             from_agent_id="hivee",
             from_label="Hivee System",
             context_type="control",
@@ -625,7 +624,7 @@ def register_routes(app: FastAPI) -> None:
             message=instruction,
             agent_id=effective_agent_id,
             session_key=f"project-setup-draft:{session_key}",
-            timeout_sec=max(10, min(payload.timeout_sec, 60)),
+            timeout_sec=None,
             from_agent_id="hivee",
             from_label="Hivee System",
             context_type="control",
@@ -878,6 +877,7 @@ def register_routes(app: FastAPI) -> None:
             text=f"Project created: {payload.title}",
             payload={"brief": payload.brief[:500], "goal": payload.goal[:500]},
         )
+        asyncio.create_task(_generate_project_plan(pid))
         return ProjectOut(
             id=pid,
             title=payload.title,

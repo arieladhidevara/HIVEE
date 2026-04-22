@@ -2473,48 +2473,48 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         if not raw_plan_text:
             raw_plan_text = detail_to_text(res.get("frames") or "Plan generated with empty text")
 
-        # Parse the agent's JSON response and extract actual plan content from output_files
+        # Parse the agent's JSON response and extract actual plan content from output_files.
+        # Require a substantive plan.md so the Overview shows a real plan, not a one-liner.
         parsed_plan = _extract_agent_report_payload(raw_plan_text)
-        plan_text = ""
         plan_writes = parsed_plan.get("output_files") if isinstance(parsed_plan.get("output_files"), list) else []
+        plan_text_from_file = ""
         for f in plan_writes:
             if not isinstance(f, dict):
                 continue
             rel = str(f.get("path") or "").strip().lower().lstrip("/")
             if rel in {"plan.md", "outputs/plan.md"}:
-                plan_text = str(f.get("content") or "").strip()
+                plan_text_from_file = str(f.get("content") or "").strip()
                 break
-        # Fallback: if no output_files[plan.md], try chat_update, then raw text.
-        # Only treat as a valid plan if it came from structured output_files OR the agent
-        # explicitly signalled approval-readiness AND the text looks substantive.
-        plan_from_structured_output = bool(plan_text)
-        if not plan_text:
-            plan_text = str(parsed_plan.get("chat_update") or raw_plan_text).strip()
 
-        # Validate before setting AWAITING_APPROVAL — reject error responses that
-        # slipped through (e.g. LLM quota errors returned as ok:True from the hub).
-        agent_explicitly_approved = bool(
-            parsed_plan.get("requires_user_input")
-            or parsed_plan.get("needs_approval")
-            or parsed_plan.get("needs_user_approval")
-        )
-        text_looks_like_plan = (
-            len(plan_text) >= 300
-            and ("#" in plan_text or "##" in plan_text or "-" in plan_text)
-        )
-        plan_is_valid = plan_from_structured_output or agent_explicitly_approved or text_looks_like_plan
+        def _plan_looks_substantive(txt: str) -> bool:
+            t = str(txt or "").strip()
+            if len(t) < 250:
+                return False
+            return any(marker in t for marker in ["## ", "\n- ", "\n* ", "\n1.", "\n#"])
 
-        if not plan_is_valid:
-            # Response did not contain a recognisable plan — treat as failure so
-            # the UI does not show a spurious "needs approval" indicator.
+        if _plan_looks_substantive(plan_text_from_file):
+            plan_text = plan_text_from_file
+        else:
+            fallback_text = plan_text_from_file or str(parsed_plan.get("chat_update") or raw_plan_text).strip()
+            error_message = (
+                "Primary agent's response did not contain a complete `plan.md` in output_files. "
+                "Click Regenerate Plan to retry.\n\n"
+                f"Agent response preview:\n{fallback_text[:1200]}"
+            )
             conn.execute(
                 "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
-                (PLAN_STATUS_FAILED, plan_text[:5000], now, project_id),
+                (PLAN_STATUS_FAILED, error_message[:5000], now, project_id),
             )
             conn.commit()
             conn.close()
             _refresh_project_documents(project_id)
-            await emit(project_id, "project.plan.failed", {"error": plan_text[:600]})
+            _append_project_daily_log(
+                owner_user_id=str(row["user_id"]),
+                project_root=str(row["project_root"] or ""),
+                kind="plan.failed",
+                text=error_message[:1200],
+            )
+            await emit(project_id, "project.plan.failed", {"error": error_message[:600]})
             return
 
         conn.execute(
