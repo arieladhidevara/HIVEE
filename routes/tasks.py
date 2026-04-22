@@ -1,4 +1,4 @@
-﻿from hivee_shared import *
+from hivee_shared import *
 
 
 from services.project_activity import append_project_activity_log_entry
