@@ -947,6 +947,35 @@ def register_routes(app: FastAPI) -> None:
             if not effective_agent_id:
                 effective_agent_id = None
 
+        connector_hivee_context: Dict[str, Any] = {}
+        if project_scope:
+            resolved_project_root = str(project_root or "").strip()
+            if project_owner_user_id and resolved_project_root:
+                try:
+                    resolved_project_root = _resolve_owner_project_dir(project_owner_user_id, resolved_project_root).resolve().as_posix()
+                except Exception:
+                    pass
+            resolved_workspace_root = ""
+            if project_owner_user_id:
+                try:
+                    resolved_workspace_root = _user_workspace_root_dir(project_owner_user_id).resolve().as_posix()
+                except Exception:
+                    resolved_workspace_root = ""
+            project_agent_token = ""
+            if effective_agent_id:
+                try:
+                    project_agent_token = _issue_agent_session_token(session_key, str(effective_agent_id or "").strip())
+                except Exception:
+                    project_agent_token = ""
+            connector_hivee_context = {
+                "project_id": session_key,
+                "hivee_api_base": _get_hivee_api_base(session_key),
+                "project_agent_id": str(effective_agent_id or "").strip(),
+                "project_agent_token": project_agent_token,
+                "project_root": resolved_project_root,
+                "workspace_root": resolved_workspace_root,
+            }
+
         conn.close()
         scoped_message = _compose_guardrailed_message(
             payload.message.strip(),
@@ -971,6 +1000,7 @@ def register_routes(app: FastAPI) -> None:
             from_agent_id="hivee",
             from_label="Hivee Runtime",
             context_type="message",
+            **connector_hivee_context,
         )
         if not res.get("ok"):
             if project_scope:
@@ -1051,6 +1081,7 @@ def register_routes(app: FastAPI) -> None:
                     from_agent_id="hivee",
                     from_label="Hivee Runtime",
                     context_type="message",
+                    **connector_hivee_context,
                 )
                 if followup_res.get("ok"):
                     followup_text = str(followup_res.get("text") or "").strip()
@@ -1135,6 +1166,7 @@ def register_routes(app: FastAPI) -> None:
                     from_agent_id="hivee",
                     from_label="Hivee Runtime",
                     context_type="message",
+                    **connector_hivee_context,
                 )
                 if rescue_res.get("ok"):
                     rescue_text = str(rescue_res.get("text") or "").strip()

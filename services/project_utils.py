@@ -1515,6 +1515,8 @@ async def _dispatch_chat_mention_to_connector(
     project_agent_id = ""
     project_agent_token = ""
     project_plan_status: Any = None
+    project_owner_user_id = ""
+    project_root = ""
     primary_agent_id = ""
     conn = db()
     try:
@@ -1523,7 +1525,7 @@ async def _dispatch_chat_mention_to_connector(
             (project_id, target),
         ).fetchone()
         project_row = conn.execute(
-            "SELECT plan_status FROM projects WHERE id = ? LIMIT 1",
+            "SELECT user_id, project_root, plan_status FROM projects WHERE id = ? LIMIT 1",
             (project_id,),
         ).fetchone()
         primary_row = conn.execute(
@@ -1545,6 +1547,8 @@ async def _dispatch_chat_mention_to_connector(
         except Exception:
             project_agent_token = ""
     if project_row:
+        project_owner_user_id = str(project_row["user_id"] or "").strip()
+        project_root = str(project_row["project_root"] or "").strip()
         project_plan_status = project_row["plan_status"]
     if primary_row:
         primary_agent_id = str(primary_row["agent_id"] or "").strip()
@@ -1564,6 +1568,18 @@ async def _dispatch_chat_mention_to_connector(
         primary_agent_id=primary_agent_id,
         default_session_key=f"{project_id}:mention",
     )
+    resolved_project_root = project_root
+    if project_owner_user_id and project_root:
+        try:
+            resolved_project_root = _resolve_owner_project_dir(project_owner_user_id, project_root).resolve().as_posix()
+        except Exception:
+            resolved_project_root = project_root
+    resolved_workspace_root = ""
+    if project_owner_user_id:
+        try:
+            resolved_workspace_root = _user_workspace_root_dir(project_owner_user_id).resolve().as_posix()
+        except Exception:
+            resolved_workspace_root = ""
 
     try:
         await connector_chat_sync(
@@ -1579,6 +1595,8 @@ async def _dispatch_chat_mention_to_connector(
             hivee_api_base=resolved_hivee_api_base,
             project_agent_id=project_agent_id,
             project_agent_token=project_agent_token,
+            project_root=resolved_project_root,
+            workspace_root=resolved_workspace_root,
         )
     except Exception as exc:
         print(f"[mention_dispatch] Failed to dispatch @{target} in project {project_id}: {exc}", flush=True)

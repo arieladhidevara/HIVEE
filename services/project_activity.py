@@ -4,7 +4,6 @@ import time
 from typing import Any, Dict, Optional
 
 from core.workspace_paths import new_id
-from hivee_shared import *
 
 
 def _dump_json(payload: Optional[Dict[str, Any]]) -> str:

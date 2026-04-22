@@ -180,6 +180,9 @@ class ProjectPlanOut(BaseModel):
 class ProjectPlanApproveIn(BaseModel):
     approve: bool = True
 
+class ProjectPlanRejectIn(BaseModel):
+    feedback: Optional[str] = None
+
 class ProjectExecutionOut(BaseModel):
     project_id: str
     status: str

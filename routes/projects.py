@@ -8,6 +8,7 @@ from services.managed_agents import (
     _generate_project_plan,
     _is_default_placeholder_agent,
 )
+from services.project_activity import append_project_activity_log_entry
 
 
 def _new_project_external_invite_token() -> str:
@@ -272,6 +273,8 @@ async def _compose_external_invite_email_with_primary_agent(
     portal_url: str,
     invite_code: str,
     project_id: str = "",
+    owner_user_id: str = "",
+    project_root: str = "",
 ) -> Dict[str, Any]:
     from services.connector_dispatch import connector_chat_sync as _connector_chat_sync
     fallback = {
@@ -288,6 +291,25 @@ async def _compose_external_invite_email_with_primary_agent(
         fallback["send_status"] = "skipped_missing_primary_agent"
         fallback["send_error"] = "No connector or agent configured for this project"
         return fallback
+    resolved_hivee_api_base = _get_hivee_api_base(project_id) if project_id else ""
+    project_agent_token = ""
+    if project_id and main_agent_id:
+        try:
+            project_agent_token = _issue_agent_session_token(project_id, main_agent_id)
+        except Exception:
+            project_agent_token = ""
+    resolved_project_root = str(project_root or "").strip()
+    if owner_user_id and resolved_project_root:
+        try:
+            resolved_project_root = _resolve_owner_project_dir(owner_user_id, resolved_project_root).resolve().as_posix()
+        except Exception:
+            pass
+    resolved_workspace_root = ""
+    if owner_user_id:
+        try:
+            resolved_workspace_root = _user_workspace_root_dir(owner_user_id).resolve().as_posix()
+        except Exception:
+            resolved_workspace_root = ""
 
     prompt = (
         "You are the primary owner agent for a Hivee project. "
@@ -316,6 +338,11 @@ async def _compose_external_invite_email_with_primary_agent(
             from_label="Hivee System",
             context_type="control",
             project_id=project_id,
+            hivee_api_base=resolved_hivee_api_base,
+            project_agent_id=main_agent_id,
+            project_agent_token=project_agent_token,
+            project_root=resolved_project_root,
+            workspace_root=resolved_workspace_root,
         )
     except Exception as exc:
         fallback["compose_error"] = detail_to_text(exc)[:600]
@@ -1046,12 +1073,59 @@ def register_routes(app: FastAPI) -> None:
         )
     
     @app.post("/api/projects/{project_id}/plan/approve", response_model=ProjectPlanOut)
-    async def approve_project_plan(request: Request, project_id: str, payload: ProjectPlanApproveIn):
+    async def approve_project_plan(request: Request, project_id: str, payload: Optional[ProjectPlanApproveIn] = None):
         user_id = get_session_user(request)
+        approve_requested = True if payload is None else bool(payload.approve)
+        if not approve_requested:
+            now = int(time.time())
+            conn = db()
+            row = conn.execute(
+                """
+                SELECT id, user_id, title, brief, goal, project_root, setup_json, plan_text, plan_status, plan_updated_at, plan_approved_at
+                FROM projects
+                WHERE id = ? AND user_id = ?
+                """,
+                (project_id, user_id),
+            ).fetchone()
+            if not row:
+                conn.close()
+                raise HTTPException(404, "Project not found")
+            conn.execute(
+                """
+                UPDATE projects
+                SET plan_status = ?, plan_approved_at = NULL, plan_updated_at = ?, execution_status = ?, execution_updated_at = ?
+                WHERE id = ?
+                """,
+                (PLAN_STATUS_PENDING, now, EXEC_STATUS_IDLE, now, project_id),
+            )
+            append_project_activity_log_entry(
+                conn,
+                project_id=project_id,
+                actor_type="user",
+                actor_id=user_id,
+                actor_label="owner",
+                event_type="project.plan.rejected",
+                summary="Owner requested project plan revision",
+                payload={"feedback": ""},
+                created_at=now,
+            )
+            conn.commit()
+            conn.close()
+            _refresh_project_documents(project_id)
+            await emit(project_id, "project.plan.rejected", {"project_id": project_id, "feedback": ""})
+            return ProjectPlanOut(
+                project_id=project_id,
+                status=PLAN_STATUS_PENDING,
+                text=str(row["plan_text"] or ""),
+                updated_at=now,
+                approved_at=None,
+            )
+
         conn = db()
         row = conn.execute(
             """
-            SELECT id, user_id, title, brief, goal, project_root, setup_json, plan_text, plan_status, plan_updated_at, plan_approved_at
+            SELECT id, user_id, title, brief, goal, project_root, setup_json, plan_text, plan_status, plan_updated_at,
+                   plan_approved_at, execution_status, progress_pct
             FROM projects
             WHERE id = ? AND user_id = ?
             """,
@@ -1062,28 +1136,42 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(404, "Project not found")
     
         now = int(time.time())
-        if payload.approve:
-            new_status = PLAN_STATUS_APPROVED
-            approved_at = now
+        new_status = PLAN_STATUS_APPROVED
+        approved_at = now
+        current_plan_status = _coerce_plan_status(row["plan_status"])
+        current_execution_status = _coerce_execution_status(row["execution_status"])
+        next_execution_status = current_execution_status
+        should_clear_approval_pause = (
+            current_plan_status == PLAN_STATUS_AWAITING_APPROVAL
+            and current_execution_status == EXEC_STATUS_PAUSED
+        )
+        if should_clear_approval_pause:
+            next_execution_status = EXEC_STATUS_IDLE
+            conn.execute(
+                """
+                UPDATE projects
+                SET plan_status = ?, plan_approved_at = ?, plan_updated_at = ?,
+                    execution_status = ?, execution_updated_at = ?
+                WHERE id = ?
+                """,
+                (new_status, approved_at, now, next_execution_status, now, project_id),
+            )
+        else:
             conn.execute(
                 "UPDATE projects SET plan_status = ?, plan_approved_at = ?, plan_updated_at = ? WHERE id = ?",
                 (new_status, approved_at, now, project_id),
             )
-            conn.execute(
-                "UPDATE projects SET execution_status = ?, progress_pct = ?, execution_updated_at = ? WHERE id = ?",
-                (EXEC_STATUS_RUNNING, 5, now, project_id),
-            )
-        else:
-            new_status = PLAN_STATUS_AWAITING_APPROVAL
-            approved_at = row["plan_approved_at"]
-            conn.execute(
-                "UPDATE projects SET plan_status = ?, plan_updated_at = ? WHERE id = ?",
-                (new_status, now, project_id),
-            )
-            conn.execute(
-                "UPDATE projects SET execution_status = ?, execution_updated_at = ? WHERE id = ?",
-                (EXEC_STATUS_IDLE, now, project_id),
-            )
+        append_project_activity_log_entry(
+            conn,
+            project_id=project_id,
+            actor_type="user",
+            actor_id=user_id,
+            actor_label="owner",
+            event_type="project.plan.approved",
+            summary="Owner approved project plan",
+            payload={"previous_status": current_plan_status, "execution_status": next_execution_status},
+            created_at=now,
+        )
         conn.commit()
         conn.close()
     
@@ -1091,8 +1179,8 @@ def register_routes(app: FastAPI) -> None:
         _append_project_daily_log(
             owner_user_id=str(row["user_id"]),
             project_root=str(row["project_root"] or ""),
-            kind="plan.approve" if payload.approve else "plan.revert",
-            text="User approved project plan." if payload.approve else "User reverted plan to waiting approval.",
+            kind="plan.approve",
+            text="User approved project plan.",
         )
 
         # Update fundamentals.md and state.md to reflect new plan status
@@ -1100,8 +1188,8 @@ def register_routes(app: FastAPI) -> None:
         try:
             project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
             hivee_api_base = _get_hivee_api_base(project_id)
-            phase = "execution" if payload.approve else "planning"
-            exec_status = EXEC_STATUS_RUNNING if payload.approve else EXEC_STATUS_IDLE
+            phase = "execution"
+            exec_status = next_execution_status
             _write_project_fundamentals_file(
                 project_dir,
                 project_id=project_id,
@@ -1117,68 +1205,13 @@ def register_routes(app: FastAPI) -> None:
                 phase=phase,
                 plan_status=new_status,
                 execution_status=exec_status,
-                progress_pct=5 if payload.approve else 0,
+                progress_pct=_clamp_progress(row["progress_pct"]),
                 agents=[{"agent_id": str(r.get("agent_id") or ""), "agent_name": str(r.get("agent_name") or "")} for r in role_rows],
             )
         except Exception:
             pass
 
-        if payload.approve:
-            if primary_id := next(
-                (
-                    str(r.get("agent_id") or "").strip()
-                    for r in role_rows
-                    if bool(r.get("is_primary")) and str(r.get("agent_id") or "").strip()
-                ),
-                "",
-            ):
-                try:
-                    chat_conn = db()
-                    try:
-                        approval_message = _create_project_chat_message(
-                            chat_conn,
-                            project_id=project_id,
-                            author_type="user",
-                            author_id=user_id,
-                            author_label="owner",
-                            text=(
-                                f"@{primary_id} approved. Continue the approved plan into detailed execution now: "
-                                "refine the breakdown, write/update `delegation.md`, update `progress_map.json` nodes/groups, "
-                                "assign each agent, and mention them in chat when their scope is ready."
-                            ),
-                            metadata={"source": "plan.approve", "action": "approve"},
-                            mentions=[primary_id],
-                            created_at=now,
-                        )
-                        chat_conn.commit()
-                    finally:
-                        chat_conn.close()
-                    await emit(project_id, "project.chat.message", approval_message)
-                    for target in (approval_message.get("mentions") or [])[:PROJECT_CHAT_MENTION_MAX]:
-                        mention_payload = {
-                            "message_id": str(approval_message.get("id") or ""),
-                            "project_id": project_id,
-                            "target": target,
-                            "author_type": str(approval_message.get("author_type") or ""),
-                            "author_id": approval_message.get("author_id"),
-                            "author_label": approval_message.get("author_label"),
-                            "text": str(approval_message.get("text") or "")[:500],
-                            "created_at": int(approval_message.get("created_at") or now),
-                        }
-                        await emit(project_id, "project.chat.mention", mention_payload)
-                        asyncio.ensure_future(_dispatch_chat_mention_to_connector(
-                            project_id=project_id,
-                            mention_target=target,
-                            message_text=str(approval_message.get("text") or "")[:500],
-                            from_agent_id=str(approval_message.get("author_id") or "owner"),
-                            from_label=str(approval_message.get("author_label") or "owner"),
-                        ))
-                except Exception:
-                    pass
-            await emit(project_id, "project.plan.approved", {"project_id": project_id})
-            asyncio.create_task(_delegate_project_tasks(project_id))
-        else:
-            await emit(project_id, "project.plan.awaiting_approval", {"project_id": project_id})
+        await emit(project_id, "project.plan.approved", {"project_id": project_id, "status": new_status})
     
         return ProjectPlanOut(
             project_id=project_id,
@@ -1186,6 +1219,150 @@ def register_routes(app: FastAPI) -> None:
             text=str(row["plan_text"] or ""),
             updated_at=now,
             approved_at=approved_at,
+        )
+
+    @app.post("/api/projects/{project_id}/plan/reject", response_model=ProjectPlanOut)
+    async def reject_project_plan(request: Request, project_id: str, payload: Optional[ProjectPlanRejectIn] = None):
+        user_id = get_session_user(request)
+        feedback = str((payload.feedback if payload else "") or "").strip()[:2000]
+        conn = db()
+        row = conn.execute(
+            """
+            SELECT id, user_id, title, brief, goal, project_root, setup_json, plan_text, plan_status, plan_updated_at, plan_approved_at,
+                   execution_status
+            FROM projects
+            WHERE id = ? AND user_id = ?
+            """,
+            (project_id, user_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "Project not found")
+
+        now = int(time.time())
+        conn.execute(
+            """
+            UPDATE projects
+            SET plan_status = ?, plan_approved_at = NULL, plan_updated_at = ?,
+                execution_status = ?, execution_updated_at = ?
+            WHERE id = ?
+            """,
+            (PLAN_STATUS_PENDING, now, EXEC_STATUS_IDLE, now, project_id),
+        )
+        append_project_activity_log_entry(
+            conn,
+            project_id=project_id,
+            actor_type="user",
+            actor_id=user_id,
+            actor_label="owner",
+            event_type="project.plan.rejected",
+            summary="Owner requested project plan revision",
+            payload={"feedback": feedback},
+            created_at=now,
+        )
+        conn.commit()
+        conn.close()
+
+        role_rows = _project_agent_rows_from_id(project_id)
+        primary_id = next(
+            (
+                str(r.get("agent_id") or "").strip()
+                for r in role_rows
+                if bool(r.get("is_primary")) and str(r.get("agent_id") or "").strip()
+            ),
+            "",
+        )
+        _refresh_project_documents(project_id)
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="plan.rejected",
+            text=("Owner requested plan revision." + (f" Feedback: {feedback}" if feedback else ""))[:1200],
+            payload={"feedback": feedback},
+        )
+        try:
+            project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
+            hivee_api_base = _get_hivee_api_base(project_id)
+            _write_project_fundamentals_file(
+                project_dir,
+                project_id=project_id,
+                title=str(row["title"] or ""),
+                phase="planning",
+                plan_status=PLAN_STATUS_PENDING,
+                execution_status=EXEC_STATUS_IDLE,
+                hivee_api_base=hivee_api_base,
+                role_rows=role_rows,
+            )
+            _write_project_state_file(
+                project_dir,
+                phase="planning",
+                plan_status=PLAN_STATUS_PENDING,
+                execution_status=EXEC_STATUS_IDLE,
+                progress_pct=0,
+                agents=[{"agent_id": str(r.get("agent_id") or ""), "agent_name": str(r.get("agent_name") or "")} for r in role_rows],
+            )
+        except Exception:
+            pass
+
+        chat_message = None
+        if feedback or primary_id:
+            try:
+                chat_conn = db()
+                try:
+                    text = "Plan revision requested."
+                    mentions: List[str] = []
+                    if primary_id:
+                        text = f"@{primary_id} plan revision requested."
+                        mentions = [primary_id]
+                    if feedback:
+                        text = f"{text} Feedback: {feedback}"
+                    chat_message = _create_project_chat_message(
+                        chat_conn,
+                        project_id=project_id,
+                        author_type="user",
+                        author_id=user_id,
+                        author_label="owner",
+                        text=text[:4000],
+                        mentions=mentions,
+                        metadata={"source": "plan.reject", "action": "reject", "feedback": feedback},
+                        created_at=now,
+                    )
+                    chat_conn.commit()
+                finally:
+                    chat_conn.close()
+            except Exception:
+                chat_message = None
+
+        event_payload = {"project_id": project_id, "status": PLAN_STATUS_PENDING, "feedback": feedback}
+        await emit(project_id, "project.plan.rejected", event_payload)
+        if chat_message:
+            await emit(project_id, "project.chat.message", chat_message)
+            for target in (chat_message.get("mentions") or [])[:PROJECT_CHAT_MENTION_MAX]:
+                mention_payload = {
+                    "message_id": str(chat_message.get("id") or ""),
+                    "project_id": project_id,
+                    "target": target,
+                    "author_type": str(chat_message.get("author_type") or ""),
+                    "author_id": chat_message.get("author_id"),
+                    "author_label": chat_message.get("author_label"),
+                    "text": str(chat_message.get("text") or "")[:500],
+                    "created_at": int(chat_message.get("created_at") or now),
+                }
+                await emit(project_id, "project.chat.mention", mention_payload)
+                asyncio.ensure_future(_dispatch_chat_mention_to_connector(
+                    project_id=project_id,
+                    mention_target=target,
+                    message_text=str(chat_message.get("text") or "")[:500],
+                    from_agent_id=str(chat_message.get("author_id") or "owner"),
+                    from_label=str(chat_message.get("author_label") or "owner"),
+                ))
+
+        return ProjectPlanOut(
+            project_id=project_id,
+            status=PLAN_STATUS_PENDING,
+            text=str(row["plan_text"] or ""),
+            updated_at=now,
+            approved_at=None,
         )
     
     @app.get("/api/projects/{project_id}/workspace/tree", response_model=ProjectWorkspaceTreeOut)
@@ -2498,6 +2675,8 @@ def register_routes(app: FastAPI) -> None:
             portal_url=portal_url,
             invite_code=raw_invite_code,
             project_id=project_id,
+            owner_user_id=user_id,
+            project_root=project_root,
         )
         email_subject = str(composed.get("subject") or email_template.get("subject") or "").strip()[:220]
         email_body = str(composed.get("body") or email_template.get("body") or "").strip()[:6000]

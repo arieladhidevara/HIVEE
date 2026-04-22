@@ -3137,8 +3137,7 @@ function renderConnections(connections) {
 
 function projectNeedsApproval(project) {
   const plan = String(project?.plan_status || "").trim().toLowerCase();
-  const exec = String(project?.execution_status || "").trim().toLowerCase();
-  return plan === "awaiting_approval" || exec === "paused";
+  return plan === "awaiting_approval";
 }
 
 function renderProjects(projects) {
@@ -3533,6 +3532,8 @@ function eventSummary(kind, payload) {
   if (kind === "run.completed") return "Run completed.";
   if (kind === "run.stopped") return "Run stopped.";
   if (kind === "project.plan.ready") return "Plan ready. Waiting for approval.";
+  if (kind === "project.plan.approved") return "Plan approved.";
+  if (kind === "project.plan.rejected") return "Plan revision requested.";
   if (kind === "project.external_agent.joined") return `${name} joined this project${data.role ? ` as ${data.role}` : ""}.`;
   return "";
 }
@@ -3737,6 +3738,7 @@ function handleProjectEvent(kind, payload) {
       "project.plan.approved",
       "project.plan.awaiting_approval",
       "project.plan.generation_ignored",
+      "project.plan.rejected",
     ].includes(String(kind))
   ) {
     loadProjectPlan(selectedProjectId).catch(() => {});
@@ -4928,7 +4930,11 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
   let action = "";
   let label = "";
 
-  if (execStatus === "paused") {
+  if (planStatus === "awaiting_approval") {
+    target = approveBtn;
+    action = "approve";
+    label = "Approve Plan";
+  } else if (execStatus === "paused") {
     target = approveBtn;
     action = "resume";
     label = "Resume Project";
@@ -4940,7 +4946,7 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
     target = regenerateBtn;
     action = "regenerate";
     label = "Regenerate Plan";
-  } else if (planStatus === "awaiting_approval" || planStatus === "pending") {
+  } else if (planStatus === "pending") {
     target = approveBtn;
     action = "approve";
     label = "Approve Plan";
@@ -4988,6 +4994,12 @@ function renderProjectPlanInfo() {
   }
   if (readinessEl) {
     readinessEl.innerHTML = "";
+    if (String(status || "").trim().toLowerCase() === "awaiting_approval") {
+      const approvalRow = document.createElement("div");
+      approvalRow.className = "readiness-item pending";
+      approvalRow.textContent = "Plan is waiting for your approval before execution can continue.";
+      readinessEl.appendChild(approvalRow);
+    }
     const checks = Array.isArray(readiness?.checks) ? readiness.checks : [];
     if (!checks.length) {
       const row = document.createElement("div");
@@ -5046,13 +5058,25 @@ async function loadProjectPlan(projectId) {
 
 async function approveProjectPlan() {
   if (!selectedProjectId) throw new Error("Select project first");
-  const plan = await api(`/api/projects/${selectedProjectId}/plan/approve`, "POST", { approve: true });
-  selectedProjectPlan = plan;
+  await api(`/api/projects/${selectedProjectId}/plan/approve`, "POST");
   await refreshSelectedProjectData().catch(() => {});
+  await loadProjectPlan(selectedProjectId).catch(() => {});
   await loadProjectReadiness(selectedProjectId).catch(() => {});
-  renderProjectPlanInfo();
-  setMessage("chat_hint", "Plan approved. Delegation task started.", "ok");
+  setMessage("chat_hint", "Plan approved. You can start execution when ready.", "ok");
   addEvent("project.plan.approved", { project_id: selectedProjectId });
+}
+
+async function rejectProjectPlan(feedback = "") {
+  if (!selectedProjectId) throw new Error("Select project first");
+  const payload = {};
+  const cleanFeedback = String(feedback || "").trim();
+  if (cleanFeedback) payload.feedback = cleanFeedback;
+  await api(`/api/projects/${selectedProjectId}/plan/reject`, "POST", payload);
+  await refreshSelectedProjectData().catch(() => {});
+  await loadProjectPlan(selectedProjectId).catch(() => {});
+  await loadProjectReadiness(selectedProjectId).catch(() => {});
+  setMessage("chat_hint", "Plan revision requested.", "ok");
+  addEvent("project.plan.rejected", { project_id: selectedProjectId, feedback: cleanFeedback });
 }
 
 async function regenerateProjectPlan() {
@@ -7807,8 +7831,21 @@ function renderProjectIssues() {
           <span class="issue-card-title">Plan approval required</span>
           <span class="issue-card-status open">pending</span>
         </div>
+        <div class="issue-card-desc">Plan is waiting for your approval before execution can continue.</div>
+        <div class="action-row" style="margin-top:8px">
+          <button id="btn_project_approval_approve" type="button" class="primary" style="min-height:28px;padding:4px 12px;font-size:12px">Approve Plan</button>
+          <button id="btn_project_approval_reject" type="button" class="secondary" style="min-height:28px;padding:4px 12px;font-size:12px">Request Revision</button>
+        </div>
       </div>
     `;
+    $("btn_project_approval_approve")?.addEventListener("click", () => {
+      approveProjectPlan().catch((e) => setMessage("project_issues_msg", detailToText(e), "error"));
+    });
+    $("btn_project_approval_reject")?.addEventListener("click", () => {
+      const feedback = window.prompt("What should change in the plan?");
+      if (feedback === null) return;
+      rejectProjectPlan(feedback).catch((e) => setMessage("project_issues_msg", detailToText(e), "error"));
+    });
   } else {
     if (approvalsEmpty) approvalsEmpty.classList.remove("hidden");
     if (approvalsList) approvalsList.innerHTML = `<p class="helper" id="project_approvals_empty">No pending approvals.</p>`;
