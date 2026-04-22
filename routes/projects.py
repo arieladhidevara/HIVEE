@@ -144,6 +144,18 @@ def _find_legacy_connection_id(conn, *, user_id: str, openclaw_base_url: str) ->
     return str(row["id"]).strip() if row else ""
 
 
+def _connector_readiness_error(state: Dict[str, Any], *, action: str, require_online: bool = False) -> str:
+    if not state.get("exists"):
+        return "Hub not found for this user."
+    if not state.get("agent_count"):
+        if state.get("has_snapshot"):
+            return f"Hub is paired, but no real agents were discovered yet. Open Hub, wait for agent sync, then retry {action}."
+        return f"Hub has not published any agent snapshot yet. Start the connector, wait for agent sync, then retry {action}."
+    if require_online and not state.get("is_online"):
+        return f"Hub is currently offline. Start the connector, then retry {action}."
+    return f"Hub is not ready to {action} yet."
+
+
 def _invite_email_settings() -> Dict[str, Any]:
     host = str(os.getenv("INVITE_EMAIL_SMTP_HOST") or "").strip()
     username = str(os.getenv("INVITE_EMAIL_SMTP_USERNAME") or "").strip()
@@ -540,21 +552,18 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
         resolved_connection_id = str(selection.get("connection_id") or "").strip()
-        legacy_conn_id = str(selection.get("legacy_connection_id") or "").strip()
-        policy = (
-            conn.execute("SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?", (legacy_conn_id, user_id)).fetchone()
-            if legacy_conn_id else None
-        ) or conn.execute(
-            "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
-            (resolved_connection_id, user_id),
-        ).fetchone()
         conn.close()
+        connector_state = _sync_connector_agent_state(user_id=user_id, connection_id=resolved_connection_id, persist_policy=True)
 
         workspace = _ensure_user_workspace(user_id)
         workspace_root = str(workspace["workspace_root"])
         templates_root = str(workspace["templates_root"])
         setup_template = _read_project_setup_template(user_id)
-        effective_agent_id = payload.agent_id or (str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else None)
+        effective_agent_id = str(payload.agent_id or connector_state.get("main_agent_id") or "").strip() or None
+        if not effective_agent_id:
+            raise HTTPException(400, _connector_readiness_error(connector_state, action="start project setup"))
+        if not connector_state.get("is_online"):
+            raise HTTPException(400, _connector_readiness_error(connector_state, action="start project setup", require_online=True))
         instruction = _build_new_project_setup_instruction(
             payload.message or "Start new project setup and ask the first question.",
             template_content=setup_template,
@@ -589,16 +598,9 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
         resolved_connection_id = str(selection.get("connection_id") or "").strip()
-        legacy_conn_id = str(selection.get("legacy_connection_id") or "").strip()
-        policy = (
-            conn.execute("SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?", (legacy_conn_id, user_id)).fetchone()
-            if legacy_conn_id else None
-        ) or conn.execute(
-            "SELECT main_agent_id FROM connection_policies WHERE connection_id = ? AND user_id = ?",
-            (resolved_connection_id, user_id),
-        ).fetchone()
         conn.close()
-    
+        connector_state = _sync_connector_agent_state(user_id=user_id, connection_id=resolved_connection_id, persist_policy=True)
+
         workspace = _ensure_user_workspace(user_id)
         workspace_root = str(workspace["workspace_root"])
         transcript = payload.transcript or []
@@ -616,9 +618,13 @@ def register_routes(app: FastAPI) -> None:
                 "setup_details": local_details,
                 "raw": "LOCAL_DRAFT_OPTIMIZED",
             }
-    
+
         setup_template = _read_project_setup_template(user_id)
-        effective_agent_id = payload.agent_id or (str(policy["main_agent_id"]) if (policy and policy["main_agent_id"]) else None)
+        effective_agent_id = str(payload.agent_id or connector_state.get("main_agent_id") or "").strip() or None
+        if not effective_agent_id:
+            raise HTTPException(400, _connector_readiness_error(connector_state, action="generate a setup draft"))
+        if not connector_state.get("is_online"):
+            raise HTTPException(400, _connector_readiness_error(connector_state, action="generate a setup draft", require_online=True))
         instruction = _build_setup_draft_instruction(
             template_content=setup_template,
             transcript=transcript,
@@ -691,74 +697,12 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             raise HTTPException(int(selection.get("status") or 400), str(selection.get("error") or "Connector not found"))
         resolved_connection_id = str(selection.get("connection_id") or "").strip()
-        # For legacy tables (connection_policies, managed_agents) that reference openclaw_connections.id
-        legacy_conn_id = str(selection.get("legacy_connection_id") or "").strip()
-
-        def _query_policy(cid: str):
-            return conn.execute(
-                "SELECT main_agent_id, main_agent_name FROM connection_policies WHERE connection_id = ? AND user_id = ? LIMIT 1",
-                (cid, user_id),
-            ).fetchone()
-
-        def _query_fallback_agents(cid: str):
-            return conn.execute(
-                """
-                SELECT agent_id, agent_name FROM managed_agents
-                WHERE user_id = ? AND connection_id = ?
-                ORDER BY discovered_at ASC
-                """,
-                (user_id, cid),
-            ).fetchall()
-
-        def _pick_real_agent(rows):
-            for r in rows or []:
-                aid = str(r["agent_id"] or "").strip()
-                if aid and not _is_default_placeholder_agent(aid):
-                    return r
-            return None
-
-        # Try legacy ID first (openclaw_connections), then fall back to connector ID
-        policy_row = (_query_policy(legacy_conn_id) if legacy_conn_id else None) or _query_policy(resolved_connection_id)
-        main_agent_id = str(policy_row["main_agent_id"] or "").strip() if policy_row else ""
-        main_agent_name = str(policy_row["main_agent_name"] or "").strip() if policy_row else ""
-        # Never use the openclaw/default placeholder as the primary — fall through to a real agent.
-        if main_agent_id and _is_default_placeholder_agent(main_agent_id):
-            main_agent_id = ""
-            main_agent_name = ""
+        connector_state = _sync_connector_agent_state(user_id=user_id, connection_id=resolved_connection_id, persist_policy=True)
+        main_agent_id = str(connector_state.get("main_agent_id") or "").strip()
+        main_agent_name = str(connector_state.get("main_agent_name") or main_agent_id).strip() or main_agent_id
         if not main_agent_id:
-            # No policy agent set (or it was a placeholder) — fall back to first real managed agent.
-            fallback_row = (
-                (_pick_real_agent(_query_fallback_agents(legacy_conn_id)) if legacy_conn_id else None)
-                or _pick_real_agent(_query_fallback_agents(resolved_connection_id))
-            )
-            if fallback_row:
-                main_agent_id = str(fallback_row["agent_id"] or "").strip()
-                main_agent_name = str(fallback_row["agent_name"] or main_agent_id).strip() or main_agent_id
-            else:
-                conn.close()
-                raise HTTPException(
-                    400,
-                    "Primary owner agent is not configured for this connection. Pick a real agent (not openclaw/default) and re-run bootstrap.",
-                )
-        # Use whichever connection_id the policy/managed_agents row lives under
-        policy_conn_id = legacy_conn_id or resolved_connection_id
-        managed_primary = conn.execute(
-            """
-            SELECT agent_id, agent_name
-            FROM managed_agents
-            WHERE user_id = ? AND connection_id = ? AND agent_id = ?
-            LIMIT 1
-            """,
-            (user_id, policy_conn_id, main_agent_id),
-        ).fetchone()
-        # Use the managed row's name if available; otherwise fall back to the
-        # policy name or the raw agent ID.  Do NOT block project creation just
-        # because the managed-agents cache hasn't been populated yet.
-        main_agent_name = str(
-            (managed_primary["agent_name"] if managed_primary else None)
-            or main_agent_name
-            or main_agent_id
-        ).strip() or main_agent_id
+            conn.close()
+            raise HTTPException(400, _connector_readiness_error(connector_state, action="create a project"))
 
         pid = new_id("prj")
         now = int(time.time())

@@ -265,6 +265,222 @@ def _upsert_connection_policy(
     conn.commit()
     conn.close()
 
+
+def _sync_connector_agent_state(
+    *,
+    user_id: str,
+    connection_id: str,
+    provision_from_snapshot: bool = False,
+    persist_policy: bool = True,
+) -> Dict[str, Any]:
+    conn = db()
+    connector_row = conn.execute(
+        """
+        SELECT id, name, status, last_seen_at, openclaw_base_url
+        FROM connectors
+        WHERE id = ? AND user_id = ?
+        LIMIT 1
+        """,
+        (connection_id, user_id),
+    ).fetchone()
+    if not connector_row:
+        conn.close()
+        return {
+            "ok": False,
+            "exists": False,
+            "connection_id": connection_id,
+            "agents": [],
+            "agent_count": 0,
+            "main_agent_id": None,
+            "main_agent_name": None,
+            "bootstrap_status": "missing",
+            "bootstrap_error": "Connector not found",
+            "has_snapshot": False,
+            "is_online": False,
+            "status": "missing",
+            "last_seen_at": None,
+            "workspace_root": "",
+            "templates_root": "",
+            "workspace_tree": "",
+            "provision": None,
+        }
+
+    policy_row = conn.execute(
+        """
+        SELECT main_agent_id, main_agent_name, bootstrap_status, bootstrap_error,
+               workspace_root, templates_root, workspace_tree
+        FROM connection_policies
+        WHERE connection_id = ? AND user_id = ?
+        LIMIT 1
+        """,
+        (connection_id, user_id),
+    ).fetchone()
+    snapshot_row = conn.execute(
+        """
+        SELECT snapshot_json, updated_at
+        FROM connector_agent_snapshots
+        WHERE connector_id = ?
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (connection_id,),
+    ).fetchone()
+    managed_rows = conn.execute(
+        """
+        SELECT agent_id, agent_name
+        FROM managed_agents
+        WHERE user_id = ? AND connection_id = ? AND status = 'active'
+        ORDER BY updated_at DESC, provisioned_at DESC, agent_name ASC
+        """,
+        (user_id, connection_id),
+    ).fetchall()
+    conn.close()
+
+    snapshot_payload: Dict[str, Any] = {}
+    if snapshot_row:
+        try:
+            snapshot_payload = json.loads(str(snapshot_row["snapshot_json"] or "{}"))
+            if not isinstance(snapshot_payload, dict):
+                snapshot_payload = {}
+        except Exception:
+            snapshot_payload = {}
+
+    snapshot_agents = _normalize_managed_agent_candidates(_extract_agents_list(snapshot_payload) or [])
+    provision_result = None
+    if provision_from_snapshot and snapshot_agents:
+        first_snapshot = snapshot_agents[0]
+        provision_result = _provision_managed_agents_for_connection(
+            user_id=user_id,
+            env_id=None,
+            connection_id=connection_id,
+            base_url=str(connector_row["openclaw_base_url"] or "").strip(),
+            raw_agents=[agent.get("raw") or {"id": agent["id"], "name": agent["name"]} for agent in snapshot_agents],
+            fallback_agent_id=str(first_snapshot.get("id") or "").strip() or None,
+            fallback_agent_name=str(first_snapshot.get("name") or "").strip() or None,
+        )
+
+    combined_agents: List[Dict[str, Any]] = []
+    seen_agent_ids: set[str] = set()
+    for item in snapshot_agents:
+        agent_id = str(item.get("id") or "").strip()
+        if not agent_id or agent_id in seen_agent_ids:
+            continue
+        seen_agent_ids.add(agent_id)
+        combined_agents.append({"id": agent_id, "name": str(item.get("name") or agent_id).strip() or agent_id})
+    for row in managed_rows or []:
+        agent_id = str(row["agent_id"] or "").strip()
+        if not agent_id or _is_default_placeholder_agent(agent_id) or agent_id in seen_agent_ids:
+            continue
+        seen_agent_ids.add(agent_id)
+        combined_agents.append(
+            {
+                "id": agent_id,
+                "name": str(row["agent_name"] or agent_id).strip() or agent_id,
+            }
+        )
+
+    agent_name_by_id = {str(item.get("id") or "").strip(): str(item.get("name") or item.get("id") or "").strip() for item in combined_agents}
+    auto_primary = None
+    for item in combined_agents:
+        aid = str(item.get("id") or "").strip()
+        name = str(item.get("name") or aid).strip()
+        haystack = f"{aid} {name}".lower()
+        if "main" in haystack:
+            auto_primary = {"id": aid, "name": name}
+            break
+    if auto_primary is None and combined_agents:
+        first_agent = combined_agents[0]
+        auto_primary = {
+            "id": str(first_agent.get("id") or "").strip(),
+            "name": str(first_agent.get("name") or first_agent.get("id") or "").strip(),
+        }
+    policy_main_agent_id = str(policy_row["main_agent_id"] or "").strip() if policy_row else ""
+    policy_main_agent_name = str(policy_row["main_agent_name"] or "").strip() if policy_row else ""
+    if policy_main_agent_id and _is_default_placeholder_agent(policy_main_agent_id):
+        policy_main_agent_id = ""
+        policy_main_agent_name = ""
+
+    main_agent_id = policy_main_agent_id or str((auto_primary or {}).get("id") or "").strip()
+    main_agent_name = (
+        policy_main_agent_name
+        or str((auto_primary or {}).get("name") or "").strip()
+        or agent_name_by_id.get(main_agent_id, "")
+        or main_agent_id
+    ).strip()
+
+    has_snapshot = snapshot_row is not None
+    if main_agent_id:
+        bootstrap_status = "ok"
+        bootstrap_error = None
+    elif has_snapshot:
+        bootstrap_status = "no_agents"
+        bootstrap_error = "No real agents found in the latest hub snapshot."
+    else:
+        bootstrap_status = "awaiting_agent_snapshot"
+        bootstrap_error = "Hub has not published any agent snapshot yet."
+
+    workspace = _ensure_user_workspace(user_id)
+    if persist_policy:
+        current_main_agent_id = str(policy_row["main_agent_id"] or "").strip() if policy_row else ""
+        current_main_agent_name = str(policy_row["main_agent_name"] or "").strip() if policy_row else ""
+        current_bootstrap_status = str(policy_row["bootstrap_status"] or "").strip() if policy_row else ""
+        current_bootstrap_error = str(policy_row["bootstrap_error"] or "").strip() if policy_row else ""
+        current_workspace_root = str(policy_row["workspace_root"] or "").strip() if policy_row else ""
+        current_templates_root = str(policy_row["templates_root"] or "").strip() if policy_row else ""
+        current_workspace_tree = str(policy_row["workspace_tree"] or "").strip() if policy_row else ""
+        next_workspace_root = str(workspace["workspace_root"] or "").strip()
+        next_templates_root = str(workspace["templates_root"] or "").strip()
+        next_workspace_tree = str(workspace.get("workspace_tree") or "").strip()
+        if (
+            not policy_row
+            or current_main_agent_id != main_agent_id
+            or current_main_agent_name != main_agent_name
+            or current_bootstrap_status != bootstrap_status
+            or current_bootstrap_error != str(bootstrap_error or "")
+            or current_workspace_root != next_workspace_root
+            or current_templates_root != next_templates_root
+            or current_workspace_tree != next_workspace_tree
+        ):
+            _upsert_connection_policy(
+                connection_id,
+                user_id,
+                main_agent_id=main_agent_id or None,
+                main_agent_name=main_agent_name or None,
+                bootstrap_status=bootstrap_status,
+                bootstrap_error=bootstrap_error,
+                workspace_tree=workspace.get("workspace_tree"),
+                workspace_root=next_workspace_root,
+                templates_root=next_templates_root,
+            )
+
+    connector_status = str(connector_row["status"] or "").strip().lower() or "unknown"
+    last_seen_at = _to_int(connector_row["last_seen_at"])
+    is_online = bool(
+        connector_status in {"online", "active", "ready"}
+        and last_seen_at > 0
+        and (time.time() - last_seen_at) <= 60
+    )
+
+    return {
+        "ok": bool(main_agent_id),
+        "exists": True,
+        "connection_id": connection_id,
+        "agents": combined_agents,
+        "agent_count": len(combined_agents),
+        "main_agent_id": main_agent_id or None,
+        "main_agent_name": main_agent_name or None,
+        "bootstrap_status": bootstrap_status,
+        "bootstrap_error": bootstrap_error,
+        "has_snapshot": has_snapshot,
+        "is_online": is_online,
+        "status": connector_status,
+        "last_seen_at": last_seen_at or None,
+        "workspace_root": workspace["workspace_root"],
+        "templates_root": workspace["templates_root"],
+        "workspace_tree": workspace.get("workspace_tree") or "",
+        "provision": provision_result,
+    }
+
 async def _bootstrap_connection_workspace(user_id: str, base_url: str, api_key: str) -> Dict[str, Any]:
     main_agent_id: Optional[str] = None
     main_agent_name: Optional[str] = None

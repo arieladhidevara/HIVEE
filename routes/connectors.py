@@ -118,16 +118,12 @@ def register_routes(app: FastAPI) -> None:
         conn.commit()
         conn.close()
 
-        if snapshot_data["agents"]:
-            _provision_managed_agents_for_connection(
-                user_id=user_id,
-                env_id=None,
-                connection_id=connector_id,
-                base_url=str(payload.openclaw.baseUrl or ""),
-                raw_agents=snapshot_data["agents"],
-                fallback_agent_id=str(snapshot_data["agents"][0].get("id") or "").strip() or None,
-                fallback_agent_name=str(snapshot_data["agents"][0].get("name") or "").strip() or None,
-            )
+        _sync_connector_agent_state(
+            user_id=user_id,
+            connection_id=connector_id,
+            provision_from_snapshot=True,
+            persist_policy=True,
+        )
 
         return ConnectorRegisterOut(
             connectorId=connector_id,
@@ -167,17 +163,12 @@ def register_routes(app: FastAPI) -> None:
         conn.commit()
         conn.close()
 
-        snapshot_agents = _extract_agents_list(payload.openclaw) or []
-        if snapshot_agents:
-            base_url = str(payload.openclaw.get("baseUrl") or connector.get("openclaw_base_url") or "").strip()
-            _provision_managed_agents_for_connection(
+        if payload.openclaw and isinstance(payload.openclaw, dict):
+            _sync_connector_agent_state(
                 user_id=str(connector.get("user_id") or ""),
-                env_id=None,
                 connection_id=connector_id,
-                base_url=base_url,
-                raw_agents=snapshot_agents,
-                fallback_agent_id=str(snapshot_agents[0].get("id") or "").strip() or None if isinstance(snapshot_agents[0], dict) else None,
-                fallback_agent_name=str(snapshot_agents[0].get("name") or "").strip() or None if isinstance(snapshot_agents[0], dict) else None,
+                provision_from_snapshot=True,
+                persist_policy=True,
             )
         return {"ok": True}
 

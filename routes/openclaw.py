@@ -209,39 +209,24 @@ def register_routes(app: FastAPI) -> None:
         conn = db()
         connector_row = _get_connector_row(connection_id, user_id, conn)
         if connector_row:
-            agents = _get_connector_agents(connection_id, conn)
-            first = agents[0] if agents else None
-            main_agent_id = first["id"] if first else None
-            main_agent_name = first["name"] if first else None
-            workspace = _ensure_user_workspace(user_id)
-            if agents:
-                _provision_managed_agents_for_connection(
-                    user_id=user_id,
-                    env_id=None,
-                    connection_id=connection_id,
-                    base_url=str(connector_row.get("openclaw_base_url") or ""),
-                    raw_agents=agents,
-                    fallback_agent_id=main_agent_id,
-                    fallback_agent_name=main_agent_name,
-                )
-            _upsert_connection_policy(
-                connection_id,
-                user_id,
-                main_agent_id=main_agent_id,
-                main_agent_name=main_agent_name,
-                bootstrap_status="ok" if agents else "no_agents",
-                bootstrap_error=None if agents else "No agents found in connector snapshot",
-                workspace_tree=workspace.get("workspace_tree"),
-                workspace_root=workspace["workspace_root"],
-                templates_root=workspace["templates_root"],
-            )
             conn.close()
+            state = _sync_connector_agent_state(
+                user_id=user_id,
+                connection_id=connection_id,
+                provision_from_snapshot=True,
+                persist_policy=True,
+            )
+            if not state.get("agent_count"):
+                raise HTTPException(
+                    400,
+                    str(state.get("bootstrap_error") or "No real agents found in the latest hub snapshot."),
+                )
             return {
                 "ok": True,
-                "agents": agents,
-                "main_agent_id": main_agent_id,
-                "main_agent_name": main_agent_name,
-                "workspace_root": workspace["workspace_root"],
+                "agents": state.get("agents") or [],
+                "main_agent_id": state.get("main_agent_id"),
+                "main_agent_name": state.get("main_agent_name"),
+                "workspace_root": state.get("workspace_root"),
                 "transport": "connector",
                 "mode": "connector",
             }
@@ -543,7 +528,6 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/openclaw/{connection_id}/policy", response_model=ConnectionPolicyOut)
     async def get_connection_policy(request: Request, connection_id: str):
         user_id = get_session_user(request)
-        workspace = _ensure_user_workspace(user_id)
         conn = db()
         connector_exists = conn.execute(
             "SELECT id FROM connectors WHERE id = ? AND user_id = ?",
@@ -568,35 +552,18 @@ def register_routes(app: FastAPI) -> None:
             if not connector_exists:
                 conn.close()
                 raise HTTPException(404, "Connection not found")
-    
-        policy = conn.execute(
-            """
-            SELECT connection_id, workspace_root, templates_root, main_agent_id, main_agent_name, bootstrap_status, bootstrap_error, workspace_tree
-            FROM connection_policies
-            WHERE connection_id = ? AND user_id = ?
-            """,
-            (connection_id, user_id),
-        ).fetchone()
         conn.close()
-        if not policy:
-            return ConnectionPolicyOut(
-                connection_id=connection_id,
-                workspace_root=workspace["workspace_root"],
-                templates_root=workspace["templates_root"],
-                main_agent_id=None,
-                main_agent_name=None,
-                bootstrap_status="unknown",
-                bootstrap_error=None,
-                workspace_tree=workspace["workspace_tree"],
-            )
-        payload = dict(policy)
-        if not payload.get("workspace_tree"):
-            payload["workspace_tree"] = workspace["workspace_tree"]
-        if not payload.get("workspace_root"):
-            payload["workspace_root"] = workspace["workspace_root"]
-        if not payload.get("templates_root"):
-            payload["templates_root"] = workspace["templates_root"]
-        return ConnectionPolicyOut(**payload)
+        state = _sync_connector_agent_state(user_id=user_id, connection_id=connection_id, persist_policy=True)
+        return ConnectionPolicyOut(
+            connection_id=connection_id,
+            workspace_root=str(state.get("workspace_root") or ""),
+            templates_root=str(state.get("templates_root") or ""),
+            main_agent_id=state.get("main_agent_id"),
+            main_agent_name=state.get("main_agent_name"),
+            bootstrap_status=str(state.get("bootstrap_status") or "unknown"),
+            bootstrap_error=state.get("bootstrap_error"),
+            workspace_tree=str(state.get("workspace_tree") or ""),
+        )
     
 
     @app.post("/api/openclaw/{connection_id}/chat")
