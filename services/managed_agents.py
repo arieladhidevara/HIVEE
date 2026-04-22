@@ -2461,7 +2461,6 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
     ):
         return {"ok": True, "text": existing_info.strip(), "source": "existing", "agent_id": primary_agent_id}
 
-    _hivee_api_base = _get_hivee_api_base(str(row["id"] or ""))
     context = _project_context_instruction(
         title=str(row["title"] or ""),
         brief=str(row["brief"] or ""),
@@ -2470,7 +2469,6 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         role_rows=role_rows,
         project_root=str(row["project_root"] or ""),
         plan_status=_coerce_plan_status(row["plan_status"]),
-        hivee_api_base=_hivee_api_base,
     )
     roster = _agent_roster_markdown(role_rows)
     task = (
@@ -4195,7 +4193,6 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 role_rows=role_rows,
                 project_root=str(row["project_root"] or ""),
                 plan_status=PLAN_STATUS_APPROVED,
-                hivee_api_base=_get_hivee_api_base(project_id),
             )
             + "\n\n"
             + f"You are invited agent `{aid}` with role `{role}`.\n"

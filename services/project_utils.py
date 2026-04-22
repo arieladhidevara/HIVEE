@@ -1224,18 +1224,19 @@ def _project_protocol_markdown(*, title: str, brief: str, goal: str) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _artifact_sync_rule_lines(*, project_root: Optional[str] = None, hivee_api_base: str = "") -> List[str]:
+def _artifact_sync_rule_lines(*, project_root: Optional[str] = None) -> List[str]:
+    project_root_hint = _root_hint_for_agent(project_root)
     lines = [
         "Artifact sync policy:",
         "- Persist every deliverable and handoff artifact into Hivee project files via `output_files`.",
         "- Use structured `actions` when you must mutate real project files, team chat state, or task/progress state in place.",
         "- Use project-relative paths only (no absolute machine/server paths).",
-        "- Do not look for project files on your local filesystem — they live on the Hivee server.",
+        "- Do not mark work as done if files exist only on provider/local agent server.",
         "- If external tools/runtime produce artifacts, copy full final content back into `output_files`.",
         f"- Preferred artifact-sync roots: `{USER_OUTPUTS_DIRNAME}`, `{PROJECT_INFO_DIRNAME}`, `agents`, `logs`.",
     ]
-    if hivee_api_base:
-        lines.append(f"- Read existing project files via Hivee API: GET {hivee_api_base}/files/content?path=<relative_path>")
+    if project_root_hint:
+        lines.append(f"- Hivee source-of-truth project root: `{project_root_hint}`.")
     return lines
 
 def _project_context_instruction(
@@ -1247,7 +1248,6 @@ def _project_context_instruction(
     role_rows: Optional[List[Dict[str, Any]]] = None,
     project_root: Optional[str] = None,
     plan_status: str = PLAN_STATUS_PENDING,
-    hivee_api_base: str = "",
 ) -> str:
     sections = [
         "Project context (always align your answer to this):",
@@ -1281,7 +1281,7 @@ def _project_context_instruction(
         sections.append("- If execution is blocked by missing user info/approval, pause and ask the owner clearly.")
         sections.append("- For pause points, return JSON with `requires_user_input=true`, `pause_reason`, and optional `resume_hint`.")
         sections.append("- If owner explicitly says SKIP for missing info, make reasonable assumptions and continue execution.")
-    sections.extend(_artifact_sync_rule_lines(project_root=project_root, hivee_api_base=hivee_api_base))
+    sections.extend(_artifact_sync_rule_lines(project_root=project_root))
     sections.append("- When handing off dependencies, mention the related invited agent explicitly using @agent_id.")
     sections.append(
         "- If you generate or modify files, include them in JSON field `output_files` as "
@@ -2752,7 +2752,6 @@ def _plan_prompt_from_project(
     role_rows: List[Dict[str, Any]],
     project_root: Optional[str] = None,
     project_info_excerpt: str = "",
-    hivee_api_base: str = "",
 ) -> str:
     context = _project_context_instruction(
         title=title,
@@ -2762,7 +2761,6 @@ def _plan_prompt_from_project(
         role_rows=role_rows,
         project_root=project_root,
         plan_status=PLAN_STATUS_PENDING,
-        hivee_api_base=hivee_api_base,
     )
     roster = _agent_roster_markdown(role_rows)
     return (
@@ -5339,21 +5337,21 @@ def _pick_main_agent(agents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     )
     return ranked[0]
 
-def _workspace_policy_lines(workspace_root: str, project_root: Optional[str] = None, *, hivee_api_base: str = "") -> List[str]:
+def _workspace_policy_lines(workspace_root: str, project_root: Optional[str] = None) -> List[str]:
+    workspace_root_hint = _root_hint_for_agent(workspace_root, fallback=HIVEE_ROOT)
     project_root_hint = _root_hint_for_agent(project_root)
     lines = [
-        "Workspace & file access policy:",
-        "- IMPORTANT: Project files are stored on the Hivee server, NOT on your local filesystem.",
-        "- Do NOT attempt to read/write project files via local filesystem paths.",
-        "- Use `output_files` in your JSON response to write/update files (Hivee syncs them automatically).",
-        "- Use `actions` with `write_file`/`append_file` for explicit file mutations.",
+        "User workspace preference:",
+        f"- Keep operations within `{workspace_root_hint}` whenever possible.",
+        f"- Ask for owner approval before accessing paths outside `{workspace_root_hint}`.",
     ]
-    if hivee_api_base:
-        lines.append(f"- To read project files, use the Hivee API: GET {hivee_api_base}/files/content?path=<relative_path>")
-        lines.append(f"- To list project files, use: GET {hivee_api_base}/files?path=<dir>")
     if project_root_hint:
-        lines.append(f"- Project root reference (server-side): `{project_root_hint}` — use project-relative paths in output_files/actions.")
-    lines.append("- Use project-relative paths only (e.g. `Outputs/essay.md`, `Project Info/project-plan.md`).")
+        lines.extend(
+            [
+                f"- For this project, use `{project_root_hint}` as the default working directory.",
+                "- Ask project owner first before touching paths outside the project root.",
+            ]
+        )
     lines.append("- If permission is needed, ask a clear question first and wait for confirmation.")
     return lines
 
@@ -5540,10 +5538,9 @@ def _compose_guardrailed_message(
     workspace_root: str,
     project_root: Optional[str] = None,
     task_instruction: Optional[str] = None,
-    hivee_api_base: str = "",
 ) -> str:
     clean_user_message = (user_message or "").strip() or "Continue."
-    sections: List[str] = ["\n".join(_workspace_policy_lines(workspace_root, project_root, hivee_api_base=hivee_api_base))]
+    sections: List[str] = ["\n".join(_workspace_policy_lines(workspace_root, project_root))]
     if task_instruction:
         sections.append(task_instruction.strip())
     sections.append(f"User message:\n{clean_user_message}")
