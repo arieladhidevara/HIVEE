@@ -3508,6 +3508,7 @@ function eventSummary(kind, payload) {
   if (kind === "project.delegation.failed") return `Delegation failed: ${detailToText(data.error || payload)}`;
   if (kind === "project.delegation.stopped") return "Delegation stopped by user.";
   if (kind === "agent.primary.update") return `Primary update: ${shortText(data.text || "", 180)}`;
+  if (kind === "agent.primary.live") return `Primary: ${shortText(data.note || "", 180)}`;
   if (kind === "agent.task.assigned") return `${name} assigned task.`;
   if (kind === "agent.task.started") return `${name} started task.`;
   if (kind === "agent.task.reported") return `${name} reported update.`;
@@ -3560,6 +3561,11 @@ function eventChatMessage(kind, payload) {
       };
     }
     return { role: "agent", agentId: data.agent_id || "primary", text: raw || "I have a new project update.", meta: `${name}` };
+  }
+  if (kind === "agent.primary.live") {
+    const note = String(data.note || "").trim();
+    if (!note) return null;
+    return { role: "agent", agentId: data.agent_id || "primary", text: note, meta: `${name} (delegating)` };
   }
   if (kind === "agent.task.assigned") {
     const mentions = Array.isArray(data.mentions) && data.mentions.length ? ` I will sync with ${data.mentions.map((x) => `@${x}`).join(", ")}.` : "";
@@ -3666,6 +3672,12 @@ function handleProjectEvent(kind, payload) {
       if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
       agentLiveState[evtAgentId].status = "failed";
       agentLiveState[evtAgentId].note = String(data.error || "").trim().slice(0, 80);
+      renderAgentLiveCards();
+    } else if (kind === "agent.primary.live") {
+      if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      agentLiveState[evtAgentId].note = String(data.note || "").trim();
+      agentLiveState[evtAgentId].status = "working";
+      agentLiveState[evtAgentId].taskTitle = agentLiveState[evtAgentId].taskTitle || "Delegation";
       renderAgentLiveCards();
     }
   }

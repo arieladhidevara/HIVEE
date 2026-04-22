@@ -254,6 +254,8 @@ async def connector_chat_sync(
             ).strip()
             transport_used = output.get("transport") or "connector"
             print(f"[connector_chat_sync] ok={ok} text_len={len(text)} transport={transport_used}", flush=True)
+            # Extract WS frames for progress tracking (if present)
+            frames = output.get("frames") or inner.get("frames") or []
             if ok and text:
                 return {
                     "ok": True,
@@ -261,6 +263,7 @@ async def connector_chat_sync(
                     "transport": "http via connector",
                     "path": "connector",
                     "response": output.get("raw") or output or inner,
+                    "frames": frames if isinstance(frames, list) else [],
                     "connector_id": connector_id,
                     "command_id": command_id,
                 }
