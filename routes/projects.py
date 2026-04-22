@@ -812,6 +812,8 @@ def register_routes(app: FastAPI) -> None:
         _write_project_agents_file(
             project_dir,
             role_rows=[{"agent_id": main_agent_id, "agent_name": main_agent_name, "role": "Primary owner agent", "is_primary": True}],
+            project_id=pid,
+            hivee_api_base=hivee_api_base,
         )
         _write_project_state_file(
             project_dir,
@@ -820,12 +822,16 @@ def register_routes(app: FastAPI) -> None:
             execution_status=EXEC_STATUS_IDLE,
             progress_pct=0,
             agents=[{"agent_id": main_agent_id, "agent_name": main_agent_name}],
+            hivee_api_base=hivee_api_base,
         )
         _write_project_scope_file(
             project_dir,
             agent_id=main_agent_id,
             agent_name=main_agent_name,
             is_primary=True,
+            write_paths=["*"],
+            hivee_api_base=hivee_api_base,
+            project_id=pid,
         )
 
         await emit(pid, "project.created", {"title": payload.title})
@@ -838,7 +844,6 @@ def register_routes(app: FastAPI) -> None:
             text=f"Project created: {payload.title}",
             payload={"brief": payload.brief[:500], "goal": payload.goal[:500]},
         )
-        asyncio.create_task(_generate_project_plan(pid))
         return ProjectOut(
             id=pid,
             title=payload.title,
@@ -1841,7 +1846,6 @@ def register_routes(app: FastAPI) -> None:
                 for r in all_rows
             ],
         )
-        _refresh_project_documents(project_id)
 
         _append_project_daily_log(
             owner_user_id=user_id,
@@ -1853,6 +1857,9 @@ def register_routes(app: FastAPI) -> None:
         await emit(project_id, "project.agents_set", {"count": len(normalized_agent_ids), "primary_agent_id": primary_id})
 
         current_plan_status = _coerce_plan_status(proj["plan_status"])
+        final_plan_status = current_plan_status
+        final_execution_status = _coerce_execution_status(proj["execution_status"])
+        final_progress_pct = _clamp_progress(proj["progress_pct"])
         added_agent_ids = sorted(next_owner_ids - existing_owner_ids)
 
         if current_plan_status == PLAN_STATUS_APPROVED:
@@ -1873,6 +1880,9 @@ def register_routes(app: FastAPI) -> None:
             reset_requested_at = int(time.time())
             was_generating = current_plan_status == PLAN_STATUS_GENERATING
             next_plan_status = PLAN_STATUS_GENERATING if was_generating else PLAN_STATUS_PENDING
+            final_plan_status = next_plan_status
+            final_execution_status = EXEC_STATUS_IDLE
+            final_progress_pct = 0
             _conn = db()
             _conn.execute(
                 """
@@ -1894,6 +1904,65 @@ def register_routes(app: FastAPI) -> None:
             if was_generating:
                 asyncio.create_task(_generate_project_plan(project_id, force=True))
                 await emit(project_id, "project.plan.generating", {"project_id": project_id, "reason": "roster_changed"})
+
+        _refresh_project_documents(project_id)
+        try:
+            project_dir = _resolve_owner_project_dir(user_id, str(proj["project_root"] or ""))
+            hivee_api_base = _get_hivee_api_base(project_id)
+            role_rows = [
+                {
+                    "agent_id": str(r["agent_id"] or ""),
+                    "agent_name": str(r["agent_name"] or ""),
+                    "role": str(r["role"] or ""),
+                    "is_primary": bool(r["is_primary"]),
+                }
+                for r in all_rows
+            ]
+            primary_agent_name = next(
+                (
+                    str(r.get("agent_name") or primary_id).strip() or primary_id
+                    for r in role_rows
+                    if bool(r.get("is_primary")) and str(r.get("agent_id") or "").strip() == primary_id
+                ),
+                primary_id,
+            )
+            phase = "execution" if final_plan_status == PLAN_STATUS_APPROVED else "setup"
+            _write_project_fundamentals_file(
+                project_dir,
+                project_id=project_id,
+                title=str(proj["title"] or ""),
+                phase=phase,
+                plan_status=final_plan_status,
+                execution_status=final_execution_status,
+                hivee_api_base=hivee_api_base,
+                role_rows=role_rows,
+            )
+            _write_project_agents_file(
+                project_dir,
+                role_rows=role_rows,
+                project_id=project_id,
+                hivee_api_base=hivee_api_base,
+            )
+            _write_project_state_file(
+                project_dir,
+                phase=phase,
+                plan_status=final_plan_status,
+                execution_status=final_execution_status,
+                progress_pct=final_progress_pct,
+                agents=[{"agent_id": str(r.get("agent_id") or ""), "agent_name": str(r.get("agent_name") or "")} for r in role_rows],
+                hivee_api_base=hivee_api_base,
+            )
+            _write_project_scope_file(
+                project_dir,
+                agent_id=primary_id,
+                agent_name=primary_agent_name,
+                is_primary=True,
+                write_paths=["*"],
+                hivee_api_base=hivee_api_base,
+                project_id=project_id,
+            )
+        except Exception:
+            pass
 
         return {"ok": True, "primary_agent_id": primary_id, "agent_access_tokens": issued_tokens}
 

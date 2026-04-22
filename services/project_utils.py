@@ -344,7 +344,7 @@ X-Project-Agent-Token: <your_hivee_project_token>
 2. **Always populate `chat_update`.** Even a brief status is required.
 3. **Never store final deliverables only on your local runtime.** Push everything via `output_files` or `actions: write_file`.
 4. **Never assume missing information silently.** Ask via `requires_user_input` or state assumptions in `chat_update`.
-5. **Never edit system-managed files:** `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`. Exception: primary agent MAY write `plan.md`, `delegation.md`, and `progress_map.json` when explicitly assigned to do so by Hivee.
+5. **Never edit system-managed files:** `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`. Exception: primary agent MAY write `plan.md`, `Project Info/project-plan.md`, `delegation.md`, and `progress_map.json` when explicitly assigned to do so by Hivee.
 6. **Never write outside your assigned paths** (defined in `scope.md`).
 7. **Never skip `@mentions`** when handing off work or when blocked.
 8. **Never hallucinate agent IDs.** Read `agents.md` and use exact IDs.
@@ -455,6 +455,8 @@ Do NOT use `Authorization: Bearer` — it will return 401.
 
 ---
 
+Primary-plan exception: when Hivee explicitly assigns plan maintenance, the primary agent may write both `plan.md` and `Project Info/project-plan.md` using the same project token headers shown above.
+
 ## Agents in This Project
 
 | @mention | Name | Role |
@@ -472,6 +474,16 @@ Full details (session keys, connector info): `GET {base}/files/agents.md`
 GET {base}/files/<path>
 X-Project-Agent-Id: <your_hivee_agent_id>
 X-Project-Agent-Token: <your_hivee_project_token>
+```
+
+### Write a file directly
+```
+POST {base}/files/write
+X-Project-Agent-Id: <your_hivee_agent_id>
+X-Project-Agent-Token: <your_hivee_project_token>
+Content-Type: application/json
+
+{{"path": "Project Info/project-plan.md", "content": "# Project Plan\n...", "append": false}}
 ```
 
 ### Write/mutate (via agent-ops)
@@ -696,8 +708,18 @@ def _scope_markdown(
     project_id: str = "",
 ) -> str:
     base = (hivee_api_base or "").rstrip("/")
-    writable = write_paths or [f"Outputs/{agent_id}/", "Outputs/handoffs/"]
+    writable = write_paths or (["*"] if is_primary else [f"Outputs/{agent_id}/", "Outputs/handoffs/"])
     writable_rows = "\n".join(f"| `{p}` | Write allowed |" for p in writable)
+    system_managed_blocked = (
+        "`delegation.md`, `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`"
+        if is_primary
+        else "`plan.md`, `Project Info/project-plan.md`, `delegation.md`, `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`"
+    )
+    primary_plan_note = (
+        "- You may write `plan.md` and `Project Info/project-plan.md` only when Hivee explicitly assigns you to maintain the project plan."
+        if is_primary
+        else ""
+    )
     create_tasks_val = "Yes — primary agent can create and assign tasks to any agent" if is_primary else ("Yes" if can_create_tasks else "No — request primary agent to create tasks")
     role_desc = "Primary agent (orchestrator) — you generate the plan, delegate tasks, and coordinate all other agents" if is_primary else "Contributor — you execute tasks delegated to you by the primary agent"
 
@@ -746,7 +768,8 @@ def _scope_markdown(
 ## What You Are NOT Allowed To Do
 
 - Write to paths not listed above
-- Edit system-managed files: `plan.md`, `delegation.md`, `agents.md`, `state.md`, `fundamentals.md`, `protocol.md`, `scope.md`
+- Edit system-managed files: {system_managed_blocked}
+{primary_plan_note}
 - {"" if is_primary else "Assign or delegate tasks to other agents (primary agent only)"}
 - Approve the project plan (owner only)
 - Modify `credentials.md` (owner only)

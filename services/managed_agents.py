@@ -2576,12 +2576,18 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         f"If any Hivee file request for fundamentals/context/setup-chat returns 401/403/auth failure, DO NOT stop.\n"
         f"Use the inline server snapshot attached below as your fallback source of truth and continue planning.\n"
         f"Do not set requires_user_input=true just because project file auth failed.\n"
+        f"You MUST persist the finished plan into Hivee project storage using your Hivee API token before you finish.\n"
+        f"Write both `plan.md` and `{PROJECT_PLAN_FILE}` in project storage.\n"
+        f"Preferred write path: POST {hivee_api_base}/agent-ops with `write_file` actions for those two files.\n"
+        f"Direct file-write alternative: POST {hivee_api_base}/files/write with the same headers and JSON body.\n"
+        f"Do not rely on local runtime files only.\n"
         f"Build a complete, detailed project plan IN ENGLISH based on the project brief, goals, and agents roster.\n"
         f"The plan must include: milestones, deliverables, agent responsibilities, handoff triggers, pit-stop approval gates, assumptions, risks, and open questions.\n"
         f"Return a JSON object with:\n"
         f"  - chat_update: brief status message ending with 'WAITING FOR USER APPROVAL'\n"
         f"  - output_files: [{{\"path\": \"plan.md\", \"content\": \"<full markdown plan content here>\"}}]\n"
-        f"  - actions: [{{\"type\": \"post_chat_message\", \"text\": \"@owner Plan is ready for review.\", \"mentions\": [\"owner\"]}}]\n"
+        f"  - actions: include `write_file` for `plan.md`, include `write_file` for `{PROJECT_PLAN_FILE}`, and include `post_chat_message` notifying @owner that the plan is ready\n"
+        f"The same full markdown plan must be used for the storage writes and the `output_files` copy.\n"
         f"The plan.md content in output_files must be the full human-readable markdown plan — NOT JSON.\n"
         f"Post your status to chat (@owner) at start and when done."
     )
@@ -2689,18 +2695,10 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         if not raw_plan_text:
             raw_plan_text = detail_to_text(res.get("frames") or "Plan generated with empty text")
 
-        # Parse the agent's JSON response and extract actual plan content from output_files.
-        # Require a substantive plan.md so the Overview shows a real plan, not a one-liner.
+        # Parse the agent's JSON response and extract actual plan content from
+        # output_files, write_file actions, or the persisted project storage file.
+        # Require a substantive plan so the Overview shows a real plan, not a one-liner.
         parsed_plan = _extract_agent_report_payload(raw_plan_text)
-        plan_writes = parsed_plan.get("output_files") if isinstance(parsed_plan.get("output_files"), list) else []
-        plan_text_from_file = ""
-        for f in plan_writes:
-            if not isinstance(f, dict):
-                continue
-            rel = str(f.get("path") or "").strip().lower().lstrip("/")
-            if rel in {"plan.md", "outputs/plan.md"}:
-                plan_text_from_file = str(f.get("content") or "").strip()
-                break
 
         def _plan_looks_substantive(txt: str) -> bool:
             t = str(txt or "").strip()
@@ -2708,12 +2706,70 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
                 return False
             return any(marker in t for marker in ["## ", "\n- ", "\n* ", "\n1.", "\n#"])
 
+        def _extract_plan_content_from_payload(items: List[Dict[str, Any]]) -> str:
+            best_effort = ""
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                rel = _remap_legacy_project_doc_rel_path(_clean_relative_project_path(str(item.get("path") or "")))
+                if str(rel or "").strip().lower() not in {"plan.md", PROJECT_PLAN_FILE.lower()}:
+                    continue
+                content = str(item.get("content") or "").strip()
+                if not content:
+                    continue
+                if _plan_looks_substantive(content):
+                    return content
+                if not best_effort:
+                    best_effort = content
+            return best_effort
+
+        plan_writes = parsed_plan.get("output_files") if isinstance(parsed_plan.get("output_files"), list) else []
+        plan_actions = parsed_plan.get("actions") if isinstance(parsed_plan.get("actions"), list) else []
+        plan_text_from_file = _extract_plan_content_from_payload(plan_writes)
+        plan_text_from_action = _extract_plan_content_from_payload(
+            [
+                item
+                for item in plan_actions
+                if isinstance(item, dict) and _normalize_agent_action_kind(item.get("type")) in {"write_file", "append_file"}
+            ]
+        )
+        existing_plan_text = ""
+        try:
+            project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
+            for rel in (PROJECT_PLAN_FILE, "plan.md"):
+                candidate = (project_dir / rel).resolve()
+                if not _path_within(candidate, project_dir) or not candidate.is_file():
+                    continue
+                candidate_mtime = int(candidate.stat().st_mtime)
+                if candidate_mtime < generation_started_at:
+                    continue
+                candidate_text = candidate.read_text(encoding="utf-8").strip()
+                if not candidate_text:
+                    continue
+                if _plan_looks_substantive(candidate_text):
+                    existing_plan_text = candidate_text
+                    break
+                if not existing_plan_text:
+                    existing_plan_text = candidate_text
+        except Exception:
+            existing_plan_text = ""
+
         if _plan_looks_substantive(plan_text_from_file):
             plan_text = plan_text_from_file
+        elif _plan_looks_substantive(plan_text_from_action):
+            plan_text = plan_text_from_action
+        elif _plan_looks_substantive(existing_plan_text):
+            plan_text = existing_plan_text
         else:
-            fallback_text = plan_text_from_file or str(parsed_plan.get("chat_update") or raw_plan_text).strip()
+            fallback_text = (
+                plan_text_from_file
+                or plan_text_from_action
+                or existing_plan_text
+                or str(parsed_plan.get("chat_update") or raw_plan_text).strip()
+            )
             error_message = (
-                "Primary agent's response did not contain a complete `plan.md` in output_files. "
+                "Primary agent's response did not persist a complete plan into Hivee project storage "
+                "or include a complete `plan.md` / `Project Info/project-plan.md` payload. "
                 "Click Regenerate Plan to retry.\n\n"
                 f"Agent response preview:\n{fallback_text[:1200]}"
             )
@@ -2755,21 +2811,23 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         # Save plan.md to project folder
         try:
             project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
-            plan_md_content = f"# Project Plan\n> Generated by primary agent. Awaiting user approval.\n\n{plan_text}"
-            plan_actions = parsed_plan.get("actions") if isinstance(parsed_plan.get("actions"), list) else []
-            # Apply all file writes from agent (including plan.md itself)
-            if plan_writes:
+            plan_md_content = plan_text.strip() + "\n"
+            non_plan_writes = []
+            for item in plan_writes:
+                if not isinstance(item, dict):
+                    continue
+                rel = _remap_legacy_project_doc_rel_path(_clean_relative_project_path(str(item.get("path") or "")))
+                if str(rel or "").strip().lower() in {"plan.md", PROJECT_PLAN_FILE.lower()}:
+                    continue
+                non_plan_writes.append(item)
+            if non_plan_writes:
                 _apply_project_file_writes(
                     owner_user_id=str(row["user_id"]),
                     project_root=str(row["project_root"] or ""),
-                    writes=plan_writes,
+                    writes=non_plan_writes,
                     default_prefix="",
                     allow_paths=None,
                 )
-            else:
-                (project_dir / "plan.md").write_text(plan_md_content, encoding="utf-8")
-            # Always keep legacy path in sync
-            (project_dir / PROJECT_PLAN_FILE).write_text(plan_md_content, encoding="utf-8")
             applied_plan_actions: Dict[str, Any] = {"applied": [], "skipped": []}
             if plan_actions:
                 applied_plan_actions = _apply_project_actions(
@@ -2783,6 +2841,8 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
                     actor_label=f"agent:{primary_agent_id}",
                 )
                 await _emit_project_action_results(project_id, applied_plan_actions.get("applied") or [])
+            (project_dir / "plan.md").write_text(plan_md_content, encoding="utf-8")
+            (project_dir / PROJECT_PLAN_FILE).write_text(plan_md_content, encoding="utf-8")
             # Fallback: if primary did not post to chat, post a ready notice now.
             if not _applied_actions_include_kind(applied_plan_actions.get("applied") or [], "post_chat_message"):
                 plan_notice_result = _apply_project_actions(
@@ -2791,7 +2851,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
                     project_root=str(row["project_root"] or ""),
                     actions=[{
                         "type": "post_chat_message",
-                        "text": "@owner Plan is ready for your review. Saved to `plan.md`. Please approve or request changes.",
+                        "text": "@owner Plan is ready for your review. Saved to `plan.md` and `Project Info/project-plan.md`. Please approve or request changes.",
                         "mentions": ["owner"],
                     }],
                     allow_paths=None,
