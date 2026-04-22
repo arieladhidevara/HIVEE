@@ -1,7 +1,13 @@
 from hivee_shared import *
 from email.message import EmailMessage
 import smtplib
-from services.managed_agents import _delegate_project_tasks, _project_chat, _onboard_agents_into_project, _generate_project_plan
+from services.managed_agents import (
+    _delegate_project_tasks,
+    _project_chat,
+    _onboard_agents_into_project,
+    _generate_project_plan,
+    _is_default_placeholder_agent,
+)
 
 
 def _new_project_external_invite_token() -> str:
@@ -694,25 +700,36 @@ def register_routes(app: FastAPI) -> None:
                 (cid, user_id),
             ).fetchone()
 
-        def _query_fallback_agent(cid: str):
+        def _query_fallback_agents(cid: str):
             return conn.execute(
                 """
                 SELECT agent_id, agent_name FROM managed_agents
                 WHERE user_id = ? AND connection_id = ?
-                ORDER BY discovered_at ASC LIMIT 1
+                ORDER BY discovered_at ASC
                 """,
                 (user_id, cid),
-            ).fetchone()
+            ).fetchall()
+
+        def _pick_real_agent(rows):
+            for r in rows or []:
+                aid = str(r["agent_id"] or "").strip()
+                if aid and not _is_default_placeholder_agent(aid):
+                    return r
+            return None
 
         # Try legacy ID first (openclaw_connections), then fall back to connector ID
         policy_row = (_query_policy(legacy_conn_id) if legacy_conn_id else None) or _query_policy(resolved_connection_id)
         main_agent_id = str(policy_row["main_agent_id"] or "").strip() if policy_row else ""
         main_agent_name = str(policy_row["main_agent_name"] or "").strip() if policy_row else ""
+        # Never use the openclaw/default placeholder as the primary — fall through to a real agent.
+        if main_agent_id and _is_default_placeholder_agent(main_agent_id):
+            main_agent_id = ""
+            main_agent_name = ""
         if not main_agent_id:
-            # No policy agent set — fall back to any managed agent for this connection
+            # No policy agent set (or it was a placeholder) — fall back to first real managed agent.
             fallback_row = (
-                (_query_fallback_agent(legacy_conn_id) if legacy_conn_id else None)
-                or _query_fallback_agent(resolved_connection_id)
+                (_pick_real_agent(_query_fallback_agents(legacy_conn_id)) if legacy_conn_id else None)
+                or _pick_real_agent(_query_fallback_agents(resolved_connection_id))
             )
             if fallback_row:
                 main_agent_id = str(fallback_row["agent_id"] or "").strip()
@@ -721,7 +738,7 @@ def register_routes(app: FastAPI) -> None:
                 conn.close()
                 raise HTTPException(
                     400,
-                    "Primary owner agent is not configured for this connection. Run bootstrap first.",
+                    "Primary owner agent is not configured for this connection. Pick a real agent (not openclaw/default) and re-run bootstrap.",
                 )
         # Use whichever connection_id the policy/managed_agents row lives under
         policy_conn_id = legacy_conn_id or resolved_connection_id
@@ -1759,10 +1776,20 @@ def register_routes(app: FastAPI) -> None:
             raise HTTPException(400, "agent_ids cannot be empty")
         if len(set(normalized_agent_ids)) != len(normalized_agent_ids):
             raise HTTPException(400, "agent_ids must be unique")
+        # The openclaw/default placeholder is not a real agent — reject it explicitly so
+        # projects always run with a user-selected agent (codebot, dailybot, etc.).
+        placeholder_ids = [aid for aid in normalized_agent_ids if _is_default_placeholder_agent(aid)]
+        if placeholder_ids:
+            raise HTTPException(
+                400,
+                f"Placeholder agents are not allowed in projects: {', '.join(placeholder_ids[:5])}. Pick a real agent.",
+            )
 
         primary_candidate = str(payload.primary_agent_id or "").strip() or None
         if primary_candidate and primary_candidate not in normalized_agent_ids:
             raise HTTPException(400, "primary_agent_id must be one of selected agent_ids")
+        if primary_candidate and _is_default_placeholder_agent(primary_candidate):
+            raise HTTPException(400, "primary_agent_id cannot be the openclaw/default placeholder")
 
         conn = db()
         proj = conn.execute(
@@ -1896,9 +1923,12 @@ def register_routes(app: FastAPI) -> None:
                 "primary_agent_id": primary_id,
             })
         else:
-            # No approved plan yet — roster changes invalidate any draft/generating plan
-            # until the owner explicitly starts plan generation again.
+            # No approved plan yet — roster changes invalidate any draft/generating plan.
+            # If generation was in flight, immediately re-trigger with the new roster so
+            # the pipeline keeps moving instead of stalling on the now-stale run.
             reset_requested_at = int(time.time())
+            was_generating = current_plan_status == PLAN_STATUS_GENERATING
+            next_plan_status = PLAN_STATUS_GENERATING if was_generating else PLAN_STATUS_PENDING
             _conn = db()
             _conn.execute(
                 """
@@ -1907,7 +1937,7 @@ def register_routes(app: FastAPI) -> None:
                 WHERE id = ?
                 """,
                 (
-                    PLAN_STATUS_PENDING,
+                    next_plan_status,
                     "",
                     reset_requested_at,
                     EXEC_STATUS_IDLE,
@@ -1917,6 +1947,9 @@ def register_routes(app: FastAPI) -> None:
             )
             _conn.commit()
             _conn.close()
+            if was_generating:
+                asyncio.create_task(_generate_project_plan(project_id, force=True))
+                await emit(project_id, "project.plan.generating", {"project_id": project_id, "reason": "roster_changed"})
 
         return {"ok": True, "primary_agent_id": primary_id, "agent_access_tokens": issued_tokens}
 

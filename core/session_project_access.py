@@ -321,14 +321,32 @@ def _resolve_project_workspace_access(
     required_scope: Optional[str] = None,
 ) -> Dict[str, Any]:
     session_user: Optional[str] = None
+    bearer_raw = _bearer_token(request)
     has_project_agent_headers = bool(
         str(request.headers.get("X-Project-Agent-Id") or "").strip()
         and str(request.headers.get("X-Project-Agent-Token") or "").strip()
     )
+    bearer_matches_agent_token = False
+    if bearer_raw and not has_project_agent_headers:
+        # Agents sometimes send the project agent token via Authorization: Bearer
+        # instead of the X-Project-Agent-Token header. Treat that as valid project
+        # agent auth so we don't 401 a request that has the right credentials in
+        # the wrong header.
+        _conn = db()
+        _row = _conn.execute(
+            "SELECT 1 FROM project_agent_access_tokens WHERE project_id = ? AND token_hash = ? LIMIT 1",
+            (project_id, _hash_access_token(bearer_raw)),
+        ).fetchone()
+        _conn.close()
+        bearer_matches_agent_token = bool(_row)
     try:
         session_user = get_optional_session_user(request)
     except HTTPException:
-        if not str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip() and not has_project_agent_headers:
+        if (
+            not str(request.headers.get(ENV_AGENT_SESSION_HEADER) or "").strip()
+            and not has_project_agent_headers
+            and not bearer_matches_agent_token
+        ):
             raise
         session_user = None
     a2a_access = _resolve_optional_a2a_agent_session(request, required_scope=required_scope or "env.read")
@@ -492,6 +510,42 @@ def _resolve_project_workspace_access(
                 "agent_id": agent_id,
                 "source_type": source_type,
                 "auth_mode": "project_agent_token",
+                "permissions": perms,
+            }
+
+    # Bearer-token fallback: an agent that sends its project token via
+    # `Authorization: Bearer <token>` (instead of X-Project-Agent-Token) still
+    # authenticates as that agent. The token must match a project_agent row.
+    if bearer_matches_agent_token and bearer_raw:
+        bearer_hash = _hash_access_token(bearer_raw)
+        row = conn.execute(
+            """
+            SELECT pa.agent_id AS agent_id,
+                   COALESCE(pa.source_type, 'owner') AS source_type
+            FROM project_agents pa
+            JOIN project_agent_access_tokens pat
+                ON pat.project_id = pa.project_id AND pat.agent_id = pa.agent_id
+            WHERE pa.project_id = ? AND pat.token_hash = ?
+            LIMIT 1
+            """,
+            (project_id, bearer_hash),
+        ).fetchone()
+        if row:
+            resolved_agent_id = str(row["agent_id"] or "").strip()
+            source_type = str(row["source_type"] or "owner").strip() or "owner"
+            perms = _get_project_agent_permissions(
+                conn,
+                project_id=project_id,
+                agent_id=resolved_agent_id,
+                source_type=source_type,
+            )
+            conn.close()
+            return {
+                "mode": "agent",
+                "project": dict(project),
+                "agent_id": resolved_agent_id,
+                "source_type": source_type,
+                "auth_mode": "project_agent_bearer",
                 "permissions": perms,
             }
 

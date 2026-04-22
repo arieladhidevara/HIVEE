@@ -3714,6 +3714,15 @@ function handleProjectEvent(kind, payload) {
     setMessage("chat_hint", "Primary agent is delegating tasks to invited agents...", "ok");
   } else if (kind === "project.subplan.phase_started") {
     setMessage("chat_hint", "Agents are drafting detailed sub-plans...", "ok");
+  } else if (kind === "project.plan.generating") {
+    const reason = String(payload?.reason || "").trim();
+    if (reason === "roster_changed") {
+      setMessage("chat_hint", "Agent roster changed — regenerating project plan with new lineup.", "ok");
+    } else {
+      setMessage("chat_hint", "Primary agent is drafting the project plan...", "ok");
+    }
+  } else if (kind === "project.plan.generation_ignored") {
+    setMessage("chat_hint", "Previous plan draft was superseded by a newer run.", "warn");
   }
   if (
     selectedProjectId &&

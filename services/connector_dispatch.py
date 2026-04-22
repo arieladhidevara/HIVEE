@@ -180,9 +180,12 @@ async def connector_chat_sync(
     """
     import asyncio
 
+    # Never silently substitute openclaw/default — projects must dispatch to a real
+    # user-selected agent. If agent_id is empty, the caller has a bug; surface that
+    # by passing the empty value through so the connector returns an actionable error.
     payload = {
         "message": message,
-        "agentId": agent_id or "openclaw/default",
+        "agentId": str(agent_id or "").strip(),
         "hivee": {
             "from": from_agent_id or "hivee",
             "fromLabel": from_label or "Hivee System",
