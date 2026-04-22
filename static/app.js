@@ -3508,7 +3508,10 @@ function eventSummary(kind, payload) {
   if (kind === "project.delegation.failed") return `Delegation failed: ${detailToText(data.error || payload)}`;
   if (kind === "project.delegation.stopped") return "Delegation stopped by user.";
   if (kind === "agent.primary.update") return `Primary update: ${shortText(data.text || "", 180)}`;
-  if (kind === "agent.task.assigned") return `${name} assigned task.`;
+  if (kind === "agent.task.assigned") {
+    const label = data.task_title || data.task_id || data.task_file || data.role || "task";
+    return `${name} assigned: ${label}.`;
+  }
   if (kind === "agent.task.started") return `${name} started task.`;
   if (kind === "agent.task.reported") return `${name} reported update.`;
   if (kind === "agent.task.actions_applied") return `${name} applied project actions.`;
@@ -3563,7 +3566,8 @@ function eventChatMessage(kind, payload) {
   }
   if (kind === "agent.task.assigned") {
     const mentions = Array.isArray(data.mentions) && data.mentions.length ? ` I will sync with ${data.mentions.map((x) => `@${x}`).join(", ")}.` : "";
-    return { role: "agent", agentId: data.agent_id || name, text: `Hey team, I got my task as ${data.role || "contributor"} and I am starting now.${mentions}`, meta: `${name}` };
+    const label = data.task_title || data.task_id || data.task_file || data.role || "my assigned task";
+    return { role: "agent", agentId: data.agent_id || name, text: `Hey team, I got my assigned task: ${label}. I am starting now.${mentions}`, meta: `${name}` };
   }
   if (kind === "agent.task.started") return { role: "agent", agentId: data.agent_id || name, text: "I started working on my assigned task.", meta: `${name}` };
   if (kind === "agent.task.reported") return null;
@@ -3644,11 +3648,11 @@ function handleProjectEvent(kind, payload) {
   const evtAgentId = String(data.agent_id || "").trim();
   if (evtAgentId) {
     if (kind === "agent.task.assigned") {
-      agentLiveState[evtAgentId] = { taskTitle: data.task_title || data.task_id || "Task", note: "", status: "assigned" };
+      agentLiveState[evtAgentId] = { taskTitle: data.task_title || data.task_id || data.task_file || data.role || "Task", note: "", status: "assigned" };
       renderAgentLiveCards();
     } else if (kind === "agent.task.started") {
       if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
-      agentLiveState[evtAgentId].taskTitle = agentLiveState[evtAgentId].taskTitle || data.task_title || data.task_id || "Task";
+      agentLiveState[evtAgentId].taskTitle = agentLiveState[evtAgentId].taskTitle || data.task_title || data.task_id || data.task_file || data.role || "Task";
       agentLiveState[evtAgentId].status = "working";
       agentLiveState[evtAgentId].note = "";
       renderAgentLiveCards();

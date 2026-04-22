@@ -1,6 +1,9 @@
 ﻿from hivee_shared import *
 
 
+from services.project_activity import append_project_activity_log_entry
+
+
 TASK_BLUEPRINTS: List[Dict[str, Any]] = [
     {
         "id": "mvp_delivery",
@@ -153,41 +156,6 @@ def _actor_from_access(access: Dict[str, Any]) -> Dict[str, str]:
         label_prefix = "member" if mode == "member" else "agent"
         return {"type": "project_agent", "id": aid, "label": f"{label_prefix}:{aid}"}
     return {"type": "user", "id": uid, "label": mode or "user"}
-
-
-def _append_project_activity_log(
-    conn: sqlite3.Connection,
-    *,
-    project_id: str,
-    actor_type: str,
-    actor_id: Optional[str],
-    actor_label: Optional[str],
-    event_type: str,
-    summary: str,
-    payload: Optional[Dict[str, Any]] = None,
-    created_at: Optional[int] = None,
-) -> str:
-    event_id = new_id("act")
-    ts = int(time.time()) if created_at is None else int(created_at)
-    conn.execute(
-        """
-        INSERT INTO project_activity_log (
-            id, project_id, actor_type, actor_id, actor_label, event_type, summary, payload_json, created_at
-        ) VALUES (?,?,?,?,?,?,?,?,?)
-        """,
-        (
-            str(event_id),
-            str(project_id or "").strip(),
-            str(actor_type or "").strip() or "unknown",
-            str(actor_id or "").strip() or None,
-            str(actor_label or "").strip() or None,
-            str(event_type or "").strip() or "event",
-            str(summary or "").strip()[:1000] or "-",
-            _dump_json(payload),
-            ts,
-        ),
-    )
-    return str(event_id)
 
 
 def _assert_assignee_exists(conn: sqlite3.Connection, *, project_id: str, assignee_agent_id: Optional[str]) -> Optional[str]:
@@ -462,7 +430,7 @@ def register_routes(app: FastAPI) -> None:
             ),
         )
         row = conn.execute("SELECT * FROM project_tasks WHERE id = ? LIMIT 1", (task_id,)).fetchone()
-        _append_project_activity_log(
+        append_project_activity_log_entry(
             conn,
             project_id=project_id,
             actor_type=actor["type"],
@@ -582,7 +550,7 @@ def register_routes(app: FastAPI) -> None:
             params.append(now)
             params.append(task_id)
             conn.execute(f"UPDATE project_tasks SET {', '.join(updates)} WHERE id = ?", tuple(params))
-            _append_project_activity_log(
+            append_project_activity_log_entry(
                 conn,
                 project_id=project_id,
                 actor_type=actor["type"],
@@ -644,7 +612,7 @@ def register_routes(app: FastAPI) -> None:
                 (task_id, project_id, actor["type"], actor["id"], actor["label"], note, now, expires_at),
             )
             conn.execute("UPDATE project_tasks SET updated_at = ? WHERE id = ?", (now, task_id))
-            _append_project_activity_log(
+            append_project_activity_log_entry(
                 conn,
                 project_id=project_id,
                 actor_type=actor["type"],
@@ -702,7 +670,7 @@ def register_routes(app: FastAPI) -> None:
                     raise HTTPException(403, "Only checkout owner (or project owner) can release this checkout")
                 conn.execute("DELETE FROM project_task_checkouts WHERE task_id = ?", (task_id,))
                 conn.execute("UPDATE project_tasks SET updated_at = ? WHERE id = ?", (now, task_id))
-                _append_project_activity_log(
+                append_project_activity_log_entry(
                     conn,
                     project_id=project_id,
                     actor_type=actor["type"],
@@ -820,7 +788,7 @@ def register_routes(app: FastAPI) -> None:
                     """,
                     (project_id, task_id, depends_on_task_id),
                 ).fetchone()
-                _append_project_activity_log(
+                append_project_activity_log_entry(
                     conn,
                     project_id=project_id,
                     actor_type=actor["type"],
@@ -886,7 +854,7 @@ def register_routes(app: FastAPI) -> None:
                 (project_id, task_id, dep_id),
             )
             conn.execute("UPDATE project_tasks SET updated_at = ? WHERE id = ?", (now, task_id))
-            _append_project_activity_log(
+            append_project_activity_log_entry(
                 conn,
                 project_id=project_id,
                 actor_type=actor["type"],
@@ -1001,7 +969,7 @@ def register_routes(app: FastAPI) -> None:
                         (project_id, created_task_ids[task_idx], created_task_ids[depends_on_idx], now),
                     )
 
-            _append_project_activity_log(
+            append_project_activity_log_entry(
                 conn,
                 project_id=project_id,
                 actor_type=actor["type"],
@@ -1102,7 +1070,7 @@ def register_routes(app: FastAPI) -> None:
             ),
         )
         conn.execute("UPDATE project_tasks SET updated_at = ? WHERE id = ?", (now, task_id))
-        _append_project_activity_log(
+        append_project_activity_log_entry(
             conn,
             project_id=project_id,
             actor_type=actor["type"],
@@ -1162,7 +1130,7 @@ def register_routes(app: FastAPI) -> None:
             (comment_text, now, comment_id),
         )
         conn.execute("UPDATE project_tasks SET updated_at = ? WHERE id = ?", (now, task_id))
-        _append_project_activity_log(
+        append_project_activity_log_entry(
             conn,
             project_id=project_id,
             actor_type=actor["type"],
@@ -1217,7 +1185,7 @@ def register_routes(app: FastAPI) -> None:
 
         conn.execute("DELETE FROM project_task_comments WHERE id = ?", (comment_id,))
         conn.execute("UPDATE project_tasks SET updated_at = ? WHERE id = ?", (now, task_id))
-        _append_project_activity_log(
+        append_project_activity_log_entry(
             conn,
             project_id=project_id,
             actor_type=actor["type"],

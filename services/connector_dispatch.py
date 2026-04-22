@@ -163,6 +163,8 @@ async def connector_chat_sync(
     hivee_api_base: Optional[str] = None,
     project_agent_id: Optional[str] = None,
     project_agent_token: Optional[str] = None,
+    project_root: Optional[str] = None,
+    workspace_root: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Enqueue an openclaw.chat command to a connector and poll for the result.
 
@@ -195,6 +197,8 @@ async def connector_chat_sync(
             "fundamentalsUrl": f"{hivee_api_base.rstrip('/')}/files/fundamentals.md" if hivee_api_base else "",
             "projectAgentId": project_agent_id or "",
             "projectAgentToken": project_agent_token or "",
+            "projectRoot": project_root or "",
+            "workspaceRoot": workspace_root or "",
             "projectAuthHeaders": {
                 "X-Project-Agent-Id": project_agent_id or "",
                 "X-Project-Agent-Token": project_agent_token or "",
@@ -303,6 +307,8 @@ async def connector_chat_sync(
         "transport": "connector",
         "connector_id": connector_id,
         "command_id": command_id,
+        "project_id": project_id or "",
+        "agent_id": str(agent_id or "").strip(),
     }
 
 

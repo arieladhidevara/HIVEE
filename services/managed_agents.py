@@ -4,6 +4,68 @@ import os
 import re
 
 from services.project_utils import *
+from services.project_activity import append_project_activity_log_entry
+
+
+def _append_project_activity(
+    *,
+    project_id: str,
+    actor_type: str,
+    actor_id: Optional[str],
+    actor_label: Optional[str],
+    event_type: str,
+    summary: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    conn = db()
+    try:
+        append_project_activity_log_entry(
+            conn,
+            project_id=project_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            actor_label=actor_label,
+            event_type=event_type,
+            summary=summary,
+            payload=payload or {},
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _task_title_from_text(task_text: Any, *, role: str, agent_name: str) -> str:
+    task_title = ""
+    for line in str(task_text or "").splitlines():
+        line = line.strip().lstrip("#").strip()
+        if line:
+            task_title = line
+            break
+    if not task_title:
+        task_title = f"{role} \u2014 {agent_name}"
+    return task_title[:120]
+
+
+def _latest_project_task_id_for_agent(project_id: str, agent_id: str) -> str:
+    pid = str(project_id or "").strip()
+    aid = str(agent_id or "").strip()
+    if not pid or not aid:
+        return ""
+    conn = db()
+    try:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM project_tasks
+            WHERE project_id = ? AND assignee_agent_id = ?
+            ORDER BY created_at DESC, updated_at DESC
+            LIMIT 1
+            """,
+            (pid, aid),
+        ).fetchone()
+    finally:
+        conn.close()
+    return str(row["id"] or "").strip() if row else ""
 
 
 async def _emit_project_chat_message_payload(
@@ -2201,6 +2263,18 @@ async def _project_chat(
         project_root = str(row["project_root"] or "").strip()
     except Exception:
         project_root = ""
+    resolved_project_root = project_root
+    if owner_user_id and project_root:
+        try:
+            resolved_project_root = _resolve_owner_project_dir(owner_user_id, project_root).resolve().as_posix()
+        except Exception:
+            resolved_project_root = project_root
+    resolved_workspace_root = ""
+    if owner_user_id:
+        try:
+            resolved_workspace_root = _user_workspace_root_dir(owner_user_id).resolve().as_posix()
+        except Exception:
+            resolved_workspace_root = ""
 
     should_log_hivee_dispatch = (
         bool(project_id)
@@ -2243,6 +2317,8 @@ async def _project_chat(
         hivee_api_base=hivee_api_base,
         project_agent_id=str(agent_id or "").strip(),
         project_agent_token=project_agent_token,
+        project_root=resolved_project_root,
+        workspace_root=resolved_workspace_root,
     )
     if should_log_hivee_dispatch:
         result_text = str(
@@ -3089,11 +3165,22 @@ async def _run_agent_subplan_phase(
         approved_flag = any(kw in review_chat for kw in ("approved", "proceed", "looks good", "good to go", "approve"))
     approved = bool(approved_flag)
 
-    await emit(project_id, "agent.subplan.reviewed", {
-        "agent_id": agent_id, "agent_name": agent_name,
+    reviewed_payload = {
+        "agent_id": agent_id,
+        "agent_name": agent_name,
         "approved": approved,
         "feedback": str(parsed_review.get("feedback") or "")[:400],
-    })
+    }
+    await emit(project_id, "agent.subplan.reviewed", reviewed_payload)
+    _append_project_activity(
+        project_id=project_id,
+        actor_type="project_agent",
+        actor_id=primary_agent_id,
+        actor_label=primary_agent_name,
+        event_type="agent.subplan.reviewed",
+        summary=f"{agent_name} sub-plan {'approved' if approved else 'needs revision'}",
+        payload=reviewed_payload,
+    )
     return approved, actual_subplan
 
 
@@ -3343,16 +3430,22 @@ async def _run_agent_subplan_phase_v2(
                 review_conn.close()
             await _emit_project_chat_message_payload(project_id, review_message)
 
-        await emit(
-            project_id,
-            "agent.subplan.reviewed",
-            {
-                "agent_id": agent_id,
-                "agent_name": agent_name,
-                "approved": approved,
-                "feedback": review_feedback[:400],
-                "round": round_idx,
-            },
+        reviewed_payload = {
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "approved": approved,
+            "feedback": review_feedback[:400],
+            "round": round_idx,
+        }
+        await emit(project_id, "agent.subplan.reviewed", reviewed_payload)
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="project_agent",
+            actor_id=primary_agent_id,
+            actor_label=primary_agent_name,
+            event_type="agent.subplan.reviewed",
+            summary=f"{agent_name} sub-plan {'approved' if approved else 'needs revision'}",
+            payload=reviewed_payload,
         )
         if approved:
             return True, actual_subplan
@@ -3432,17 +3525,6 @@ async def _delegate_project_tasks(project_id: str) -> None:
         await emit(project_id, "project.delegation.skipped", {"reason": "No invited agents yet"})
         return
 
-    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=15)
-    _refresh_project_documents(project_id)
-    _append_project_daily_log(
-        owner_user_id=str(row["user_id"]),
-        project_root=str(row["project_root"] or ""),
-        kind="delegation.started",
-        text="Primary agent started delegation planning after plan approval.",
-        payload={"agents": [str(r.get("agent_id") or "") for r in role_rows]},
-    )
-    await emit(project_id, "project.delegation.started", {"agents": [r.get("agent_id") for r in role_rows]})
-    setup_details = _normalize_setup_details(_parse_setup_json(row["setup_json"]))
     primary_agent_id = None
     for r in role_rows:
         if bool(r.get("is_primary")):
@@ -3450,6 +3532,36 @@ async def _delegate_project_tasks(project_id: str) -> None:
             break
     if not primary_agent_id:
         primary_agent_id = str(row["main_agent_id"] or "").strip() or None
+    primary_agent_name = next(
+        (
+            str(r.get("agent_name") or r.get("agent_id") or "")
+            for r in role_rows
+            if str(r.get("agent_id") or "").strip() == str(primary_agent_id or "").strip()
+        ),
+        str(primary_agent_id or "primary"),
+    )
+
+    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=15)
+    _refresh_project_documents(project_id)
+    started_payload = {"agents": [r.get("agent_id") for r in role_rows]}
+    _append_project_daily_log(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        kind="delegation.started",
+        text="Primary agent started delegation planning after plan approval.",
+        payload={"agents": [str(r.get("agent_id") or "") for r in role_rows]},
+    )
+    await emit(project_id, "project.delegation.started", started_payload)
+    _append_project_activity(
+        project_id=project_id,
+        actor_type="project_agent",
+        actor_id=primary_agent_id,
+        actor_label=primary_agent_name,
+        event_type="project.delegation.started",
+        summary="Primary agent started delegation",
+        payload=started_payload,
+    )
+    setup_details = _normalize_setup_details(_parse_setup_json(row["setup_json"]))
 
     hivee_api_base = _get_hivee_api_base(project_id)
     agent_token = _issue_agent_session_token(project_id, primary_agent_id or "")
@@ -3488,7 +3600,17 @@ async def _delegate_project_tasks(project_id: str) -> None:
             kind="delegation.failed",
             text=detail_to_text(res.get("error") or res.get("details"))[:1200],
         )
-        await emit(project_id, "project.delegation.failed", {"error": detail_to_text(res.get("error") or res.get("details"))[:1200]})
+        failed_payload = {"error": detail_to_text(res.get("error") or res.get("details"))[:1200]}
+        await emit(project_id, "project.delegation.failed", failed_payload)
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="project_agent",
+            actor_id=primary_agent_id,
+            actor_label=primary_agent_name,
+            event_type="project.delegation.failed",
+            summary=f"Delegation failed: {failed_payload.get('error') or 'unknown error'}",
+            payload=failed_payload,
+        )
         return
 
     _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=55)
@@ -3497,14 +3619,24 @@ async def _delegate_project_tasks(project_id: str) -> None:
     by_id = {str(r.get("agent_id") or "").strip(): r for r in role_rows}
 
     if primary_reply:
+        primary_update_payload = {
+            "agent_id": primary_agent_id,
+            "agent_name": next((str(r.get("agent_name") or r.get("agent_id") or "") for r in role_rows if str(r.get("agent_id") or "") == str(primary_agent_id or "")), ""),
+            "text": primary_reply[:1200],
+        }
         await emit(
             project_id,
             "agent.primary.update",
-            {
-                "agent_id": primary_agent_id,
-                "agent_name": next((str(r.get("agent_name") or r.get("agent_id") or "") for r in role_rows if str(r.get("agent_id") or "") == str(primary_agent_id or "")), ""),
-                "text": primary_reply[:1200],
-            },
+            primary_update_payload,
+        )
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="project_agent",
+            actor_id=primary_agent_id,
+            actor_label=primary_update_payload.get("agent_name") or primary_agent_name,
+            event_type="agent.primary.update",
+            summary="Primary agent submitted an update",
+            payload=primary_update_payload,
         )
     for note in _summarize_ws_frames(res.get("frames"), limit=10):
         await emit(project_id, "agent.primary.live", {"agent_id": primary_agent_id, "note": note})
@@ -3518,7 +3650,17 @@ async def _delegate_project_tasks(project_id: str) -> None:
     try:
         project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
     except Exception:
-        await emit(project_id, "project.delegation.failed", {"error": "Project directory unavailable"})
+        failed_payload = {"error": "Project directory unavailable"}
+        await emit(project_id, "project.delegation.failed", failed_payload)
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="project_agent",
+            actor_id=primary_agent_id,
+            actor_label=primary_agent_name,
+            event_type="project.delegation.failed",
+            summary="Delegation failed: Project directory unavailable",
+            payload=failed_payload,
+        )
         return
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / USER_OUTPUTS_DIRNAME).mkdir(parents=True, exist_ok=True)
@@ -3606,6 +3748,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
         assigned_count += 1
         task_mentions = sorted({m for m in re.findall(r"@([a-zA-Z0-9._-]+)", task_text) if m and m != aid})[:8]
         assigned_mentions_map[aid] = task_mentions
+        task_title = _task_title_from_text(task_text, role=role, agent_name=agent_name)
 
         # Fallback: if this agent does not yet have a chat mention, post one now.
         if aid not in delegated_mentions:
@@ -3651,24 +3794,42 @@ async def _delegate_project_tasks(project_id: str) -> None:
             if _applied_actions_include_kind(fallback_task_result.get("applied") or [], "create_task"):
                 task_assignees.add(aid)
 
+        resolved_task_id = _latest_project_task_id_for_agent(project_id, aid)
+        assigned_payload = {
+            "agent_id": aid,
+            "agent_name": agent_name,
+            "role": role,
+            "task_title": task_title,
+            "task_id": resolved_task_id or "",
+            "task_file": f"agents/{fname}",
+            "task_preview": task_text[:500],
+            "mentions": task_mentions,
+        }
         await emit(
             project_id,
             "agent.task.assigned",
-            {
-                "agent_id": aid,
-                "agent_name": agent_name,
-                "role": role,
-                "task_file": f"agents/{fname}",
-                "task_preview": task_text[:500],
-                "mentions": task_mentions,
-            },
+            assigned_payload,
+        )
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="project_agent",
+            actor_id=aid,
+            actor_label=agent_name,
+            event_type="agent.task.assigned",
+            summary=f"{agent_name} received a delegated task",
+            payload=assigned_payload,
         )
         _append_project_daily_log(
             owner_user_id=str(row["user_id"]),
             project_root=str(row["project_root"] or ""),
             kind="agent.task.assigned",
             text=f"{aid}: {task_text[:800]}",
-            payload={"task_file": f"agents/{fname}", "mentions": task_mentions},
+            payload={
+                "task_file": f"agents/{fname}",
+                "task_title": task_title,
+                "task_id": resolved_task_id or "",
+                "mentions": task_mentions,
+            },
         )
 
     delegation_state = _read_project_delegation_state(project_id)
@@ -3785,17 +3946,23 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 text=pause_reason[:1200],
                 payload={"agents": rejected_agents},
             )
-            await emit(
-                project_id,
-                "project.execution.auto_paused",
-                {
-                    "status": EXEC_STATUS_PAUSED,
-                    "progress_pct": 25,
-                    "agent_id": primary_agent_id or "primary",
-                    "agent_name": primary_agent_name,
-                    "reason": pause_reason[:900],
-                    "resume_hint": "Review the sub-plan chat thread, then resume once the team is aligned.",
-                },
+            pause_payload = {
+                "status": EXEC_STATUS_PAUSED,
+                "progress_pct": 25,
+                "agent_id": primary_agent_id or "primary",
+                "agent_name": primary_agent_name,
+                "reason": pause_reason[:900],
+                "resume_hint": "Review the sub-plan chat thread, then resume once the team is aligned.",
+            }
+            await emit(project_id, "project.execution.auto_paused", pause_payload)
+            _append_project_activity(
+                project_id=project_id,
+                actor_type="project_agent",
+                actor_id=primary_agent_id,
+                actor_label=primary_agent_name,
+                event_type="project.execution.auto_paused",
+                summary="Execution auto-paused awaiting review/input",
+                payload={**pause_payload, "agents": rejected_agents},
             )
             return
 
@@ -3825,6 +3992,8 @@ async def _delegate_project_tasks(project_id: str) -> None:
         role = str(row_item.get("role") or "").strip() or "Collaborate based on project plan."
         agent_name = str(row_item.get("agent_name") or aid)
         task_text = assigned_task_map.get(aid) or f"# Task for {aid}\n\nRole: {role}\n"
+        task_title = _task_title_from_text(task_text, role=role, agent_name=agent_name)
+        resolved_task_id = _latest_project_task_id_for_agent(project_id, aid)
         approved_subplan = subplan_map.get(aid, "")
         task_rel = f"agents/{_safe_agent_filename(aid)}.md"
         agent_file_context = _build_project_file_context(
@@ -3844,7 +4013,24 @@ async def _delegate_project_tasks(project_id: str) -> None:
             max_total_chars=7_500,
             max_files=8,
         )
-        await emit(project_id, "agent.task.started", {"agent_id": aid, "agent_name": agent_name, "role": role})
+        started_payload = {
+            "agent_id": aid,
+            "agent_name": agent_name,
+            "role": role,
+            "task_title": task_title,
+            "task_id": resolved_task_id or "",
+            "task_file": task_rel,
+        }
+        await emit(project_id, "agent.task.started", started_payload)
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="project_agent",
+            actor_id=aid,
+            actor_label=agent_name,
+            event_type="agent.task.started",
+            summary=f"{agent_name} started a delegated task",
+            payload=started_payload,
+        )
 
         subplan_section = (
             f"\n\n## Your Approved Sub-Plan\n{approved_subplan[:2000]}\n\n"
@@ -3922,7 +4108,24 @@ async def _delegate_project_tasks(project_id: str) -> None:
         if not agent_res.get("ok"):
             failed_agents += 1
             err_text = detail_to_text(agent_res.get("error") or agent_res.get("details") or "Agent task failed")[:1200]
-            await emit(project_id, "agent.task.failed", {"agent_id": aid, "agent_name": agent_name, "error": err_text})
+            failed_payload = {
+                "agent_id": aid,
+                "agent_name": agent_name,
+                "task_title": task_title,
+                "task_id": resolved_task_id or "",
+                "task_file": task_rel,
+                "error": err_text,
+            }
+            await emit(project_id, "agent.task.failed", failed_payload)
+            _append_project_activity(
+                project_id=project_id,
+                actor_type="project_agent",
+                actor_id=aid,
+                actor_label=agent_name,
+                event_type="agent.task.failed",
+                summary=f"{agent_name} failed a delegated task",
+                payload=failed_payload,
+            )
             _append_project_daily_log(
                 owner_user_id=str(row["user_id"]),
                 project_root=str(row["project_root"] or ""),
@@ -4386,22 +4589,31 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 },
             )
         await _emit_project_action_results(project_id, applied_actions)
-        await emit(
-            project_id,
-            "agent.task.reported",
-            {
-                "agent_id": aid,
-                "agent_name": agent_name,
-                "text": chat_update[:1200],
-                "output_file": f"{USER_OUTPUTS_DIRNAME}/{report_file.name}",
-                "saved_files": saved_files[:20],
-                "skipped_files": skipped_files[:10],
-                "applied_actions": applied_actions[:20],
-                "skipped_actions": skipped_actions[:10],
-                "requires_user_input": bool(pause_decision.get("pause")),
-                "pause_reason": pause_reason[:500],
-                "resume_hint": resume_hint[:300],
-            },
+        reported_payload = {
+            "agent_id": aid,
+            "agent_name": agent_name,
+            "task_title": task_title,
+            "task_id": resolved_task_id or "",
+            "task_file": task_rel,
+            "text": chat_update[:1200],
+            "output_file": f"{USER_OUTPUTS_DIRNAME}/{report_file.name}",
+            "saved_files": saved_files[:20],
+            "skipped_files": skipped_files[:10],
+            "applied_actions": applied_actions[:20],
+            "skipped_actions": skipped_actions[:10],
+            "requires_user_input": bool(pause_decision.get("pause")),
+            "pause_reason": pause_reason[:500],
+            "resume_hint": resume_hint[:300],
+        }
+        await emit(project_id, "agent.task.reported", reported_payload)
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="project_agent",
+            actor_id=aid,
+            actor_label=agent_name,
+            event_type="agent.task.reported",
+            summary=f"{agent_name} submitted an update",
+            payload=reported_payload,
         )
         if applied_actions:
             await emit(
@@ -4438,17 +4650,23 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 _set_project_execution_state(project_id, status=EXEC_STATUS_PAUSED, progress_pct=pause_pct)
                 _refresh_project_documents(project_id)
                 summary = pause_reason or "Execution paused. Waiting for owner input."
-                await emit(
-                    project_id,
-                    "project.execution.auto_paused",
-                    {
-                        "status": EXEC_STATUS_PAUSED,
-                        "progress_pct": pause_pct,
-                        "agent_id": aid,
-                        "agent_name": agent_name,
-                        "reason": summary[:900],
-                        "resume_hint": (resume_hint or "Reply with required input, then say CONTINUE or press Resume.")[:300],
-                    },
+                pause_payload = {
+                    "status": EXEC_STATUS_PAUSED,
+                    "progress_pct": pause_pct,
+                    "agent_id": aid,
+                    "agent_name": agent_name,
+                    "reason": summary[:900],
+                    "resume_hint": (resume_hint or "Reply with required input, then say CONTINUE or press Resume.")[:300],
+                }
+                await emit(project_id, "project.execution.auto_paused", pause_payload)
+                _append_project_activity(
+                    project_id=project_id,
+                    actor_type="project_agent",
+                    actor_id=aid,
+                    actor_label=agent_name,
+                    event_type="project.execution.auto_paused",
+                    summary="Execution auto-paused awaiting review/input",
+                    payload=pause_payload,
                 )
                 _append_project_daily_log(
                     owner_user_id=str(row["user_id"]),
@@ -4535,17 +4753,23 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 final_primary_pause.get("resume_hint")
                 or "Reply with required information, then say CONTINUE (or press Resume)."
             ).strip()
-            await emit(
-                project_id,
-                "project.execution.auto_paused",
-                {
-                    "status": EXEC_STATUS_PAUSED,
-                    "progress_pct": pause_pct,
-                    "agent_id": primary_agent_id,
-                    "agent_name": primary_agent_name,
-                    "reason": summary[:900],
-                    "resume_hint": hint[:300],
-                },
+            pause_payload = {
+                "status": EXEC_STATUS_PAUSED,
+                "progress_pct": pause_pct,
+                "agent_id": primary_agent_id,
+                "agent_name": primary_agent_name,
+                "reason": summary[:900],
+                "resume_hint": hint[:300],
+            }
+            await emit(project_id, "project.execution.auto_paused", pause_payload)
+            _append_project_activity(
+                project_id=project_id,
+                actor_type="project_agent",
+                actor_id=primary_agent_id,
+                actor_label=primary_agent_name,
+                event_type="project.execution.auto_paused",
+                summary="Execution auto-paused awaiting review/input",
+                payload=pause_payload,
             )
             _append_project_daily_log(
                 owner_user_id=str(row["user_id"]),
@@ -4591,20 +4815,26 @@ async def _delegate_project_tasks(project_id: str) -> None:
     if latest_preview_link:
         owner_notice_parts.append(f"Latest file preview: {latest_preview_link}")
     primary_done_update = " ".join(owner_notice_parts).strip()
-    await emit(
-        project_id,
-        "agent.primary.update",
-        {
-            "agent_id": primary_agent_id or "primary",
-            "agent_name": primary_agent_name,
-            "text": primary_done_update[:1200],
-            "project_files_link": project_files_link,
-            "outputs_folder_link": outputs_folder_link,
-            "latest_preview_link": latest_preview_link,
-            "project_files_api_link": project_files_api_link,
-            "outputs_folder_api_link": outputs_folder_api_link,
-            "latest_preview_api_link": latest_preview_api_link,
-        },
+    primary_done_payload = {
+        "agent_id": primary_agent_id or "primary",
+        "agent_name": primary_agent_name,
+        "text": primary_done_update[:1200],
+        "project_files_link": project_files_link,
+        "outputs_folder_link": outputs_folder_link,
+        "latest_preview_link": latest_preview_link,
+        "project_files_api_link": project_files_api_link,
+        "outputs_folder_api_link": outputs_folder_api_link,
+        "latest_preview_api_link": latest_preview_api_link,
+    }
+    await emit(project_id, "agent.primary.update", primary_done_payload)
+    _append_project_activity(
+        project_id=project_id,
+        actor_type="project_agent",
+        actor_id=primary_agent_id,
+        actor_label=primary_agent_name,
+        event_type="agent.primary.update",
+        summary="Primary agent submitted an update",
+        payload=primary_done_payload,
     )
     _append_project_daily_log(
         owner_user_id=str(row["user_id"]),
@@ -4624,22 +4854,28 @@ async def _delegate_project_tasks(project_id: str) -> None:
             "latest_preview_api_link": latest_preview_api_link,
         },
     )
-    await emit(
-        project_id,
-        "project.delegation.ready",
-        {
-            "agents": assigned_count,
-            "processed_agents": processed_agents,
-            "failed_agents": failed_agents,
-            "notes": str(payload.get("notes") or "")[:1000],
-            "project_files_link": project_files_link,
-            "outputs_folder_link": outputs_folder_link,
-            "latest_preview_link": latest_preview_link,
-            "project_files_api_link": project_files_api_link,
-            "outputs_folder_api_link": outputs_folder_api_link,
-            "latest_preview_api_link": latest_preview_api_link,
-            "owner_message": primary_done_update[:1200],
-        },
+    ready_payload = {
+        "agents": assigned_count,
+        "processed_agents": processed_agents,
+        "failed_agents": failed_agents,
+        "notes": str(payload.get("notes") or "")[:1000],
+        "project_files_link": project_files_link,
+        "outputs_folder_link": outputs_folder_link,
+        "latest_preview_link": latest_preview_link,
+        "project_files_api_link": project_files_api_link,
+        "outputs_folder_api_link": outputs_folder_api_link,
+        "latest_preview_api_link": latest_preview_api_link,
+        "owner_message": primary_done_update[:1200],
+    }
+    await emit(project_id, "project.delegation.ready", ready_payload)
+    _append_project_activity(
+        project_id=project_id,
+        actor_type="project_agent",
+        actor_id=primary_agent_id,
+        actor_label=primary_agent_name,
+        event_type="project.delegation.ready",
+        summary="Delegation ready",
+        payload=ready_payload,
     )
 
 
