@@ -3146,6 +3146,13 @@ function projectNeedsApproval(project) {
   return plan === "awaiting_approval";
 }
 
+function projectPlanCanReconcile() {
+  const planStatus = String(selectedProjectPlan?.status || selectedProjectData?.plan_status || "").trim().toLowerCase();
+  const staleStatus = ["pending", "generating", "failed"].includes(planStatus);
+  return Boolean(selectedProjectPlan?.can_reconcile)
+    || (staleStatus && Boolean(selectedProjectPlan?.has_substantive_draft));
+}
+
 function selectedProjectIsOwner() {
   return String(selectedProjectAccessMode || "owner").trim().toLowerCase() === "owner";
 }
@@ -3430,6 +3437,7 @@ function syncProjectHeadbar() {
   const subline = $("detail_subline");
   const runBtn = $("btn_run");
   const deleteBtn = $("btn_delete_project");
+  const syncBtn = $("btn_sync_plan");
   if (!bar || !title || !subline || !runBtn || !deleteBtn) return;
 
   if (activeNavTab !== "projects") {
@@ -3445,7 +3453,15 @@ function syncProjectHeadbar() {
     else title.textContent = paneLabel;
 
     if (titleApproval) {
-      titleApproval.classList.toggle("hidden", !projectNeedsApproval(selectedProjectData));
+      const needsApproval = projectNeedsApproval(selectedProjectData);
+      const needsSync = projectPlanCanReconcile();
+      titleApproval.textContent = needsSync ? "Sync needed" : "Needs approval";
+      titleApproval.classList.toggle("hidden", !(needsApproval || needsSync));
+    }
+    if (syncBtn) {
+      const showSync = selectedProjectIsOwner() && projectPlanCanReconcile();
+      syncBtn.classList.toggle("hidden", !showSync);
+      syncBtn.disabled = !showSync;
     }
 
     const createdAt = selectedProjectData.created_at ? formatTs(selectedProjectData.created_at) : "-";
@@ -3479,6 +3495,10 @@ function syncProjectHeadbar() {
     runBtn.classList.add("hidden");
     runBtn.disabled = true;
     runBtn.textContent = "Run";
+    if (syncBtn) {
+      syncBtn.classList.add("hidden");
+      syncBtn.disabled = true;
+    }
     deleteBtn.classList.add("hidden");
     return;
   }
@@ -3798,6 +3818,8 @@ function handleProjectEvent(kind, payload) {
     loadProjectPlan(selectedProjectId).catch(() => {});
     loadProjectReadiness(selectedProjectId).catch(() => {});
     loadProjectMetaSnapshot(selectedProjectId).catch(() => {});
+    loadProjectWorkspaceTree(selectedProjectId).catch(() => {});
+    loadProjectFiles(projectFilesCurrentPath || "").catch(() => {});
   }
   if (selectedProjectId && /^(project\.|run\.|agent\.)/.test(String(kind))) {
     scheduleProjectDataRefresh();
@@ -4989,9 +5011,11 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
   const regenerateBtn = $("btn_regenerate_plan");
   const approveBtn = $("btn_approve_plan");
   const rejectBtn = $("btn_reject_plan");
+  const syncBtn = $("btn_sync_plan");
+  const inlineSyncBtn = $("btn_sync_plan_inline");
   if (!regenerateBtn || !approveBtn || !rejectBtn) return;
 
-  const buttons = [regenerateBtn, approveBtn, rejectBtn];
+  const buttons = [regenerateBtn, approveBtn, rejectBtn, syncBtn, inlineSyncBtn].filter(Boolean);
   for (const btn of buttons) {
     btn.classList.add("hidden");
     btn.disabled = !selectedProjectData;
@@ -5005,7 +5029,16 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
   const isOwner = selectedProjectIsOwner();
   const planStatus = String(status || "").trim().toLowerCase() || "pending";
   const hasPlanText = Boolean(String(text || "").trim());
+  const canReconcile = projectPlanCanReconcile();
 
+  if (isOwner && canReconcile) {
+    for (const btn of [syncBtn, inlineSyncBtn].filter(Boolean)) {
+      btn.classList.remove("hidden");
+      btn.disabled = false;
+      btn.dataset.planAction = "sync";
+      btn.textContent = "Sync Plan";
+    }
+  }
   if (isOwner && planStatus === "awaiting_approval") {
     approveBtn.classList.remove("hidden");
     approveBtn.disabled = false;
@@ -5138,6 +5171,7 @@ async function refreshProjectStateAfterPlanAction(projectId = selectedProjectId)
   await loadProjectPlan(projectId).catch(() => {});
   await loadProjectReadiness(projectId).catch(() => {});
   await loadProjectMetaSnapshot(projectId).catch(() => {});
+  await loadProjectWorkspaceTree(projectId).catch(() => {});
   await loadProjectFiles(projectFilesCurrentPath || "").catch(() => {});
 }
 
@@ -5173,6 +5207,7 @@ async function reconcileProjectPlan() {
   if (result?.plan) selectedProjectPlan = result.plan;
   if (result?.readiness) selectedProjectReadiness = result.readiness;
   await refreshProjectStateAfterPlanAction(selectedProjectId);
+  setMessage("chat_hint", result?.changed ? "Project state synced from plan files." : "Project state already matches plan files.", "ok");
   addEvent("project.plan.reconciled", { project_id: selectedProjectId, changed: Boolean(result?.changed), source_path: result?.source_path || "" });
   return result;
 }
@@ -10997,6 +11032,8 @@ function bindActions() {
     openWizard(false);
   };
   $("btn_refresh_project").onclick = () => refreshCurrentProject().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  $("btn_sync_plan")?.addEventListener("click", () => reconcileProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error")));
+  $("btn_sync_plan_inline")?.addEventListener("click", () => reconcileProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error")));
   $("btn_regenerate_plan").onclick = () => regenerateProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   $("btn_approve_plan").onclick = () => approveProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   $("btn_reject_plan").onclick = () => {

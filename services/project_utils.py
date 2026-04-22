@@ -3048,10 +3048,22 @@ def _project_plan_file_is_substantive(text: Any) -> bool:
     cleaned = str(text or "").strip()
     if len(cleaned) <= 250:
         return False
-    return bool(re.search(r"(?m)^(#{1,6}\s+|[-*]\s+|\d+\.\s+)", cleaned))
+    lowered = cleaned.lower()
+    placeholder_markers = (
+        "no plan generated yet",
+        "plan has not been generated",
+        "primary agent has not published a plan",
+        "pending primary agent completion",
+        "click regenerate plan",
+    )
+    if any(marker in lowered for marker in placeholder_markers):
+        return False
+    structure_matches = re.findall(r"(?m)^(#{1,6}\s+|[-*]\s+|\d+\.\s+)", cleaned)
+    section_markers = sum(1 for marker in ("milestone", "deliverable", "risk", "handoff", "agent", "timeline", "approval") if marker in lowered)
+    return len(structure_matches) >= 2 or (len(structure_matches) >= 1 and section_markers >= 2)
 
 def _best_project_plan_file_from_dir(project_dir: Path) -> Dict[str, Any]:
-    best: Dict[str, Any] = {"ok": False, "path": "", "text": ""}
+    best: Dict[str, Any] = {"ok": False, "path": "", "text": "", "updated_at": None}
     candidates = ["plan.md", PROJECT_PLAN_FILE]
     for rel in candidates:
         try:
@@ -3059,19 +3071,20 @@ def _best_project_plan_file_from_dir(project_dir: Path) -> Dict[str, Any]:
             if not _path_within(target, project_dir) or not target.is_file():
                 continue
             text = target.read_text(encoding="utf-8").strip()
+            updated_at = int(target.stat().st_mtime)
         except Exception:
             continue
         if not _project_plan_file_is_substantive(text):
             continue
         current_text = str(best.get("text") or "")
         if not best.get("ok") or len(text) > len(current_text):
-            best = {"ok": True, "path": rel, "text": text}
+            best = {"ok": True, "path": rel, "text": text, "updated_at": updated_at}
     return best
 
 def _project_plan_file_snapshot(project_id: str) -> Dict[str, Any]:
     conn = db()
     row = conn.execute(
-        "SELECT id, user_id, project_root, plan_status FROM projects WHERE id = ? LIMIT 1",
+        "SELECT id, user_id, project_root, plan_status, plan_text FROM projects WHERE id = ? LIMIT 1",
         (project_id,),
     ).fetchone()
     conn.close()
@@ -3088,12 +3101,17 @@ def _project_plan_file_snapshot(project_id: str) -> Dict[str, Any]:
         }
     best = _best_project_plan_file_from_dir(project_dir)
     status = _coerce_plan_status(row["plan_status"])
+    best_text = str(best.get("text") or "")
+    db_text = str(row["plan_text"] or "").strip()
+    stale_status_can_promote = status in {PLAN_STATUS_PENDING, PLAN_STATUS_GENERATING, PLAN_STATUS_FAILED}
+    awaiting_text_can_sync = status == PLAN_STATUS_AWAITING_APPROVAL and bool(best_text) and best_text != db_text
     return {
         "ok": True,
         "has_substantive_draft": bool(best.get("ok")),
-        "can_reconcile": bool(best.get("ok")) and status in {PLAN_STATUS_PENDING, PLAN_STATUS_GENERATING, PLAN_STATUS_FAILED},
+        "can_reconcile": bool(best.get("ok")) and (stale_status_can_promote or awaiting_text_can_sync),
         "path": str(best.get("path") or ""),
         "text": str(best.get("text") or ""),
+        "updated_at": best.get("updated_at"),
         "plan_status": status,
     }
 
@@ -3121,32 +3139,49 @@ def _reconcile_project_state_from_files(project_id: str) -> Dict[str, Any]:
 
     best = _best_project_plan_file_from_dir(project_dir)
     current_status = _coerce_plan_status(row["plan_status"])
-    can_reconcile = bool(best.get("ok")) and current_status in {
+    can_promote_to_approval = bool(best.get("ok")) and current_status in {
         PLAN_STATUS_PENDING,
         PLAN_STATUS_GENERATING,
         PLAN_STATUS_FAILED,
     }
+    best_text = str(best.get("text") or "")
+    existing_text = str(row["plan_text"] or "").strip()
+    should_sync_text_only = (
+        bool(best.get("ok"))
+        and current_status == PLAN_STATUS_AWAITING_APPROVAL
+        and best_text
+        and best_text != existing_text
+    )
     changed = False
     now = int(time.time())
-    if can_reconcile:
+    if can_promote_to_approval:
         # Reconcile only the planning state. File existence is not evidence of execution completion.
         conn.execute(
             "UPDATE projects SET plan_text = ?, plan_status = ?, plan_updated_at = ? WHERE id = ?",
-            (str(best.get("text") or "")[:20000], PLAN_STATUS_AWAITING_APPROVAL, now, project_id),
+            (best_text[:20000], PLAN_STATUS_AWAITING_APPROVAL, now, project_id),
+        )
+        conn.commit()
+        changed = True
+    elif should_sync_text_only:
+        conn.execute(
+            "UPDATE projects SET plan_text = ?, plan_updated_at = ? WHERE id = ?",
+            (best_text[:20000], now, project_id),
         )
         conn.commit()
         changed = True
     conn.close()
+    if changed:
+        _refresh_project_documents(project_id)
 
     return {
         "ok": True,
         "changed": changed,
-        "plan_status": PLAN_STATUS_AWAITING_APPROVAL if changed else current_status,
+        "plan_status": PLAN_STATUS_AWAITING_APPROVAL if can_promote_to_approval else current_status,
         "plan_text": str(best.get("text") or row["plan_text"] or ""),
         "plan_updated_at": now if changed else row["plan_updated_at"],
         "plan_approved_at": row["plan_approved_at"],
         "has_substantive_draft": bool(best.get("ok")),
-        "can_reconcile": bool(can_reconcile and not changed),
+        "can_reconcile": bool(can_promote_to_approval and not changed),
         "source_path": str(best.get("path") or ""),
         "execution_status": _coerce_execution_status(row["execution_status"]),
     }

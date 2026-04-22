@@ -2776,8 +2776,8 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         "SELECT plan_status, plan_updated_at FROM projects WHERE id = ?",
         (project_id,),
     ).fetchone()
-    current_plan_status = _coerce_plan_status((current_state or {}).get("plan_status"))
-    current_plan_updated_at = int((current_state or {}).get("plan_updated_at") or 0)
+    current_plan_status = _coerce_plan_status(current_state["plan_status"] if current_state else None)
+    current_plan_updated_at = int((current_state["plan_updated_at"] if current_state else 0) or 0)
     if current_plan_status != PLAN_STATUS_GENERATING or current_plan_updated_at != generation_started_at:
         conn.close()
         _append_project_daily_log(
@@ -3024,7 +3024,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
                 "SELECT plan_status FROM projects WHERE id = ?",
                 (project_id,),
             ).fetchone()
-            if _coerce_plan_status((fail_row or {}).get("plan_status")) == PLAN_STATUS_GENERATING:
+            if _coerce_plan_status(fail_row["plan_status"] if fail_row else None) == PLAN_STATUS_GENERATING:
                 fail_conn.execute(
                     "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
                     (PLAN_STATUS_FAILED, error_text[:5000], fail_now, project_id),

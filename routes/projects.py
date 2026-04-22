@@ -13,6 +13,12 @@ from services.project_activity import append_project_activity_log_entry
 from services.project_utils import _project_plan_file_snapshot, _reconcile_project_state_from_files
 
 
+def _is_project_plan_rel_path(path: Any) -> bool:
+    rel = str(path or "").strip().replace("\\", "/").lstrip("/")
+    rel_low = rel.lower()
+    return rel_low in {"plan.md", str(PROJECT_PLAN_FILE).lower()}
+
+
 async def _start_project_execution_run(*, project_id: str, owner_user_id: str, trigger: str = "manual") -> Dict[str, Any]:
     conn = db()
     proj = conn.execute(
@@ -1297,7 +1303,22 @@ def register_routes(app: FastAPI) -> None:
         if not row:
             conn.close()
             raise HTTPException(404, "Project not found")
-    
+        conn.close()
+        _reconcile_project_state_from_files(project_id)
+
+        conn = db()
+        row = conn.execute(
+            """
+            SELECT id, user_id, title, brief, goal, project_root, setup_json, plan_text, plan_status, plan_updated_at,
+                   plan_approved_at, execution_status, progress_pct
+            FROM projects
+            WHERE id = ? AND user_id = ?
+            """,
+            (project_id, user_id),
+        ).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "Project not found")
         now = int(time.time())
         new_status = PLAN_STATUS_APPROVED
         approved_at = now
@@ -1713,7 +1734,27 @@ def register_routes(app: FastAPI) -> None:
             "project.file.written",
             {"path": rel, "mode": mode, "bytes": len(content.encode("utf-8")), "actor": actor},
         )
-        return {"ok": True, "path": rel, "mode": mode, "bytes": len(content.encode("utf-8"))}
+        reconciled: Dict[str, Any] = {}
+        if _is_project_plan_rel_path(rel):
+            reconciled = _reconcile_project_state_from_files(project_id)
+            if reconciled.get("ok"):
+                await emit(
+                    project_id,
+                    "project.plan.reconciled",
+                    {
+                        "project_id": project_id,
+                        "changed": bool(reconciled.get("changed")),
+                        "source_path": str(reconciled.get("source_path") or rel),
+                        "status": str(reconciled.get("plan_status") or ""),
+                    },
+                )
+        return {
+            "ok": True,
+            "path": rel,
+            "mode": mode,
+            "bytes": len(content.encode("utf-8")),
+            "reconciled": bool(reconciled.get("changed")) if reconciled else False,
+        }
 
     @app.get("/api/projects/{project_id}/files/{file_path:path}")
     async def read_project_file(request: Request, project_id: str, file_path: str):
@@ -1848,7 +1889,16 @@ def register_routes(app: FastAPI) -> None:
         applied = action_result.get("applied") or []
         skipped = action_result.get("skipped") or []
 
-        if any(_normalize_agent_action_kind(item.get("type")) == "update_execution" for item in applied if isinstance(item, dict)):
+        plan_file_written = any(
+            _normalize_agent_action_kind(item.get("type")) in {"write_file", "append_file", "upload_file"}
+            and _is_project_plan_rel_path(item.get("path"))
+            for item in applied
+            if isinstance(item, dict)
+        )
+        reconciled: Dict[str, Any] = {}
+        if plan_file_written:
+            reconciled = _reconcile_project_state_from_files(project_id)
+        if any(_normalize_agent_action_kind(item.get("type")) == "update_execution" for item in applied if isinstance(item, dict)) or plan_file_written:
             _refresh_project_documents(project_id)
 
         _append_project_daily_log(
@@ -1874,6 +1924,17 @@ def register_routes(app: FastAPI) -> None:
                 extra_event_payload = extra.get("event_payload") if isinstance(extra.get("event_payload"), dict) else {}
                 if extra_event_name:
                     await emit(project_id, extra_event_name, extra_event_payload)
+        if plan_file_written and reconciled.get("ok"):
+            await emit(
+                project_id,
+                "project.plan.reconciled",
+                {
+                    "project_id": project_id,
+                    "changed": bool(reconciled.get("changed")),
+                    "source_path": str(reconciled.get("source_path") or ""),
+                    "status": str(reconciled.get("plan_status") or ""),
+                },
+            )
 
         return ProjectAgentOpsOut(ok=True, project_id=project_id, applied=applied[:MAX_AGENT_FILE_WRITES], skipped=skipped[:MAX_AGENT_FILE_WRITES])
     
