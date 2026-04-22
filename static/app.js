@@ -4981,7 +4981,7 @@ function renderProjectPlanInfo() {
       }
     }
   }
-  textEl.textContent = text || "Primary agent has not published a plan yet.";
+  textEl.textContent = text || (status === "generating" ? "Primary agent is generating the plan. Check chat for live progress..." : "Primary agent has not published a plan yet.");
   updateProjectPlanActionButtons({ status, text });
   if (selectedProjectData) selectedProjectData.plan_status = status;
   renderProjectExecutionInfo();

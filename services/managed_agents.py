@@ -6,6 +6,35 @@ import re
 from services.project_utils import *
 
 
+async def _set_execution_live(
+    project_id: str,
+    *,
+    status: Optional[str] = None,
+    progress_pct: Optional[int] = None,
+    summary: str = "",
+    actor: str = "system",
+) -> Optional[Dict[str, Any]]:
+    """Update execution state in DB AND emit a real-time event so the UI sees it."""
+    state = _set_project_execution_state(
+        project_id,
+        status=status,
+        progress_pct=progress_pct,
+    )
+    if state:
+        await emit(
+            project_id,
+            "project.execution.updated",
+            {
+                "status": str(state.get("status") or ""),
+                "progress_pct": int(state.get("progress_pct") or 0),
+                "updated_at": int(state.get("updated_at") or 0),
+                "summary": summary[:500] or None,
+                "actor": actor,
+            },
+        )
+    return state
+
+
 async def _emit_project_chat_message_payload(
     project_id: str,
     message_payload: Dict[str, Any],
@@ -2407,7 +2436,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         instruction,
         agent_id=primary_agent_id,
         session_key=f"{project_id}:plan",
-        timeout_sec=None,
+        timeout_sec=180,
         user_id=str(row["user_id"] or ""),
         from_agent_id="hivee",
         from_label="Hivee System",
@@ -3156,7 +3185,13 @@ async def _delegate_project_tasks(project_id: str) -> None:
         await emit(project_id, "project.delegation.skipped", {"reason": "No invited agents yet"})
         return
 
-    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=15)
+    await _set_execution_live(
+        project_id,
+        status=EXEC_STATUS_RUNNING,
+        progress_pct=15,
+        summary="Delegation started.",
+        actor=f"agent:{primary_agent_id or 'primary'}",
+    )
     _refresh_project_documents(project_id)
     _append_project_daily_log(
         owner_user_id=str(row["user_id"]),
@@ -3204,7 +3239,12 @@ async def _delegate_project_tasks(project_id: str) -> None:
     _update_project_usage_metrics(project_id, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
 
     if not res.get("ok"):
-        _set_project_execution_state(project_id, status=EXEC_STATUS_STOPPED)
+        await _set_execution_live(
+            project_id,
+            status=EXEC_STATUS_STOPPED,
+            summary="Primary delegation chat failed.",
+            actor=f"agent:{primary_agent_id or 'primary'}",
+        )
         _refresh_project_documents(project_id)
         _append_project_daily_log(
             owner_user_id=str(row["user_id"]),
@@ -3215,7 +3255,13 @@ async def _delegate_project_tasks(project_id: str) -> None:
         await emit(project_id, "project.delegation.failed", {"error": detail_to_text(res.get("error") or res.get("details"))[:1200]})
         return
 
-    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=55)
+    await _set_execution_live(
+        project_id,
+        status=EXEC_STATUS_RUNNING,
+        progress_pct=55,
+        summary="Primary delegation draft parsed. Assigning work to invited agents.",
+        actor=f"agent:{primary_agent_id or 'primary'}",
+    )
     primary_reply = str(res.get("text") or "").strip()
     parsed = _extract_agent_report_payload(primary_reply)
     by_id = {str(r.get("agent_id") or "").strip(): r for r in role_rows}
@@ -3382,6 +3428,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 "agent_id": aid,
                 "agent_name": agent_name,
                 "role": role,
+                "task_title": f"{role} — {agent_name}",
                 "task_file": f"agents/{fname}",
                 "task_preview": task_text[:500],
                 "mentions": task_mentions,
@@ -3452,7 +3499,13 @@ async def _delegate_project_tasks(project_id: str) -> None:
     # ── SUB-PLAN PHASE ────────────────────────────────────────────────────────
     # Each non-primary agent writes a detailed sub-plan; primary reviews it.
     # Agents within the same parallel group submit sub-plans concurrently.
-    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=20)
+    await _set_execution_live(
+        project_id,
+        status=EXEC_STATUS_RUNNING,
+        progress_pct=20,
+        summary="Sub-plan phase started.",
+        actor=f"agent:{primary_agent_id or 'primary'}",
+    )
     await emit(project_id, "project.subplan.phase_started", {
         "groups": [[a for a in g] for g in parallel_groups],
     })
@@ -3523,7 +3576,13 @@ async def _delegate_project_tasks(project_id: str) -> None:
             )
             return
 
-    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=40)
+    await _set_execution_live(
+        project_id,
+        status=EXEC_STATUS_RUNNING,
+        progress_pct=40,
+        summary="Sub-plan phase complete. Execution fan-out started.",
+        actor=f"agent:{primary_agent_id or 'primary'}",
+    )
     await emit(project_id, "project.subplan.phase_complete", {
         "agents_with_subplans": list(subplan_map.keys()),
     })
@@ -3568,7 +3627,16 @@ async def _delegate_project_tasks(project_id: str) -> None:
             max_total_chars=7_500,
             max_files=8,
         )
-        await emit(project_id, "agent.task.started", {"agent_id": aid, "agent_name": agent_name, "role": role})
+        await emit(
+            project_id,
+            "agent.task.started",
+            {
+                "agent_id": aid,
+                "agent_name": agent_name,
+                "role": role,
+                "task_title": f"{role} — {agent_name}",
+            },
+        )
 
         subplan_section = (
             f"\n\n## Your Approved Sub-Plan\n{approved_subplan[:2000]}\n\n"
@@ -4095,7 +4163,13 @@ async def _delegate_project_tasks(project_id: str) -> None:
         )
         processed_agents += 1
         pct = min(95, 40 + int(((grp_idx + 1) / max(1, len(parallel_groups))) * 53))
-        _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=pct)
+        await _set_execution_live(
+            project_id,
+            status=EXEC_STATUS_RUNNING,
+            progress_pct=pct,
+            summary=f"Delegated execution progress: {processed_agents}/{len(agent_order)} agent batches completed.",
+            actor=f"agent:{aid}",
+        )
         for note in _summarize_ws_frames(agent_res.get("frames"), limit=8):
             await emit(project_id, "agent.task.live", {"agent_id": aid, "agent_name": agent_name, "note": note})
         for item in saved_files:
@@ -4280,7 +4354,13 @@ async def _delegate_project_tasks(project_id: str) -> None:
             )
             return
 
-    _set_project_execution_state(project_id, status=EXEC_STATUS_COMPLETED, progress_pct=100)
+    await _set_execution_live(
+        project_id,
+        status=EXEC_STATUS_COMPLETED,
+        progress_pct=100,
+        summary="All delegated agents completed. Project execution finished.",
+        actor=f"agent:{primary_agent_id or 'primary'}",
+    )
     _refresh_project_documents(project_id)
     quoted_project_id = url_quote(project_id, safe="")
     project_files_api_link = f"/api/projects/{project_id}/files"

@@ -784,21 +784,60 @@ def init_db() -> None:
     conn.commit()
     conn.close()
 
+from collections import deque
+
 @dataclass
 class Event:
     ts: float
     kind: str
     data: Dict[str, Any]
 
-project_queues: Dict[str, "asyncio.Queue[Event]"] = {}
+project_queues: Dict[str, set] = {}
+project_event_backlog: Dict[str, "deque[Event]"] = {}
+PROJECT_EVENT_BACKLOG_MAX = 200
+PROJECT_EVENT_REPLAY_ON_SUBSCRIBE = 30
 
 def get_queue(project_id: str) -> "asyncio.Queue[Event]":
-    if project_id not in project_queues:
-        project_queues[project_id] = asyncio.Queue()
-    return project_queues[project_id]
+    q: "asyncio.Queue[Event]" = asyncio.Queue(maxsize=PROJECT_EVENT_BACKLOG_MAX)
+    subs = project_queues.setdefault(project_id, set())
+    subs.add(q)
+    backlog = project_event_backlog.get(project_id)
+    if backlog:
+        for ev in list(backlog)[-PROJECT_EVENT_REPLAY_ON_SUBSCRIBE:]:
+            try:
+                q.put_nowait(ev)
+            except Exception:
+                break
+    return q
+
+def release_queue(project_id: str, q: "asyncio.Queue[Event]") -> None:
+    subs = project_queues.get(project_id)
+    if not subs:
+        return
+    subs.discard(q)
+    if not subs:
+        project_queues.pop(project_id, None)
+
+def _remember_event(project_id: str, ev: Event) -> None:
+    backlog = project_event_backlog.setdefault(project_id, deque(maxlen=PROJECT_EVENT_BACKLOG_MAX))
+    backlog.append(ev)
 
 async def emit(project_id: str, kind: str, data: Dict[str, Any]) -> None:
-    await get_queue(project_id).put(Event(ts=time.time(), kind=kind, data=data))
+    ev = Event(ts=time.time(), kind=kind, data=data)
+    _remember_event(project_id, ev)
+    stale = []
+    for q in list(project_queues.get(project_id, set())):
+        try:
+            if q.full():
+                try:
+                    q.get_nowait()
+                except Exception:
+                    pass
+            q.put_nowait(ev)
+        except Exception:
+            stale.append(q)
+    for q in stale:
+        release_queue(project_id, q)
 
 HEALTH_PATHS = ["/health", "/api/health", "/v1/health", "/status", "/api/status"]
 AGENTS_PATHS = [

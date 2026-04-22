@@ -3433,16 +3433,27 @@ def register_routes(app: FastAPI) -> None:
         q = get_queue(project_id)
 
         async def event_generator():
-            yield "event: hello\ndata: {}\n\n"
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    ev = await asyncio.wait_for(q.get(), timeout=10)
-                    payload = {"ts": ev.ts, "kind": ev.kind, "data": ev.data}
-                    yield f"event: {ev.kind}\ndata: {json.dumps(payload)}\n\n"
-                except asyncio.TimeoutError:
-                    yield "event: ping\ndata: {}\n\n"
+            try:
+                yield "event: hello\ndata: {}\n\n"
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        ev = await asyncio.wait_for(q.get(), timeout=10)
+                        payload = {"ts": ev.ts, "kind": ev.kind, "data": ev.data}
+                        yield f"event: {ev.kind}\ndata: {json.dumps(payload)}\n\n"
+                    except asyncio.TimeoutError:
+                        yield "event: ping\ndata: {}\n\n"
+            finally:
+                release_queue(project_id, q)
 
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
