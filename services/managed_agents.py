@@ -105,6 +105,44 @@ async def _emit_project_chat_message_payload(
             )
 
 
+async def _post_project_agent_status_message(
+    *,
+    project_id: str,
+    agent_id: Optional[str],
+    agent_name: Optional[str],
+    text: str,
+    mentions: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    body = str(text or "").strip()
+    if not body:
+        return None
+    conn = db()
+    try:
+        payload = _create_project_chat_message(
+            conn,
+            project_id=project_id,
+            author_type="project_agent",
+            author_id=str(agent_id or "").strip() or None,
+            author_label=str(agent_name or agent_id or "Agent").strip() or "Agent",
+            text=body,
+            mentions=list(mentions or []),
+            metadata={
+                "source": "delegate.status",
+                **(metadata if isinstance(metadata, dict) else {}),
+            },
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    await _emit_project_chat_message_payload(
+        project_id,
+        payload,
+        dispatch_mentions=bool(mentions),
+    )
+    return payload
+
+
 async def _emit_project_action_results(project_id: str, applied_actions: Any) -> None:
     for item in applied_actions or []:
         if not isinstance(item, dict):
@@ -3576,6 +3614,17 @@ async def _delegate_project_tasks(project_id: str) -> None:
         summary="Primary agent started delegation",
         payload=started_payload,
     )
+    await _post_project_agent_status_message(
+        project_id=project_id,
+        agent_id=primary_agent_id,
+        agent_name=primary_agent_name,
+        text=(
+            f"@owner I am starting delegation for {len(role_rows)} assigned agent(s). "
+            "I am reviewing the approved plan, splitting work, and preparing the progress map."
+        ),
+        mentions=["owner"],
+        metadata={"phase": "delegate.start", "agent_count": len(role_rows)},
+    )
     setup_details = _normalize_setup_details(_parse_setup_json(row["setup_json"]))
 
     hivee_api_base = _get_hivee_api_base(project_id)
@@ -3660,6 +3709,17 @@ async def _delegate_project_tasks(project_id: str) -> None:
         project_root=str(row["project_root"] or ""),
         kind="agent.primary.update",
         text=primary_reply[:1800] if primary_reply else "Primary agent returned delegation payload.",
+    )
+    await _post_project_agent_status_message(
+        project_id=project_id,
+        agent_id=primary_agent_id,
+        agent_name=primary_agent_name,
+        text=(
+            "@owner I finished the delegation blueprint. "
+            "I am now publishing delegation.md, progress_map.json, and the initial task assignments for each agent."
+        ),
+        mentions=["owner"],
+        metadata={"phase": "delegate.publish"},
     )
 
     try:
@@ -3847,6 +3907,18 @@ async def _delegate_project_tasks(project_id: str) -> None:
             },
         )
 
+    await _post_project_agent_status_message(
+        project_id=project_id,
+        agent_id=primary_agent_id,
+        agent_name=primary_agent_name,
+        text=(
+            f"@owner High-level assignments are live for {assigned_count} agent(s). "
+            "I am moving into detailed sub-plan review before execution starts."
+        ),
+        mentions=["owner"],
+        metadata={"phase": "delegate.assignments_ready", "assigned_count": assigned_count},
+    )
+
     delegation_state = _read_project_delegation_state(project_id)
     progress_map_candidate = ""
     for f in output_files:
@@ -3908,12 +3980,34 @@ async def _delegate_project_tasks(project_id: str) -> None:
     await emit(project_id, "project.subplan.phase_started", {
         "groups": [[a for a in g] for g in parallel_groups],
     })
+    await _post_project_agent_status_message(
+        project_id=project_id,
+        agent_id=primary_agent_id,
+        agent_name=primary_agent_name,
+        text=(
+            "@owner I am collecting and reviewing detailed sub-plans now. "
+            f"Execution groups queued: {json.dumps(parallel_groups, ensure_ascii=False)}"
+        ),
+        mentions=["owner"],
+        metadata={"phase": "delegate.subplan_phase_started", "groups": parallel_groups},
+    )
     subplan_map: Dict[str, str] = {}  # agent_id -> approved sub-plan text
 
     for grp in parallel_groups:
         non_primary_in_group = [a for a in grp if a != primary_agent_id]
         if not non_primary_in_group:
             continue
+        await _post_project_agent_status_message(
+            project_id=project_id,
+            agent_id=primary_agent_id,
+            agent_name=primary_agent_name,
+            text=(
+                f"@owner I am reviewing sub-plans for this execution group: "
+                f"{', '.join(non_primary_in_group)}."
+            ),
+            mentions=["owner"],
+            metadata={"phase": "delegate.subplan_group_review", "group": list(non_primary_in_group)},
+        )
         state, _ = _read_project_execution_state(project_id)
         if state == EXEC_STATUS_STOPPED:
             break
@@ -3979,12 +4073,46 @@ async def _delegate_project_tasks(project_id: str) -> None:
                 summary="Execution auto-paused awaiting review/input",
                 payload={**pause_payload, "agents": rejected_agents},
             )
+            await _post_project_agent_status_message(
+                project_id=project_id,
+                agent_id=primary_agent_id,
+                agent_name=primary_agent_name,
+                text=(
+                    "@owner I paused execution because some sub-plans still need revision: "
+                    f"{', '.join(rejected_names)}. Once those revisions are aligned, we can resume."
+                ),
+                mentions=["owner"],
+                metadata={"phase": "delegate.paused_for_revisions", "agents": rejected_agents},
+            )
             return
+
+        await _post_project_agent_status_message(
+            project_id=project_id,
+            agent_id=primary_agent_id,
+            agent_name=primary_agent_name,
+            text=(
+                f"@owner Sub-plans approved for group: {', '.join(non_primary_in_group)}. "
+                "I am moving to the next delegation checkpoint."
+            ),
+            mentions=["owner"],
+            metadata={"phase": "delegate.subplan_group_approved", "group": list(non_primary_in_group)},
+        )
 
     _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=40)
     await emit(project_id, "project.subplan.phase_complete", {
         "agents_with_subplans": list(subplan_map.keys()),
     })
+    await _post_project_agent_status_message(
+        project_id=project_id,
+        agent_id=primary_agent_id,
+        agent_name=primary_agent_name,
+        text=(
+            "@owner All delegated sub-plans are approved. "
+            "I am handing execution over to the assigned agents now."
+        ),
+        mentions=["owner"],
+        metadata={"phase": "delegate.complete", "agents_with_subplans": list(subplan_map.keys())},
+    )
 
     # ── EXECUTION PHASE (parallel groups) ────────────────────────────────────
     # Inner async function so we can run agents within a group concurrently.

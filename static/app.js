@@ -6,6 +6,7 @@ let selectedProjectData = null;
 let selectedProjectPlan = null;
 let selectedProjectReadiness = null;
 let selectedProjectMeta = null;
+let projectPipelineStageHint = "";
 let selectedProjectAccessMode = "owner";
 let selectedPrimaryAgentId = null;
 let selectedAssignedAgents = [];
@@ -320,6 +321,7 @@ function clearAuthSession() {
   selectedProjectPlan = null;
   selectedProjectReadiness = null;
   selectedProjectMeta = null;
+  projectPipelineStageHint = "";
   selectedProjectAccessMode = "owner";
   selectedPrimaryAgentId = null;
   selectedAssignedAgents = [];
@@ -3283,6 +3285,7 @@ function showEmptyProject() {
   selectedProjectPlan = null;
   selectedProjectReadiness = null;
   selectedProjectMeta = null;
+  projectPipelineStageHint = "";
   selectedProjectAccessMode = "owner";
   selectedPrimaryAgentId = null;
   selectedAssignedAgents = [];
@@ -3378,12 +3381,23 @@ function getActiveNavLabel() {
 
 function syncWorkspaceSectionTitle() {
   const title = $("workspace_section_title");
+  const refreshBtn = $("btn_refresh_project");
   if (!title) return;
   // When inside a project show its name as the big heading
-  if (activeNavTab === "projects" && selectedProjectData) {
+  const hasProject = activeNavTab === "projects" && Boolean(selectedProjectData);
+  if (hasProject) {
     title.textContent = selectedProjectData.title;
   } else {
     title.textContent = getActiveNavLabel();
+  }
+  if (refreshBtn) {
+    const loading = refreshBtn.dataset.loading === "1";
+    refreshBtn.classList.toggle("hidden", !hasProject);
+    refreshBtn.disabled = !hasProject || loading;
+    const projectTitle = hasProject ? String(selectedProjectData?.title || "").trim() : "";
+    const label = projectTitle ? `Refresh ${projectTitle}` : "Refresh current project";
+    refreshBtn.title = label;
+    refreshBtn.setAttribute("aria-label", label);
   }
 }
 
@@ -3537,7 +3551,7 @@ function eventSummary(kind, payload) {
   if (kind === "project.execution.updated") return `Execution updated: ${data.status || "-"} at ${Number(data.progress_pct || 0)}%.`;
   if (kind === "project.execution.resumed_after_pause") return "Execution resumed after approval.";
   if (kind.startsWith("project.execution.")) return `Execution ${kind.split(".").pop()}: ${data.status || "-"}.`;
-  if (kind === "run.started") return "Run started.";
+  if (kind === "run.started") return data.auto_started ? "Execution started automatically after plan approval." : "Run started.";
   if (kind === "run.completed") return "Run completed.";
   if (kind === "run.stopped") return "Run stopped.";
   if (kind === "project.plan.ready") return "Plan ready. Waiting for approval.";
@@ -3618,6 +3632,12 @@ function eventChatMessage(kind, payload) {
     return { role: "system", text: detailToText(data.summary || "Execution resumed."), meta: "workflow" };
   }
   if (kind === "project.execution.stop") return { role: "system", text: detailToText(data.summary || "Execution stopped."), meta: "workflow" };
+  if (kind === "run.started") {
+    const text = data.auto_started
+      ? "Execution started automatically after the plan was approved."
+      : "Execution started.";
+    return { role: "system", text, meta: "workflow" };
+  }
   if (kind === "agent.task.failed") return { role: "system", text: `${name} hit an error: ${detailToText(data.error || payload)}`, meta: "live - task failed" };
   if (kind === "project.delegation.ready") {
     const ownerMessage = String(data.owner_message || "").trim();
@@ -3656,6 +3676,29 @@ function handleProjectEvent(kind, payload) {
 
   // Track per-agent live state from SSE events so live cards always show current task
   const data = payload && typeof payload === "object" ? payload : {};
+  if (
+    kind === "project.plan.generating"
+    || kind === "project.plan.ready"
+    || kind === "project.plan.awaiting_approval"
+    || kind === "project.plan.rejected"
+    || kind === "project.plan.failed"
+  ) {
+    projectPipelineStageHint = "plan";
+  } else if (kind === "project.plan.approved" || kind === "run.started" || kind === "project.delegation.started" || kind === "project.subplan.phase_started") {
+    projectPipelineStageHint = "delegate";
+  } else if (
+    kind === "project.subplan.phase_complete"
+    || kind === "agent.task.started"
+    || kind === "agent.task.live"
+    || kind === "agent.task.reported"
+    || kind === "project.execution.updated"
+    || kind === "project.execution.resume"
+    || kind === "project.execution.resumed_after_pause"
+  ) {
+    projectPipelineStageHint = "execute";
+  } else if (kind === "project.delegation.ready" || kind === "run.completed") {
+    projectPipelineStageHint = "complete";
+  }
   const evtAgentId = String(data.agent_id || "").trim();
   if (evtAgentId) {
     if (kind === "agent.task.assigned") {
@@ -4318,6 +4361,23 @@ function projectDisplayStatus(planStatus, executionStatus) {
   return { key: "idle", label: "Idle" };
 }
 
+function inferProjectPipelineStage(planStatus, executionStatus, progressPct = 0) {
+  const plan = String(planStatus || "").toLowerCase();
+  const exec = String(executionStatus || "").toLowerCase();
+  const hinted = String(projectPipelineStageHint || "").toLowerCase();
+  const pct = clampProgress(progressPct || 0);
+
+  if (exec === "completed" || hinted === "complete") return "complete";
+  if (plan === "failed") return "plan";
+
+  if (exec === "running" || exec === "paused" || exec === "stopped") {
+    if (hinted === "delegate" || hinted === "execute") return hinted;
+    return pct <= 40 ? "delegate" : "execute";
+  }
+  if (plan === "approved") return "delegate";
+  return "plan";
+}
+
 function projectLooksActive(planStatus, executionStatus) {
   const display = projectDisplayStatus(planStatus, executionStatus);
   return display.key === "running" || display.key === "planning";
@@ -4361,27 +4421,31 @@ function activityEventMeta(eventType) {
   return { color: "var(--muted)", label: eventType || "Event" };
 }
 
-function renderPipelineNodes(planStatus, execStatus) {
+function renderPipelineNodes(planStatus, execStatus, progressPct = 0) {
   const phases = ["pending", "pending", "pending", "pending"];
   const p = String(planStatus || "").toLowerCase();
   const e = String(execStatus  || "").toLowerCase();
+  const currentStage = inferProjectPipelineStage(p, e, progressPct);
 
-  if (e === "completed") {
+  if (currentStage === "complete") {
     phases[0] = "done"; phases[1] = "done"; phases[2] = "done"; phases[3] = "done";
-  } else if (e === "running") {
-    phases[0] = "done"; phases[1] = "done"; phases[2] = "active"; phases[3] = "pending";
-  } else if (e === "paused") {
-    phases[0] = "done"; phases[1] = "done"; phases[2] = "paused"; phases[3] = "pending";
-  } else if (e === "stopped") {
-    phases[0] = "done"; phases[1] = "done"; phases[2] = "failed"; phases[3] = "pending";
-  } else if (p === "awaiting_approval") {
-    phases[0] = "done"; phases[1] = "active"; phases[2] = "pending"; phases[3] = "pending";
-  } else if (p === "approved") {
-    phases[0] = "done"; phases[1] = "done"; phases[2] = "pending"; phases[3] = "pending";
-  } else if (p === "generating") {
-    phases[0] = "active"; phases[1] = "pending"; phases[2] = "pending"; phases[3] = "pending";
   } else if (p === "failed") {
     phases[0] = "failed"; phases[1] = "pending"; phases[2] = "pending"; phases[3] = "pending";
+  } else if (currentStage === "execute") {
+    phases[0] = "done";
+    phases[1] = "done";
+    phases[2] = e === "paused" ? "paused" : (e === "stopped" ? "failed" : "active");
+    phases[3] = "pending";
+  } else if (currentStage === "delegate") {
+    phases[0] = "done";
+    phases[1] = e === "paused" ? "paused" : (e === "stopped" ? "failed" : "active");
+    phases[2] = "pending";
+    phases[3] = "pending";
+  } else {
+    phases[0] = "active";
+    phases[1] = "pending";
+    phases[2] = "pending";
+    phases[3] = "pending";
   }
 
   for (let i = 0; i < 4; i++) {
@@ -4883,7 +4947,7 @@ function renderProjectExecutionInfo() {
     pauseBtn.disabled = true;
     stopBtn.disabled = true;
     pauseBtn.textContent = "Pause";
-    renderPipelineNodes(null, null);
+    renderPipelineNodes(null, null, 0);
     renderAgentLiveCards();
     return;
   }
@@ -4915,33 +4979,32 @@ function renderProjectExecutionInfo() {
   pauseBtn.textContent = status === "paused" ? "Resume" : "Pause";
   pauseBtn.disabled = status === "stopped" || status === "completed" || status === "idle";
   stopBtn.disabled = status === "stopped" || status === "completed" || status === "idle";
-  renderPipelineNodes(planStatus, status);
+  renderPipelineNodes(planStatus, status, pct);
   renderAgentLiveCards();
   renderLiveStatus();
 }
 
 function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
-  const refreshBtn = $("btn_refresh_plan");
+  const actionsRow = $("detail_plan_actions");
   const regenerateBtn = $("btn_regenerate_plan");
   const approveBtn = $("btn_approve_plan");
   const rejectBtn = $("btn_reject_plan");
-  const reconcileBtn = $("btn_reconcile_plan");
-  if (!refreshBtn || !regenerateBtn || !approveBtn || !rejectBtn || !reconcileBtn) return;
+  if (!regenerateBtn || !approveBtn || !rejectBtn) return;
 
-  const buttons = [refreshBtn, regenerateBtn, approveBtn, rejectBtn, reconcileBtn];
+  const buttons = [regenerateBtn, approveBtn, rejectBtn];
   for (const btn of buttons) {
     btn.classList.add("hidden");
     btn.disabled = !selectedProjectData;
     btn.dataset.planAction = "";
   }
-  if (!selectedProjectData) return;
+  if (!selectedProjectData) {
+    if (actionsRow) actionsRow.classList.add("hidden");
+    return;
+  }
 
   const isOwner = selectedProjectIsOwner();
   const planStatus = String(status || "").trim().toLowerCase() || "pending";
   const hasPlanText = Boolean(String(text || "").trim());
-  const hasSubstantiveDraft = Boolean(selectedProjectPlan?.has_substantive_draft);
-  const canReconcile = Boolean(selectedProjectPlan?.can_reconcile);
-  const recoverablePlanFile = isOwner && canReconcile && ["generating", "pending", "failed"].includes(planStatus);
 
   if (isOwner && planStatus === "awaiting_approval") {
     approveBtn.classList.remove("hidden");
@@ -4952,29 +5015,16 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
     rejectBtn.disabled = false;
     rejectBtn.dataset.planAction = "reject";
     rejectBtn.textContent = "Request Changes";
-    refreshBtn.classList.remove("hidden");
-    refreshBtn.disabled = false;
-    refreshBtn.dataset.planAction = "refresh";
-  } else if (recoverablePlanFile) {
-    reconcileBtn.classList.remove("hidden");
-    reconcileBtn.disabled = false;
-    reconcileBtn.dataset.planAction = "reconcile";
-    reconcileBtn.textContent = hasSubstantiveDraft ? "Sync Plan" : "Check Plan";
-    refreshBtn.classList.remove("hidden");
-    refreshBtn.disabled = false;
-    refreshBtn.dataset.planAction = "refresh";
-  } else if (planStatus === "generating") {
-    refreshBtn.classList.remove("hidden");
-    refreshBtn.disabled = false;
-    refreshBtn.dataset.planAction = "refresh";
   } else if (!hasPlanText || planStatus === "failed") {
     regenerateBtn.classList.remove("hidden");
     regenerateBtn.disabled = false;
     regenerateBtn.dataset.planAction = "regenerate";
-  } else {
-    refreshBtn.classList.remove("hidden");
-    refreshBtn.disabled = false;
-    refreshBtn.dataset.planAction = "refresh";
+  }
+  if (actionsRow) {
+    actionsRow.classList.toggle(
+      "hidden",
+      !buttons.some((btn) => !btn.classList.contains("hidden")),
+    );
   }
 }
 
@@ -5095,7 +5145,13 @@ async function approveProjectPlan() {
   if (!selectedProjectId) throw new Error("Select project first");
   await api(`/api/projects/${selectedProjectId}/plan/approve`, "POST");
   await refreshProjectStateAfterPlanAction(selectedProjectId);
-  setMessage("chat_hint", "Plan approved. You can start execution when ready.", "ok");
+  const execStatus = String(selectedProjectData?.execution_status || "").toLowerCase();
+  const hint = execStatus === "running"
+    ? "Plan approved. Execution started automatically."
+    : execStatus === "paused"
+      ? "Plan approved. Execution is paused and waiting for your input."
+      : "Plan approved.";
+  setMessage("chat_hint", hint, "ok");
   addEvent("project.plan.approved", { project_id: selectedProjectId });
 }
 
@@ -5117,8 +5173,64 @@ async function reconcileProjectPlan() {
   if (result?.plan) selectedProjectPlan = result.plan;
   if (result?.readiness) selectedProjectReadiness = result.readiness;
   await refreshProjectStateAfterPlanAction(selectedProjectId);
-  setMessage("chat_hint", result?.changed ? "Plan synced from project files. Review and approve when ready." : "Plan state checked; no DB change needed.", "ok");
   addEvent("project.plan.reconciled", { project_id: selectedProjectId, changed: Boolean(result?.changed), source_path: result?.source_path || "" });
+  return result;
+}
+
+async function refreshCurrentProject({ silent = false } = {}) {
+  if (!selectedProjectId) throw new Error("Select project first");
+  const projectId = selectedProjectId;
+  const refreshBtn = $("btn_refresh_project");
+  if (refreshBtn) {
+    refreshBtn.dataset.loading = "1";
+    refreshBtn.disabled = true;
+    refreshBtn.classList.add("is-loading");
+  }
+  if (!silent) setMessage("chat_hint", "Refreshing project...", "");
+  try {
+    const plan = await loadProjectPlan(projectId).catch(() => null);
+    let recoveredPlan = false;
+
+    if (selectedProjectId !== projectId) return null;
+
+    if (Boolean(plan?.can_reconcile)) {
+      const reconciled = await reconcileProjectPlan().catch(() => null);
+      recoveredPlan = Boolean(reconciled?.changed);
+    } else {
+      await refreshProjectStateAfterPlanAction(projectId).catch(() => {});
+    }
+
+    if (selectedProjectId !== projectId) return null;
+
+    await loadProjectWorkspaceTree(projectId).catch(() => {});
+    await Promise.all([
+      loadTaskBlueprints(projectId, { silent: true }).catch(() => {}),
+      loadProjectTasks(projectId, { silent: true }).catch(() => {}),
+      loadProjectActivity(projectId, { silent: true }).catch(() => {}),
+      loadProjectChatMessages(projectId, { silent: true }).catch(() => {}),
+    ]);
+    await loadLatestLiveArtifact({ render: activeProjectPane === "live" }).catch(() => {});
+    await loadChatAgents().catch(() => {});
+    if (activeProjectPane === "team") renderTeamTree();
+    if (!silent) {
+      setMessage(
+        "chat_hint",
+        recoveredPlan
+          ? "Project refreshed. Latest plan draft recovered from project files."
+          : "Project refreshed.",
+        "ok",
+      );
+    }
+    addEvent("ui.project.refresh", { project_id: projectId, recovered_plan: recoveredPlan });
+    return { ok: true, recovered_plan: recoveredPlan };
+  } finally {
+    if (refreshBtn) {
+      refreshBtn.dataset.loading = "";
+      refreshBtn.disabled = false;
+      refreshBtn.classList.remove("is-loading");
+    }
+    syncWorkspaceSectionTitle();
+  }
 }
 
 async function regenerateProjectPlan() {
@@ -5142,6 +5254,11 @@ async function controlProjectExecution(action) {
     selectedProjectData.execution_status = res.status;
     selectedProjectData.progress_pct = res.progress_pct;
     selectedProjectData.execution_updated_at = res.updated_at;
+    projectPipelineStageHint = inferProjectPipelineStage(
+      selectedProjectData.plan_status,
+      res.status,
+      res.progress_pct || 0,
+    );
   }
   renderProjectPlanInfo();
   const status = String(res?.status || "").toLowerCase();
@@ -5167,6 +5284,7 @@ async function refreshSelectedProjectData() {
   if (!selectedProjectId) return null;
   const latest = await api(`/api/projects/${selectedProjectId}`);
   selectedProjectData = latest;
+  projectPipelineStageHint = inferProjectPipelineStage(latest.plan_status, latest.execution_status, latest.progress_pct || 0);
   const cacheIdx = projectsCache.findIndex((p) => String(p?.id || "") === String(latest?.id || ""));
   if (cacheIdx >= 0) {
     projectsCache[cacheIdx] = { ...projectsCache[cacheIdx], ...latest };
@@ -8898,6 +9016,7 @@ async function selectProject(projectId) {
   if (priorityFilter) priorityFilter.value = "";
   const assigneeFilter = $("task_filter_assignee");
   if (assigneeFilter) assigneeFilter.value = "";
+  projectPipelineStageHint = "";
   renderProjectTaskList();
   renderProjectActivityFeed();
   setMessage("tasks_msg", "");
@@ -8908,6 +9027,7 @@ async function selectProject(projectId) {
   ]);
 
   selectedProjectData = project;
+  projectPipelineStageHint = inferProjectPipelineStage(project.plan_status, project.execution_status, project.progress_pct || 0);
   selectedProjectPlan = {
     project_id: projectId,
     status: project.plan_status || "pending",
@@ -10876,30 +10996,14 @@ function bindActions() {
     if (!selectedProjectId) return;
     openWizard(false);
   };
-  $("btn_refresh_plan").onclick = () => {
-    if (!selectedProjectId) return;
-    loadProjectPlan(selectedProjectId).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
-  };
+  $("btn_refresh_project").onclick = () => refreshCurrentProject().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   $("btn_regenerate_plan").onclick = () => regenerateProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
-  $("btn_approve_plan").onclick = () => {
-    const mode = String($("btn_approve_plan")?.dataset?.planAction || "approve").trim().toLowerCase();
-    if (mode === "refresh") {
-      if (!selectedProjectId) return;
-      loadProjectPlan(selectedProjectId).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
-      return;
-    }
-    if (mode === "regenerate") {
-      regenerateProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
-      return;
-    }
-    approveProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
-  };
+  $("btn_approve_plan").onclick = () => approveProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   $("btn_reject_plan").onclick = () => {
     const feedback = window.prompt("What should change in the plan?");
     if (feedback === null) return;
     rejectProjectPlan(feedback).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   };
-  $("btn_reconcile_plan").onclick = () => reconcileProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   $("btn_pause_project").onclick = () => {
     const current = String(selectedProjectData?.execution_status || "").toLowerCase();
     const action = current === "paused" ? "resume" : "pause";

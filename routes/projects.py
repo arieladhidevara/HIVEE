@@ -13,6 +13,91 @@ from services.project_activity import append_project_activity_log_entry
 from services.project_utils import _project_plan_file_snapshot, _reconcile_project_state_from_files
 
 
+async def _start_project_execution_run(*, project_id: str, owner_user_id: str, trigger: str = "manual") -> Dict[str, Any]:
+    conn = db()
+    proj = conn.execute(
+        """
+        SELECT id, user_id, title, brief, goal, plan_status, project_root, execution_status, progress_pct
+        FROM projects WHERE id = ? AND user_id = ?
+        """,
+        (project_id, owner_user_id),
+    ).fetchone()
+    agents = conn.execute(
+        "SELECT agent_id, agent_name, is_primary FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
+        (project_id,),
+    ).fetchall() if proj else []
+    conn.close()
+
+    if not proj:
+        return {"ok": False, "status_code": 404, "message": "Project not found"}
+
+    current_status = _coerce_execution_status(proj["execution_status"])
+    if current_status in {EXEC_STATUS_RUNNING, EXEC_STATUS_PAUSED}:
+        return {
+            "ok": False,
+            "status_code": 409,
+            "message": "Project execution is already in progress.",
+            "status": current_status,
+        }
+    if current_status == EXEC_STATUS_COMPLETED:
+        return {
+            "ok": False,
+            "status_code": 409,
+            "message": "Project execution is already completed.",
+            "status": current_status,
+        }
+
+    role_rows = [dict(a) for a in agents]
+    readiness = _project_readiness_snapshot(
+        owner_user_id=str(proj["user_id"]),
+        project_id=project_id,
+        project_root=str(proj["project_root"] or ""),
+        plan_status=proj["plan_status"],
+        execution_status=proj["execution_status"],
+        role_rows=role_rows,
+    )
+    if not bool(readiness.get("can_run")):
+        return {
+            "ok": False,
+            "status_code": 400,
+            "message": str(readiness.get("summary") or "Project is not ready to run."),
+            "readiness": readiness,
+        }
+
+    current_progress = _clamp_progress(proj["progress_pct"])
+    start_progress = max(10, current_progress)
+    _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=start_progress)
+    _refresh_project_documents(project_id)
+
+    auto_started = str(trigger or "").strip().lower() == "plan_approved"
+    log_kind = "run.auto_started" if auto_started else "run.started"
+    log_text = (
+        "Project execution started automatically after plan approval."
+        if auto_started
+        else "User started project execution run."
+    )
+    _append_project_daily_log(
+        owner_user_id=str(proj["user_id"]),
+        project_root=str(proj["project_root"] or ""),
+        kind=log_kind,
+        text=log_text,
+        payload={"agents": len(agents), "trigger": trigger},
+    )
+    await emit(
+        project_id,
+        "run.started",
+        {
+            "project": str(proj["title"] or ""),
+            "agents": [str(a["agent_name"] or a["agent_id"] or "") for a in agents],
+            "primary_agent": next((str(a["agent_name"] or a["agent_id"] or "") for a in agents if bool(a["is_primary"])), None),
+            "auto_started": auto_started,
+            "trigger": trigger,
+        },
+    )
+    asyncio.create_task(_delegate_project_tasks(project_id))
+    return {"ok": True}
+
+
 def _new_project_external_invite_token() -> str:
     return f"pinv_{secrets.token_urlsafe(24)}"
 
@@ -1294,6 +1379,11 @@ def register_routes(app: FastAPI) -> None:
             pass
 
         await emit(project_id, "project.plan.approved", {"project_id": project_id, "status": new_status})
+        await _start_project_execution_run(
+            project_id=project_id,
+            owner_user_id=user_id,
+            trigger="plan_approved",
+        )
     
         return ProjectPlanOut(
             project_id=project_id,
@@ -3637,79 +3727,24 @@ def register_routes(app: FastAPI) -> None:
     @app.post("/api/projects/{project_id}/run")
     async def run_project(request: Request, project_id: str):
         user_id = get_session_user(request)
-        conn = db()
-        proj = conn.execute(
-            """
-            SELECT id, user_id, title, brief, goal, plan_status, project_root, execution_status, progress_pct
-            FROM projects WHERE id = ? AND user_id = ?
-            """,
-            (project_id, user_id),
-        ).fetchone()
-        agents = conn.execute(
-            "SELECT agent_id, agent_name, is_primary FROM project_agents WHERE project_id = ? ORDER BY is_primary DESC, agent_name ASC",
-            (project_id,),
-        ).fetchall()
-        conn.close()
-        if not proj:
-            raise HTTPException(404, "Project not found")
-
-        current_status = _coerce_execution_status(proj["execution_status"])
-        if current_status in {EXEC_STATUS_RUNNING, EXEC_STATUS_PAUSED}:
-            raise HTTPException(
-                409,
-                {
-                    "message": "Project execution is already in progress.",
-                    "status": current_status,
-                },
-            )
-        if current_status == EXEC_STATUS_COMPLETED:
-            raise HTTPException(
-                409,
-                {
-                    "message": "Project execution is already completed.",
-                    "status": current_status,
-                },
-            )
-
-        role_rows = [dict(a) for a in agents]
-        readiness = _project_readiness_snapshot(
-            owner_user_id=str(proj["user_id"]),
+        start_result = await _start_project_execution_run(
             project_id=project_id,
-            project_root=str(proj["project_root"] or ""),
-            plan_status=proj["plan_status"],
-            execution_status=proj["execution_status"],
-            role_rows=role_rows,
+            owner_user_id=user_id,
+            trigger="manual",
         )
-        if not bool(readiness.get("can_run")):
-            raise HTTPException(
-                400,
-                {
-                    "message": str(readiness.get("summary") or "Project is not ready to run."),
-                    "readiness": readiness,
-                },
-            )
-
-        current_progress = _clamp_progress(proj["progress_pct"])
-        start_progress = max(10, current_progress)
-        _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=start_progress)
-        _refresh_project_documents(project_id)
-        _append_project_daily_log(
-            owner_user_id=str(proj["user_id"]),
-            project_root=str(proj["project_root"] or ""),
-            kind="run.started",
-            text="User started project execution run.",
-            payload={"agents": len(agents)},
-        )
-        await emit(
-            project_id,
-            "run.started",
-            {
-                "project": str(proj["title"] or ""),
-                "agents": [str(a["agent_name"] or a["agent_id"] or "") for a in agents],
-                "primary_agent": next((str(a["agent_name"] or a["agent_id"] or "") for a in agents if bool(a["is_primary"])), None),
-            },
-        )
-        asyncio.create_task(_delegate_project_tasks(project_id))
+        if not start_result.get("ok"):
+            detail: Any = str(start_result.get("message") or "Unable to start project execution.")
+            if start_result.get("status_code") == 400:
+                detail = {
+                    "message": str(start_result.get("message") or "Project is not ready to run."),
+                    "readiness": start_result.get("readiness") or {},
+                }
+            elif start_result.get("status"):
+                detail = {
+                    "message": str(start_result.get("message") or "Project execution cannot be started."),
+                    "status": start_result.get("status"),
+                }
+            raise HTTPException(int(start_result.get("status_code") or 400), detail)
         return {"ok": True}
     
 

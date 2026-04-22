@@ -289,6 +289,11 @@
 
         <section class="workspace-section-title">
           <h2 id="workspace_section_title">Projects</h2>
+          <div class="workspace-section-actions">
+            <button id="btn_refresh_project" type="button" class="section-icon-btn hidden" aria-label="Refresh current project" title="Refresh current project">
+              <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0 2 5.3"/><path d="M20 4v7h-7"/></svg>
+            </button>
+          </div>
         </section>
 
         <aside id="context_sidebar" class="context-sidebar">
@@ -313,7 +318,6 @@
               <p id="detail_subline" class="project-subline"></p>
             </div>
             <div class="project-head-actions">
-              <button id="btn_reconcile_plan" type="button" class="secondary hidden">Sync Plan</button>
               <button id="btn_reject_plan" type="button" class="secondary hidden">Request Changes</button>
               <button id="btn_approve_plan" type="button" class="primary hidden">Approve Plan</button>
               <button id="btn_run" type="button" class="primary hidden">Run</button>
@@ -371,17 +375,17 @@
                     <div class="exec-pipeline-nodes">
                       <div class="exec-node" id="exec_node_0">
                         <div class="exec-node-dot pending" id="exec_dot_0"></div>
-                        <span class="exec-node-label">Plan Generation</span>
+                        <span class="exec-node-label">Plan</span>
                       </div>
                       <div class="exec-node-connector" id="exec_conn_0"></div>
                       <div class="exec-node" id="exec_node_1">
                         <div class="exec-node-dot pending" id="exec_dot_1"></div>
-                        <span class="exec-node-label">Plan Review</span>
+                        <span class="exec-node-label">Delegate</span>
                       </div>
                       <div class="exec-node-connector" id="exec_conn_1"></div>
                       <div class="exec-node" id="exec_node_2">
                         <div class="exec-node-dot pending" id="exec_dot_2"></div>
-                        <span class="exec-node-label">Execution</span>
+                        <span class="exec-node-label">Execute</span>
                       </div>
                       <div class="exec-node-connector" id="exec_conn_2"></div>
                       <div class="exec-node" id="exec_node_3">
@@ -403,7 +407,6 @@
                   </div>
                   <div id="detail_progress_fill" style="display:none"></div>
                   <div id="detail_plan_actions" class="action-row">
-                    <button id="btn_refresh_plan" class="secondary" type="button">Refresh Plan</button>
                     <button id="btn_regenerate_plan" class="secondary" type="button">Regenerate Plan</button>
                   </div>
                 </div>
