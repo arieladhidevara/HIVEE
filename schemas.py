@@ -176,6 +176,9 @@ class ProjectPlanOut(BaseModel):
     text: str
     updated_at: Optional[int] = None
     approved_at: Optional[int] = None
+    has_substantive_draft: bool = False
+    can_reconcile: bool = False
+    draft_source: Optional[str] = None
 
 class ProjectPlanApproveIn(BaseModel):
     approve: bool = True

@@ -2353,7 +2353,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
     row = conn.execute(
         """
         SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id,
-               p.backend_mode, p.connector_id,
+               p.plan_status, p.backend_mode, p.connector_id,
                c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
         FROM projects p
         LEFT JOIN openclaw_connections c ON c.id = p.connection_id
@@ -2403,11 +2403,23 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
             existing_info = info_path.read_text(encoding="utf-8")
         except Exception:
             existing_info = ""
+    info_is_stale = False
+    if existing_info.strip() and info_path.exists():
+        try:
+            info_mtime = info_path.stat().st_mtime
+            for rel in (PROJECT_PLAN_FILE, OVERVIEW_FILE, TRACKER_FILE):
+                candidate = (project_dir / rel).resolve()
+                if _path_within(candidate, project_dir) and candidate.is_file() and candidate.stat().st_mtime > info_mtime:
+                    info_is_stale = True
+                    break
+        except Exception:
+            info_is_stale = False
     if (
         existing_info.strip()
         and (not force)
         and "pending primary agent completion" not in existing_info.lower()
         and len(existing_info.strip()) >= 160
+        and not info_is_stale
     ):
         return {"ok": True, "text": existing_info.strip(), "source": "existing", "agent_id": primary_agent_id}
 
@@ -2418,7 +2430,7 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         setup_details=setup_details,
         role_rows=role_rows,
         project_root=str(row["project_root"] or ""),
-        plan_status=PLAN_STATUS_PENDING,
+        plan_status=_coerce_plan_status(row["plan_status"]),
     )
     roster = _agent_roster_markdown(role_rows)
     task = (
@@ -2439,6 +2451,8 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
             PROJECT_INFO_FILE,
             "agents/ROLES.md",
             OVERVIEW_FILE,
+            PROJECT_PLAN_FILE,
+            TRACKER_FILE,
             PROJECT_SETUP_FILE,
             PROJECT_PROTOCOL_FILE,
             SETUP_CHAT_HISTORY_FILE,
@@ -2947,6 +2961,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         )
         try:
             _refresh_project_documents(project_id)
+            asyncio.create_task(_ensure_project_info_document(project_id, force=True))
         except Exception as exc:
             _append_project_daily_log(
                 owner_user_id=str(row["user_id"]),

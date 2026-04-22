@@ -6,9 +6,11 @@ from services.managed_agents import (
     _project_chat,
     _onboard_agents_into_project,
     _generate_project_plan,
+    _ensure_project_info_document,
     _is_default_placeholder_agent,
 )
 from services.project_activity import append_project_activity_log_entry
+from services.project_utils import _project_plan_file_snapshot, _reconcile_project_state_from_files
 
 
 def _new_project_external_invite_token() -> str:
@@ -1036,13 +1038,89 @@ def register_routes(app: FastAPI) -> None:
         conn.close()
         if not row:
             raise HTTPException(404, "Project not found")
+        file_state = _project_plan_file_snapshot(project_id)
         return ProjectPlanOut(
             project_id=project_id,
             status=_coerce_plan_status(row["plan_status"]),
             text=str(row["plan_text"] or ""),
             updated_at=row["plan_updated_at"],
             approved_at=row["plan_approved_at"],
+            has_substantive_draft=bool(file_state.get("has_substantive_draft")),
+            can_reconcile=bool(file_state.get("can_reconcile")),
+            draft_source=str(file_state.get("path") or "") or None,
         )
+
+    @app.post("/api/projects/{project_id}/reconcile")
+    async def reconcile_project(request: Request, project_id: str):
+        user_id = get_session_user(request)
+        conn = db()
+        owner_row = conn.execute(
+            "SELECT id FROM projects WHERE id = ? AND user_id = ? LIMIT 1",
+            (project_id, user_id),
+        ).fetchone()
+        conn.close()
+        if not owner_row:
+            raise HTTPException(404, "Project not found")
+
+        reconciled = _reconcile_project_state_from_files(project_id)
+        if not reconciled.get("ok"):
+            raise HTTPException(400, reconciled.get("error") or "Unable to reconcile project")
+        _refresh_project_documents(project_id)
+        try:
+            asyncio.create_task(_ensure_project_info_document(project_id, force=True))
+        except Exception:
+            pass
+        plan_state = _project_plan_file_snapshot(project_id)
+        conn = db()
+        row = conn.execute(
+            """
+            SELECT id, title, brief, goal, connection_id, created_at, workspace_root, project_root, setup_json,
+                   plan_text, plan_status, plan_updated_at, plan_approved_at,
+                   execution_status, progress_pct, execution_updated_at,
+                   usage_prompt_tokens, usage_completion_tokens, usage_total_tokens, usage_updated_at
+            FROM projects
+            WHERE id = ? AND user_id = ?
+            """,
+            (project_id, user_id),
+        ).fetchone()
+        conn.close()
+        if not row:
+            raise HTTPException(404, "Project not found")
+        readiness = _project_readiness_snapshot(
+            owner_user_id=user_id,
+            project_id=project_id,
+            project_root=str(row["project_root"] or ""),
+            plan_status=row["plan_status"],
+            execution_status=row["execution_status"],
+        )
+        payload = {
+            "ok": True,
+            "changed": bool(reconciled.get("changed")),
+            "source_path": str(reconciled.get("source_path") or ""),
+            "project": _project_out_from_row(row),
+            "plan": ProjectPlanOut(
+                project_id=project_id,
+                status=_coerce_plan_status(row["plan_status"]),
+                text=str(row["plan_text"] or ""),
+                updated_at=row["plan_updated_at"],
+                approved_at=row["plan_approved_at"],
+                has_substantive_draft=bool(plan_state.get("has_substantive_draft")),
+                can_reconcile=bool(plan_state.get("can_reconcile")),
+                draft_source=str(plan_state.get("path") or "") or None,
+            ),
+            "readiness": readiness,
+        }
+        await emit(
+            project_id,
+            "project.plan.reconciled",
+            {
+                "project_id": project_id,
+                "changed": payload["changed"],
+                "source_path": payload["source_path"],
+                "status": _coerce_plan_status(row["plan_status"]),
+            },
+        )
+        return payload
     
     @app.post("/api/projects/{project_id}/plan/regenerate", response_model=ProjectPlanOut)
     async def regenerate_project_plan(request: Request, project_id: str):
@@ -1176,6 +1254,10 @@ def register_routes(app: FastAPI) -> None:
         conn.close()
     
         _refresh_project_documents(project_id)
+        try:
+            asyncio.create_task(_ensure_project_info_document(project_id, force=True))
+        except Exception:
+            pass
         _append_project_daily_log(
             owner_user_id=str(row["user_id"]),
             project_root=str(row["project_root"] or ""),
@@ -1273,6 +1355,10 @@ def register_routes(app: FastAPI) -> None:
             "",
         )
         _refresh_project_documents(project_id)
+        try:
+            asyncio.create_task(_ensure_project_info_document(project_id, force=True))
+        except Exception:
+            pass
         _append_project_daily_log(
             owner_user_id=str(row["user_id"]),
             project_root=str(row["project_root"] or ""),

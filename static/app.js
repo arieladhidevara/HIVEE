@@ -5,6 +5,8 @@ let selectedProjectId = null;
 let selectedProjectData = null;
 let selectedProjectPlan = null;
 let selectedProjectReadiness = null;
+let selectedProjectMeta = null;
+let selectedProjectAccessMode = "owner";
 let selectedPrimaryAgentId = null;
 let selectedAssignedAgents = [];
 let currentAgents = [];
@@ -317,6 +319,8 @@ function clearAuthSession() {
   selectedProjectData = null;
   selectedProjectPlan = null;
   selectedProjectReadiness = null;
+  selectedProjectMeta = null;
+  selectedProjectAccessMode = "owner";
   selectedPrimaryAgentId = null;
   selectedAssignedAgents = [];
   agentLiveState = {};
@@ -3140,6 +3144,10 @@ function projectNeedsApproval(project) {
   return plan === "awaiting_approval";
 }
 
+function selectedProjectIsOwner() {
+  return String(selectedProjectAccessMode || "owner").trim().toLowerCase() === "owner";
+}
+
 function renderProjects(projects) {
   projectsCache = projects || [];
   const box = $("projects_list");
@@ -3274,6 +3282,8 @@ function showEmptyProject() {
   selectedProjectData = null;
   selectedProjectPlan = null;
   selectedProjectReadiness = null;
+  selectedProjectMeta = null;
+  selectedProjectAccessMode = "owner";
   selectedPrimaryAgentId = null;
   selectedAssignedAgents = [];
   agentLiveState = {};
@@ -3429,8 +3439,7 @@ function syncProjectHeadbar() {
     subline.textContent = `${String(selectedProjectData.title || "").trim()} â€” Stage ${stage} â€” ${createdAt}`;
     const readinessCanRun = Boolean(selectedProjectReadiness?.can_run);
     const exec = String(selectedProjectData.execution_status || "idle").trim().toLowerCase();
-    const statusAllowsRun = exec === "idle" || exec === "stopped";
-    const canRun = readinessCanRun && statusAllowsRun;
+    const canRun = readinessCanRun;
     runBtn.classList.remove("hidden");
     runBtn.disabled = !canRun;
     if (exec === "running") {
@@ -3534,6 +3543,7 @@ function eventSummary(kind, payload) {
   if (kind === "project.plan.ready") return "Plan ready. Waiting for approval.";
   if (kind === "project.plan.approved") return "Plan approved.";
   if (kind === "project.plan.rejected") return "Plan revision requested.";
+  if (kind === "project.plan.reconciled") return data.changed ? "Plan state synced from project files." : "Plan state checked.";
   if (kind === "project.external_agent.joined") return `${name} joined this project${data.role ? ` as ${data.role}` : ""}.`;
   return "";
 }
@@ -3739,10 +3749,12 @@ function handleProjectEvent(kind, payload) {
       "project.plan.awaiting_approval",
       "project.plan.generation_ignored",
       "project.plan.rejected",
+      "project.plan.reconciled",
     ].includes(String(kind))
   ) {
     loadProjectPlan(selectedProjectId).catch(() => {});
     loadProjectReadiness(selectedProjectId).catch(() => {});
+    loadProjectMetaSnapshot(selectedProjectId).catch(() => {});
   }
   if (selectedProjectId && /^(project\.|run\.|agent\.)/.test(String(kind))) {
     scheduleProjectDataRefresh();
@@ -4912,9 +4924,11 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
   const refreshBtn = $("btn_refresh_plan");
   const regenerateBtn = $("btn_regenerate_plan");
   const approveBtn = $("btn_approve_plan");
-  if (!refreshBtn || !regenerateBtn || !approveBtn) return;
+  const rejectBtn = $("btn_reject_plan");
+  const reconcileBtn = $("btn_reconcile_plan");
+  if (!refreshBtn || !regenerateBtn || !approveBtn || !rejectBtn || !reconcileBtn) return;
 
-  const buttons = [refreshBtn, regenerateBtn, approveBtn];
+  const buttons = [refreshBtn, regenerateBtn, approveBtn, rejectBtn, reconcileBtn];
   for (const btn of buttons) {
     btn.classList.add("hidden");
     btn.disabled = !selectedProjectData;
@@ -4922,44 +4936,46 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
   }
   if (!selectedProjectData) return;
 
+  const isOwner = selectedProjectIsOwner();
   const planStatus = String(status || "").trim().toLowerCase() || "pending";
-  const execStatus = String(selectedProjectData.execution_status || "").trim().toLowerCase() || "idle";
   const hasPlanText = Boolean(String(text || "").trim());
+  const hasSubstantiveDraft = Boolean(selectedProjectPlan?.has_substantive_draft);
+  const canReconcile = Boolean(selectedProjectPlan?.can_reconcile);
+  const recoverablePlanFile = isOwner && canReconcile && ["generating", "pending", "failed"].includes(planStatus);
 
-  let target = null;
-  let action = "";
-  let label = "";
-
-  if (planStatus === "awaiting_approval") {
-    target = approveBtn;
-    action = "approve";
-    label = "Approve Plan";
-  } else if (execStatus === "paused") {
-    target = approveBtn;
-    action = "resume";
-    label = "Resume Project";
+  if (isOwner && planStatus === "awaiting_approval") {
+    approveBtn.classList.remove("hidden");
+    approveBtn.disabled = false;
+    approveBtn.dataset.planAction = "approve";
+    approveBtn.textContent = "Approve Plan";
+    rejectBtn.classList.remove("hidden");
+    rejectBtn.disabled = false;
+    rejectBtn.dataset.planAction = "reject";
+    rejectBtn.textContent = "Request Changes";
+    refreshBtn.classList.remove("hidden");
+    refreshBtn.disabled = false;
+    refreshBtn.dataset.planAction = "refresh";
+  } else if (recoverablePlanFile) {
+    reconcileBtn.classList.remove("hidden");
+    reconcileBtn.disabled = false;
+    reconcileBtn.dataset.planAction = "reconcile";
+    reconcileBtn.textContent = hasSubstantiveDraft ? "Sync Plan" : "Check Plan";
+    refreshBtn.classList.remove("hidden");
+    refreshBtn.disabled = false;
+    refreshBtn.dataset.planAction = "refresh";
   } else if (planStatus === "generating") {
-    target = refreshBtn;
-    action = "refresh";
-    label = "Refresh Plan";
+    refreshBtn.classList.remove("hidden");
+    refreshBtn.disabled = false;
+    refreshBtn.dataset.planAction = "refresh";
   } else if (!hasPlanText || planStatus === "failed") {
-    target = regenerateBtn;
-    action = "regenerate";
-    label = "Regenerate Plan";
-  } else if (planStatus === "pending") {
-    target = approveBtn;
-    action = "approve";
-    label = "Approve Plan";
+    regenerateBtn.classList.remove("hidden");
+    regenerateBtn.disabled = false;
+    regenerateBtn.dataset.planAction = "regenerate";
   } else {
-    target = refreshBtn;
-    action = "refresh";
-    label = "Refresh Plan";
+    refreshBtn.classList.remove("hidden");
+    refreshBtn.disabled = false;
+    refreshBtn.dataset.planAction = "refresh";
   }
-
-  target.classList.remove("hidden");
-  target.disabled = false;
-  target.dataset.planAction = action;
-  target.textContent = label;
 }
 
 function renderProjectPlanInfo() {
@@ -5056,12 +5072,29 @@ async function loadProjectPlan(projectId) {
   return plan;
 }
 
+async function loadProjectMetaSnapshot(projectId) {
+  if (!projectId) {
+    selectedProjectMeta = null;
+    return null;
+  }
+  const meta = await api(`/api/projects/${projectId}/card`);
+  selectedProjectMeta = meta;
+  return meta;
+}
+
+async function refreshProjectStateAfterPlanAction(projectId = selectedProjectId) {
+  if (!projectId) return;
+  await refreshSelectedProjectData().catch(() => {});
+  await loadProjectPlan(projectId).catch(() => {});
+  await loadProjectReadiness(projectId).catch(() => {});
+  await loadProjectMetaSnapshot(projectId).catch(() => {});
+  await loadProjectFiles(projectFilesCurrentPath || "").catch(() => {});
+}
+
 async function approveProjectPlan() {
   if (!selectedProjectId) throw new Error("Select project first");
   await api(`/api/projects/${selectedProjectId}/plan/approve`, "POST");
-  await refreshSelectedProjectData().catch(() => {});
-  await loadProjectPlan(selectedProjectId).catch(() => {});
-  await loadProjectReadiness(selectedProjectId).catch(() => {});
+  await refreshProjectStateAfterPlanAction(selectedProjectId);
   setMessage("chat_hint", "Plan approved. You can start execution when ready.", "ok");
   addEvent("project.plan.approved", { project_id: selectedProjectId });
 }
@@ -5072,11 +5105,20 @@ async function rejectProjectPlan(feedback = "") {
   const cleanFeedback = String(feedback || "").trim();
   if (cleanFeedback) payload.feedback = cleanFeedback;
   await api(`/api/projects/${selectedProjectId}/plan/reject`, "POST", payload);
-  await refreshSelectedProjectData().catch(() => {});
-  await loadProjectPlan(selectedProjectId).catch(() => {});
-  await loadProjectReadiness(selectedProjectId).catch(() => {});
+  await refreshProjectStateAfterPlanAction(selectedProjectId);
   setMessage("chat_hint", "Plan revision requested.", "ok");
   addEvent("project.plan.rejected", { project_id: selectedProjectId, feedback: cleanFeedback });
+}
+
+async function reconcileProjectPlan() {
+  if (!selectedProjectId) throw new Error("Select project first");
+  const result = await api(`/api/projects/${selectedProjectId}/reconcile`, "POST");
+  if (result?.project) selectedProjectData = result.project;
+  if (result?.plan) selectedProjectPlan = result.plan;
+  if (result?.readiness) selectedProjectReadiness = result.readiness;
+  await refreshProjectStateAfterPlanAction(selectedProjectId);
+  setMessage("chat_hint", result?.changed ? "Plan synced from project files. Review and approve when ready." : "Plan state checked; no DB change needed.", "ok");
+  addEvent("project.plan.reconciled", { project_id: selectedProjectId, changed: Boolean(result?.changed), source_path: result?.source_path || "" });
 }
 
 async function regenerateProjectPlan() {
@@ -5085,6 +5127,8 @@ async function regenerateProjectPlan() {
   selectedProjectPlan = plan;
   await refreshSelectedProjectData().catch(() => {});
   await loadProjectReadiness(selectedProjectId).catch(() => {});
+  await loadProjectMetaSnapshot(selectedProjectId).catch(() => {});
+  await loadProjectFiles(projectFilesCurrentPath || "").catch(() => {});
   renderProjectPlanInfo();
   setMessage("chat_hint", "Regenerating project plan...", "ok");
   addEvent("project.plan.regenerate_requested", { project_id: selectedProjectId });
@@ -7822,7 +7866,7 @@ function renderProjectIssues() {
   }
 
   // Approvals
-  if (projectNeedsApproval(p)) {
+  if (selectedProjectIsOwner() && projectNeedsApproval(p)) {
     if (approvalsEmpty) approvalsEmpty.classList.add("hidden");
     if (approvalsList) approvalsList.innerHTML = `
       <div class="issue-card">
@@ -8872,9 +8916,11 @@ async function selectProject(projectId) {
     approved_at: project.plan_approved_at || null,
   };
   selectedAssignedAgents = assigned.agents || [];
+  selectedProjectAccessMode = String(assigned?.access_mode || "owner").trim().toLowerCase() || "owner";
   renderProjectTaskList();
   selectedPrimaryAgentId = assigned?.primary_agent?.id || null;
   selectedProjectReadiness = null;
+  selectedProjectMeta = null;
   chatContextMode = "project";
   showProjectDetails();
   syncPrimaryNavState();
@@ -8923,6 +8969,7 @@ async function selectProject(projectId) {
   await loadProjectWorkspaceTree(projectId).catch(() => {});
   await loadProjectPlan(projectId).catch(() => {});
   await loadProjectReadiness(projectId).catch(() => {});
+  await loadProjectMetaSnapshot(projectId).catch(() => {});
   await loadProjectFiles("").catch(() => {});
   await Promise.all([
     loadTaskBlueprints(projectId, { silent: true }).catch(() => {}),
@@ -10836,10 +10883,6 @@ function bindActions() {
   $("btn_regenerate_plan").onclick = () => regenerateProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   $("btn_approve_plan").onclick = () => {
     const mode = String($("btn_approve_plan")?.dataset?.planAction || "approve").trim().toLowerCase();
-    if (mode === "resume") {
-      controlProjectExecution("resume").catch((e) => setMessage("chat_hint", detailToText(e), "error"));
-      return;
-    }
     if (mode === "refresh") {
       if (!selectedProjectId) return;
       loadProjectPlan(selectedProjectId).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
@@ -10851,6 +10894,12 @@ function bindActions() {
     }
     approveProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   };
+  $("btn_reject_plan").onclick = () => {
+    const feedback = window.prompt("What should change in the plan?");
+    if (feedback === null) return;
+    rejectProjectPlan(feedback).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
+  };
+  $("btn_reconcile_plan").onclick = () => reconcileProjectPlan().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   $("btn_pause_project").onclick = () => {
     const current = String(selectedProjectData?.execution_status || "").toLowerCase();
     const action = current === "paused" ? "resume" : "pause";

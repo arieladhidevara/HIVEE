@@ -3044,6 +3044,113 @@ def _project_root_ready(owner_user_id: str, project_root: str) -> bool:
     except Exception:
         return False
 
+def _project_plan_file_is_substantive(text: Any) -> bool:
+    cleaned = str(text or "").strip()
+    if len(cleaned) <= 250:
+        return False
+    return bool(re.search(r"(?m)^(#{1,6}\s+|[-*]\s+|\d+\.\s+)", cleaned))
+
+def _best_project_plan_file_from_dir(project_dir: Path) -> Dict[str, Any]:
+    best: Dict[str, Any] = {"ok": False, "path": "", "text": ""}
+    candidates = ["plan.md", PROJECT_PLAN_FILE]
+    for rel in candidates:
+        try:
+            target = (project_dir / rel).resolve()
+            if not _path_within(target, project_dir) or not target.is_file():
+                continue
+            text = target.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+        if not _project_plan_file_is_substantive(text):
+            continue
+        current_text = str(best.get("text") or "")
+        if not best.get("ok") or len(text) > len(current_text):
+            best = {"ok": True, "path": rel, "text": text}
+    return best
+
+def _project_plan_file_snapshot(project_id: str) -> Dict[str, Any]:
+    conn = db()
+    row = conn.execute(
+        "SELECT id, user_id, project_root, plan_status FROM projects WHERE id = ? LIMIT 1",
+        (project_id,),
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {"ok": False, "error": "Project not found", "has_substantive_draft": False, "can_reconcile": False}
+    try:
+        project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or "")).resolve()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": detail_to_text(exc)[:300],
+            "has_substantive_draft": False,
+            "can_reconcile": False,
+        }
+    best = _best_project_plan_file_from_dir(project_dir)
+    status = _coerce_plan_status(row["plan_status"])
+    return {
+        "ok": True,
+        "has_substantive_draft": bool(best.get("ok")),
+        "can_reconcile": bool(best.get("ok")) and status in {PLAN_STATUS_PENDING, PLAN_STATUS_GENERATING, PLAN_STATUS_FAILED},
+        "path": str(best.get("path") or ""),
+        "text": str(best.get("text") or ""),
+        "plan_status": status,
+    }
+
+def _reconcile_project_state_from_files(project_id: str) -> Dict[str, Any]:
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT id, user_id, project_root, plan_status, plan_text, plan_updated_at, plan_approved_at,
+               execution_status
+        FROM projects
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (project_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return {"ok": False, "error": "Project not found"}
+
+    try:
+        project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or "")).resolve()
+    except Exception as exc:
+        conn.close()
+        return {"ok": False, "error": detail_to_text(exc)[:300]}
+
+    best = _best_project_plan_file_from_dir(project_dir)
+    current_status = _coerce_plan_status(row["plan_status"])
+    can_reconcile = bool(best.get("ok")) and current_status in {
+        PLAN_STATUS_PENDING,
+        PLAN_STATUS_GENERATING,
+        PLAN_STATUS_FAILED,
+    }
+    changed = False
+    now = int(time.time())
+    if can_reconcile:
+        # Reconcile only the planning state. File existence is not evidence of execution completion.
+        conn.execute(
+            "UPDATE projects SET plan_text = ?, plan_status = ?, plan_updated_at = ? WHERE id = ?",
+            (str(best.get("text") or "")[:20000], PLAN_STATUS_AWAITING_APPROVAL, now, project_id),
+        )
+        conn.commit()
+        changed = True
+    conn.close()
+
+    return {
+        "ok": True,
+        "changed": changed,
+        "plan_status": PLAN_STATUS_AWAITING_APPROVAL if changed else current_status,
+        "plan_text": str(best.get("text") or row["plan_text"] or ""),
+        "plan_updated_at": now if changed else row["plan_updated_at"],
+        "plan_approved_at": row["plan_approved_at"],
+        "has_substantive_draft": bool(best.get("ok")),
+        "can_reconcile": bool(can_reconcile and not changed),
+        "source_path": str(best.get("path") or ""),
+        "execution_status": _coerce_execution_status(row["execution_status"]),
+    }
+
 def _project_readiness_snapshot(
     *,
     owner_user_id: str,
