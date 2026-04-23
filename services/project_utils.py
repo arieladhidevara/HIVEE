@@ -1256,11 +1256,13 @@ def _project_context_instruction(
     project_root: Optional[str] = None,
     plan_status: str = PLAN_STATUS_PENDING,
 ) -> str:
+    normalized_plan_status = _coerce_plan_status(plan_status)
     sections = [
         "Project context (always align your answer to this):",
         f"- Title: {title}",
         f"- Brief: {brief}",
         f"- Goal: {goal}",
+        f"- Hivee DB source-of-truth plan_status: `{normalized_plan_status}`.",
     ]
     details = _normalize_setup_details(setup_details or {})
     if details:
@@ -1280,11 +1282,13 @@ def _project_context_instruction(
             role_part = f" | role: {role}" if role else ""
             sections.append(f"  - {name} [{aid}]{marker}{role_part}")
     sections.append(f"- Read and follow `{PROJECT_PROTOCOL_FILE}` before planning/delegation/execution updates.")
-    if plan_status != PLAN_STATUS_APPROVED:
+    if normalized_plan_status != PLAN_STATUS_APPROVED:
         sections.append("- Project plan is not approved yet. Only planning/discussion is allowed; do not execute tasks.")
+        sections.append("- Owner chat messages are not approval unless Hivee changes the DB plan_status to `approved`.")
         sections.append(f"- Before planning, read `{PROJECT_INFO_FILE}` and align with setup chat history.")
     else:
-        sections.append("- Project plan is approved. Execute within assigned scope and update progress in chat.")
+        sections.append("- Project plan is approved in Hivee DB. Execute within assigned scope and update progress in chat.")
+        sections.append("- Ignore stale chat or markdown snapshots that say the project is not approved; DB status above wins.")
         sections.append("- If execution is blocked by missing user info/approval, pause and ask the owner clearly.")
         sections.append("- For pause points, return JSON with `requires_user_input=true`, `pause_reason`, and optional `resume_hint`.")
         sections.append("- If owner explicitly says SKIP for missing info, make reasonable assumptions and continue execution.")
@@ -1973,6 +1977,7 @@ def _write_project_overview_file(
     if not _path_within(info_dir, project_dir):
         return
     info_dir.mkdir(parents=True, exist_ok=True)
+    safe_plan_text = "" if is_invalid_plan_text(plan_text) else str(plan_text or "")
     overview = _project_overview_markdown(
         title=title,
         brief=brief,
@@ -1980,7 +1985,7 @@ def _write_project_overview_file(
         setup_details=setup_details,
         role_rows=role_rows,
         plan_status=plan_status,
-        plan_text=plan_text,
+        plan_text=safe_plan_text,
         execution_status=execution_status,
         progress_pct=progress_pct,
         execution_updated_at=execution_updated_at,
@@ -1990,7 +1995,8 @@ def _write_project_overview_file(
         usage_updated_at=usage_updated_at,
     )
     (info_dir / "overview.md").write_text(overview, encoding="utf-8")
-    (info_dir / "project-plan.md").write_text((plan_text or "No plan generated yet.").strip() + "\n", encoding="utf-8")
+    plan_doc_text = safe_plan_text if _project_plan_file_is_substantive(safe_plan_text) else "No valid plan generated yet."
+    (info_dir / "project-plan.md").write_text(plan_doc_text.strip() + "\n", encoding="utf-8")
     (info_dir / "usage.md").write_text(
         _usage_markdown(
             prompt_tokens=usage_prompt_tokens,
@@ -2485,6 +2491,26 @@ def _refresh_project_documents(project_id: str) -> None:
             project_id=str(row["id"] or ""),
             hivee_api_base=_get_hivee_api_base(str(row["id"] or "")),
         )
+        # Keep plan artifacts aligned with the DB source of truth; never preserve transport errors as plans.
+        db_plan_text = str(row["plan_text"] or "").strip()
+        if _project_plan_file_is_substantive(db_plan_text):
+            plan_body = db_plan_text + "\n"
+            for rel in ("plan.md", PROJECT_PLAN_FILE):
+                plan_target = (project_dir / rel).resolve()
+                if _path_within(plan_target, project_dir):
+                    plan_target.parent.mkdir(parents=True, exist_ok=True)
+                    plan_target.write_text(plan_body, encoding="utf-8")
+        else:
+            for rel in ("plan.md", PROJECT_PLAN_FILE):
+                plan_target = (project_dir / rel).resolve()
+                if not _path_within(plan_target, project_dir) or not plan_target.is_file():
+                    continue
+                try:
+                    existing_plan_artifact = plan_target.read_text(encoding="utf-8")
+                except Exception:
+                    existing_plan_artifact = ""
+                if is_invalid_plan_text(existing_plan_artifact):
+                    plan_target.write_text("No valid plan generated yet.\n", encoding="utf-8")
     except Exception:
         pass
 
@@ -3247,11 +3273,28 @@ def _project_root_ready(owner_user_id: str, project_root: str) -> bool:
     except Exception:
         return False
 
-def _project_plan_file_is_substantive(text: Any) -> bool:
-    cleaned = str(text or "").strip()
-    if len(cleaned) <= 250:
-        return False
+def is_invalid_plan_text(text: Any) -> bool:
+    cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+    if not cleaned:
+        return True
     lowered = cleaned.lower()
+    hard_error_markers = (
+        "no http chat endpoint responded with json",
+        "connector chat timed out",
+        "legacy realtime transport is disabled",
+        "http chat failed",
+        "non-json response",
+        "non json response",
+        "upstream error",
+        "transport error",
+        "internal server error",
+        "traceback (most recent call last)",
+        "max retries exceeded",
+        "connection refused",
+        "read timed out",
+    )
+    if any(marker in lowered for marker in hard_error_markers):
+        return True
     placeholder_markers = (
         "no plan generated yet",
         "plan has not been generated",
@@ -3260,7 +3303,28 @@ def _project_plan_file_is_substantive(text: Any) -> bool:
         "click regenerate plan",
     )
     if any(marker in lowered for marker in placeholder_markers):
+        return True
+    first_chunk = lowered[:360]
+    soft_error_starts = (
+        "failed to ",
+        "failed:",
+        "error:",
+        "exception:",
+        "unable to ",
+        "could not ",
+        "cannot ",
+    )
+    if first_chunk.startswith(soft_error_starts):
+        return True
+    if "failed to" in first_chunk and len(cleaned) < 1200:
+        return True
+    return False
+
+def _project_plan_file_is_substantive(text: Any) -> bool:
+    cleaned = str(text or "").strip()
+    if len(cleaned) <= 250 or is_invalid_plan_text(cleaned):
         return False
+    lowered = cleaned.lower()
     structure_matches = re.findall(r"(?m)^(#{1,6}\s+|[-*]\s+|\d+\.\s+)", cleaned)
     section_markers = sum(1 for marker in ("milestone", "deliverable", "risk", "handoff", "agent", "timeline", "approval") if marker in lowered)
     return len(structure_matches) >= 2 or (len(structure_matches) >= 1 and section_markers >= 2)
@@ -4233,6 +4297,9 @@ def _apply_project_file_writes(
         if normalized_allow_paths is not None and not any(_rel_path_startswith(rel, root) for root in normalized_allow_paths):
             skipped.append(f"{rel}: blocked by write path policy")
             continue
+        if rel.lower() in {"plan.md", PROJECT_PLAN_FILE.lower()} and not _project_plan_file_is_substantive(content):
+            skipped.append(f"{rel}: invalid plan artifact")
+            continue
         try:
             target = _resolve_project_relative_path(
                 owner_user_id,
@@ -4533,6 +4600,8 @@ def _apply_project_actions(
                     payload_bytes = len(content.encode("utf-8"))
                     if payload_bytes > MAX_AGENT_FILE_BYTES:
                         raise HTTPException(400, f"content exceeds {MAX_AGENT_FILE_BYTES} bytes")
+                    if rel.lower() in {"plan.md", PROJECT_PLAN_FILE.lower()} and not _project_plan_file_is_substantive(content):
+                        raise HTTPException(400, "invalid plan artifact")
                     if target.exists() and target.is_dir():
                         raise HTTPException(400, "target path is a directory")
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -4585,6 +4654,13 @@ def _apply_project_actions(
                         raise HTTPException(400, "file payload is empty")
                     if len(payload_bytes) > MAX_AGENT_FILE_BYTES:
                         raise HTTPException(400, f"file exceeds {MAX_AGENT_FILE_BYTES} bytes")
+                    if rel.lower() in {"plan.md", PROJECT_PLAN_FILE.lower()}:
+                        try:
+                            plan_upload_text = payload_bytes.decode("utf-8", errors="replace")
+                        except Exception:
+                            plan_upload_text = ""
+                        if not _project_plan_file_is_substantive(plan_upload_text):
+                            raise HTTPException(400, "invalid plan artifact")
                     if target.exists() and target.is_dir():
                         raise HTTPException(400, "target path is a directory")
                     target.parent.mkdir(parents=True, exist_ok=True)

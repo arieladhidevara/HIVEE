@@ -179,6 +179,8 @@ class ProjectPlanOut(BaseModel):
     has_substantive_draft: bool = False
     can_reconcile: bool = False
     draft_source: Optional[str] = None
+    is_valid: bool = False
+    invalid_reason: Optional[str] = None
 
 class ProjectPlanApproveIn(BaseModel):
     approve: bool = True

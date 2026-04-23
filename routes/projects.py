@@ -12,8 +12,10 @@ from services.managed_agents import (
 from services.project_activity import append_project_activity_log_entry
 from services.project_utils import (
     _ensure_canonical_project_root,
+    _project_plan_file_is_substantive,
     _project_plan_file_snapshot,
     _reconcile_project_state_from_files,
+    is_invalid_plan_text,
 )
 
 
@@ -23,11 +25,20 @@ def _is_project_plan_rel_path(path: Any) -> bool:
     return rel_low in {"plan.md", str(PROJECT_PLAN_FILE).lower()}
 
 
+def _project_plan_validity_fields(text: Any) -> Dict[str, Any]:
+    body = str(text or "").strip()
+    valid = bool(body) and _project_plan_file_is_substantive(body) and not is_invalid_plan_text(body)
+    return {
+        "is_valid": valid,
+        "invalid_reason": None if valid or not body else "Plan is incomplete or contains an upstream error.",
+    }
+
+
 async def _start_project_execution_run(*, project_id: str, owner_user_id: str, trigger: str = "manual") -> Dict[str, Any]:
     conn = db()
     proj = conn.execute(
         """
-        SELECT id, user_id, title, brief, goal, plan_status, project_root, workspace_root, execution_status, progress_pct
+        SELECT id, user_id, title, brief, goal, plan_text, plan_status, project_root, workspace_root, execution_status, progress_pct
         FROM projects WHERE id = ? AND user_id = ?
         """,
         (project_id, owner_user_id),
@@ -55,6 +66,13 @@ async def _start_project_execution_run(*, project_id: str, owner_user_id: str, t
             "status_code": 409,
             "message": "Project execution is already completed.",
             "status": current_status,
+        }
+    if _coerce_plan_status(proj["plan_status"]) == PLAN_STATUS_APPROVED and not _project_plan_file_is_substantive(proj["plan_text"]):
+        _refresh_project_documents(project_id)
+        return {
+            "ok": False,
+            "status_code": 400,
+            "message": "Approved project plan is missing or invalid. Regenerate the plan before running execution.",
         }
 
     project_root = str(proj["project_root"] or "")
@@ -1170,15 +1188,17 @@ def register_routes(app: FastAPI) -> None:
         if not row:
             raise HTTPException(404, "Project not found")
         file_state = _project_plan_file_snapshot(project_id)
+        plan_text = str(row["plan_text"] or "")
         return ProjectPlanOut(
             project_id=project_id,
             status=_coerce_plan_status(row["plan_status"]),
-            text=str(row["plan_text"] or ""),
+            text="" if is_invalid_plan_text(plan_text) else plan_text,
             updated_at=row["plan_updated_at"],
             approved_at=row["plan_approved_at"],
             has_substantive_draft=bool(file_state.get("has_substantive_draft")),
             can_reconcile=bool(file_state.get("can_reconcile")),
             draft_source=str(file_state.get("path") or "") or None,
+            **_project_plan_validity_fields(plan_text),
         )
 
     @app.post("/api/projects/{project_id}/reconcile")
@@ -1224,6 +1244,7 @@ def register_routes(app: FastAPI) -> None:
             plan_status=row["plan_status"],
             execution_status=row["execution_status"],
         )
+        row_plan_text = str(row["plan_text"] or "")
         payload = {
             "ok": True,
             "changed": bool(reconciled.get("changed")),
@@ -1232,12 +1253,13 @@ def register_routes(app: FastAPI) -> None:
             "plan": ProjectPlanOut(
                 project_id=project_id,
                 status=_coerce_plan_status(row["plan_status"]),
-                text=str(row["plan_text"] or ""),
+                text="" if is_invalid_plan_text(row_plan_text) else row_plan_text,
                 updated_at=row["plan_updated_at"],
                 approved_at=row["plan_approved_at"],
                 has_substantive_draft=bool(plan_state.get("has_substantive_draft")),
                 can_reconcile=bool(plan_state.get("can_reconcile")),
                 draft_source=str(plan_state.get("path") or "") or None,
+                **_project_plan_validity_fields(row_plan_text),
             ),
             "readiness": readiness,
         }
@@ -1273,12 +1295,14 @@ def register_routes(app: FastAPI) -> None:
         conn.close()
         asyncio.create_task(_generate_project_plan(project_id, force=True))
         await emit(project_id, "project.plan.regenerate_requested", {"project_id": project_id})
+        previous_plan_text = str(row["plan_text"] or "")
         return ProjectPlanOut(
             project_id=project_id,
             status=PLAN_STATUS_GENERATING,
-            text=str(row["plan_text"] or ""),
+            text="" if is_invalid_plan_text(previous_plan_text) else previous_plan_text,
             updated_at=now,
             approved_at=None,
+            **_project_plan_validity_fields(previous_plan_text),
         )
     
     @app.post("/api/projects/{project_id}/plan/approve", response_model=ProjectPlanOut)
@@ -1322,12 +1346,14 @@ def register_routes(app: FastAPI) -> None:
             conn.close()
             _refresh_project_documents(project_id)
             await emit(project_id, "project.plan.rejected", {"project_id": project_id, "feedback": ""})
+            rejected_plan_text = str(row["plan_text"] or "")
             return ProjectPlanOut(
                 project_id=project_id,
                 status=PLAN_STATUS_PENDING,
-                text=str(row["plan_text"] or ""),
+                text="" if is_invalid_plan_text(rejected_plan_text) else rejected_plan_text,
                 updated_at=now,
                 approved_at=None,
+                **_project_plan_validity_fields(rejected_plan_text),
             )
 
         conn = db()
@@ -1364,6 +1390,15 @@ def register_routes(app: FastAPI) -> None:
         approved_at = now
         current_plan_status = _coerce_plan_status(row["plan_status"])
         current_execution_status = _coerce_execution_status(row["execution_status"])
+        current_plan_text = str(row["plan_text"] or "").strip()
+        if current_plan_status not in {PLAN_STATUS_AWAITING_APPROVAL, PLAN_STATUS_APPROVED}:
+            conn.close()
+            _refresh_project_documents(project_id)
+            raise HTTPException(400, "No valid project plan is waiting for approval. Regenerate or reconcile the plan first.")
+        if is_invalid_plan_text(current_plan_text) or not _project_plan_file_is_substantive(current_plan_text):
+            conn.close()
+            _refresh_project_documents(project_id)
+            raise HTTPException(400, "Cannot approve this project plan because the saved plan is missing, incomplete, or contains an upstream error.")
         next_execution_status = current_execution_status
         should_clear_approval_pause = (
             current_plan_status == PLAN_STATUS_AWAITING_APPROVAL
@@ -1449,9 +1484,10 @@ def register_routes(app: FastAPI) -> None:
         return ProjectPlanOut(
             project_id=project_id,
             status=new_status,
-            text=str(row["plan_text"] or ""),
+            text=current_plan_text,
             updated_at=now,
             approved_at=approved_at,
+            **_project_plan_validity_fields(current_plan_text),
         )
 
     @app.post("/api/projects/{project_id}/plan/reject", response_model=ProjectPlanOut)
@@ -1594,12 +1630,14 @@ def register_routes(app: FastAPI) -> None:
                     from_label=str(chat_message.get("author_label") or "owner"),
                 ))
 
+        rejected_plan_text = str(row["plan_text"] or "")
         return ProjectPlanOut(
             project_id=project_id,
             status=PLAN_STATUS_PENDING,
-            text=str(row["plan_text"] or ""),
+            text="" if is_invalid_plan_text(rejected_plan_text) else rejected_plan_text,
             updated_at=now,
             approved_at=None,
+            **_project_plan_validity_fields(rejected_plan_text),
         )
     
     @app.get("/api/projects/{project_id}/workspace/tree", response_model=ProjectWorkspaceTreeOut)

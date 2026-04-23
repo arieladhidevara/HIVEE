@@ -3153,6 +3153,13 @@ function projectPlanCanReconcile() {
     || (staleStatus && Boolean(selectedProjectPlan?.has_substantive_draft));
 }
 
+function projectPlanIsValidForApproval(text = "") {
+  if (selectedProjectPlan && Object.prototype.hasOwnProperty.call(selectedProjectPlan, "is_valid")) {
+    return Boolean(selectedProjectPlan.is_valid);
+  }
+  return Boolean(String(text || "").trim());
+}
+
 function selectedProjectIsOwner() {
   return String(selectedProjectAccessMode || "owner").trim().toLowerCase() === "owner";
 }
@@ -5030,6 +5037,7 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
   const planStatus = String(status || "").trim().toLowerCase() || "pending";
   const hasPlanText = Boolean(String(text || "").trim());
   const canReconcile = projectPlanCanReconcile();
+  const validPlan = projectPlanIsValidForApproval(text);
 
   if (isOwner && canReconcile) {
     for (const btn of [syncBtn, inlineSyncBtn].filter(Boolean)) {
@@ -5039,7 +5047,7 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
       btn.textContent = "Sync Plan";
     }
   }
-  if (isOwner && planStatus === "awaiting_approval") {
+  if (isOwner && planStatus === "awaiting_approval" && validPlan) {
     approveBtn.classList.remove("hidden");
     approveBtn.disabled = false;
     approveBtn.dataset.planAction = "approve";
@@ -5048,7 +5056,7 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
     rejectBtn.disabled = false;
     rejectBtn.dataset.planAction = "reject";
     rejectBtn.textContent = "Request Changes";
-  } else if (!hasPlanText || planStatus === "failed") {
+  } else if (!hasPlanText || !validPlan || planStatus === "failed") {
     regenerateBtn.classList.remove("hidden");
     regenerateBtn.disabled = false;
     regenerateBtn.dataset.planAction = "regenerate";
@@ -5093,11 +5101,17 @@ function renderProjectPlanInfo() {
   }
   if (readinessEl) {
     readinessEl.innerHTML = "";
-    if (String(status || "").trim().toLowerCase() === "awaiting_approval") {
+    const planValid = projectPlanIsValidForApproval(text);
+    if (String(status || "").trim().toLowerCase() === "awaiting_approval" && planValid) {
       const approvalRow = document.createElement("div");
       approvalRow.className = "readiness-item pending";
       approvalRow.textContent = "Plan is waiting for your approval before execution can continue.";
       readinessEl.appendChild(approvalRow);
+    } else if (String(status || "").trim().toLowerCase() === "awaiting_approval" && !planValid) {
+      const invalidRow = document.createElement("div");
+      invalidRow.className = "readiness-item pending";
+      invalidRow.textContent = detailToText(selectedProjectPlan?.invalid_reason || "Saved plan is invalid. Regenerate the plan before approval.");
+      readinessEl.appendChild(invalidRow);
     }
     const checks = Array.isArray(readiness?.checks) ? readiness.checks : [];
     if (!checks.length) {
@@ -5117,7 +5131,7 @@ function renderProjectPlanInfo() {
       }
     }
   }
-  textEl.textContent = text || "Primary agent has not published a plan yet.";
+  textEl.textContent = text || (selectedProjectPlan?.invalid_reason || "Primary agent has not published a plan yet.");
   updateProjectPlanActionButtons({ status, text });
   if (selectedProjectData) selectedProjectData.plan_status = status;
   renderProjectExecutionInfo();

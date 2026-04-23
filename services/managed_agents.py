@@ -190,6 +190,78 @@ def _applied_actions_include_kind(applied_actions: Any, expected_kind: str) -> b
     return False
 
 
+def _applied_actions_have_project_work(applied_actions: Any) -> bool:
+    for item in applied_actions or []:
+        if not isinstance(item, dict):
+            continue
+        kind = _normalize_agent_action_kind(
+            item.get("type")
+            or item.get("method")
+            or item.get("action")
+            or item.get("name")
+        )
+        if kind and kind != "post_chat_message":
+            return True
+    return False
+
+
+def _delegation_payload_has_structured_work(parsed: Any) -> bool:
+    if not isinstance(parsed, dict):
+        return False
+    output_files = parsed.get("output_files")
+    actions = parsed.get("actions")
+    agent_tasks = parsed.get("agent_tasks")
+    parallel_groups = parsed.get("parallel_groups")
+    has_project_action = False
+    for item in actions if isinstance(actions, list) else []:
+        if not isinstance(item, dict):
+            continue
+        kind = _normalize_agent_action_kind(
+            item.get("type")
+            or item.get("method")
+            or item.get("action")
+            or item.get("name")
+        )
+        if kind and kind != "post_chat_message":
+            has_project_action = True
+            break
+    return (
+        (isinstance(output_files, list) and len(output_files) > 0)
+        or has_project_action
+        or (isinstance(agent_tasks, list) and len(agent_tasks) > 0)
+        or (isinstance(parallel_groups, list) and len(parallel_groups) > 0)
+    )
+
+
+def _write_execution_kickoff_artifact(
+    *,
+    owner_user_id: str,
+    project_root: str,
+    project_id: str,
+    title: str,
+    primary_agent_id: Optional[str],
+    agent_count: int,
+) -> Dict[str, Any]:
+    content = (
+        "# Execution Kickoff\n\n"
+        f"- project_id: {project_id}\n"
+        f"- project: {title}\n"
+        f"- primary_agent_id: {primary_agent_id or '-'}\n"
+        f"- assigned_agents: {max(0, int(agent_count or 0))}\n"
+        f"- started_at: {format_ts(int(time.time()))}\n\n"
+        "Hivee created this artifact when execution started. The next steps must add "
+        "project files, task updates, or execution progress actions; chat alone is not "
+        "considered execution work.\n"
+    )
+    return _apply_project_file_writes(
+        owner_user_id=owner_user_id,
+        project_root=project_root,
+        writes=[{"path": f"{USER_OUTPUTS_DIRNAME}/execution-kickoff.md", "content": content, "append": False}],
+        default_prefix=USER_OUTPUTS_DIRNAME,
+        allow_paths=None,
+    )
+
+
 def _read_project_delegation_state(project_id: str) -> Dict[str, Any]:
     conn = db()
     try:
@@ -2418,7 +2490,7 @@ async def _ensure_project_info_document(
     conn = db()
     row = conn.execute(
         """
-        SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id,
+        SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.workspace_root, p.connection_id,
                p.plan_status, p.backend_mode, p.connector_id,
                c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
         FROM projects p
@@ -2500,6 +2572,21 @@ async def _ensure_project_info_document(
                     break
         except Exception:
             info_is_stale = False
+    normalized_plan_status = _coerce_plan_status(row["plan_status"])
+    info_lower = existing_info.lower()
+    if (
+        existing_info.strip()
+        and normalized_plan_status == PLAN_STATUS_APPROVED
+        and (
+            "project plan is not approved" in info_lower
+            or "not approved yet" in info_lower
+            or "awaiting approval" in info_lower
+            or "waiting approval" in info_lower
+            or "plan_status: `awaiting_approval`" in info_lower
+            or "plan_status: awaiting_approval" in info_lower
+        )
+    ):
+        info_is_stale = True
     if (
         existing_info.strip()
         and (not force)
@@ -2516,7 +2603,7 @@ async def _ensure_project_info_document(
         setup_details=setup_details,
         role_rows=role_rows,
         project_root=str(row["project_root"] or ""),
-        plan_status=_coerce_plan_status(row["plan_status"]),
+        plan_status=normalized_plan_status,
     )
     roster = _agent_roster_markdown(role_rows)
     task = (
@@ -2707,7 +2794,8 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
     conn = db()
     row = conn.execute(
         """
-        SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id, p.plan_status,
+        SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.connection_id,
+               p.plan_text, p.plan_status,
                p.backend_mode, p.connector_id,
                c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
         FROM projects p
@@ -2726,16 +2814,30 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
 
     connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=str(row["user_id"]), row=row)
     role_rows = _project_agent_rows(conn, project_id)
+    previous_valid_plan_text = (
+        str(row["plan_text"] or "").strip()
+        if _project_plan_file_is_substantive(row["plan_text"])
+        else ""
+    )
     if not role_rows:
         now = int(time.time())
         msg = "Invite at least one project agent (and select a primary) before generating plan."
         conn.execute(
             "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
-            (PLAN_STATUS_FAILED, msg, now, project_id),
+            (PLAN_STATUS_FAILED, previous_valid_plan_text[:20000], now, project_id),
         )
         conn.commit()
         conn.close()
         _refresh_project_documents(project_id)
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="system",
+            actor_id="hivee",
+            actor_label="Hivee",
+            event_type="project.plan.failed",
+            summary="Project plan generation failed before contacting the primary agent",
+            payload={"reason": msg},
+        )
         await emit(project_id, "project.plan.failed", {"error": msg})
         return
     generation_started_at = int(time.time())
@@ -2888,7 +2990,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         error_text = detail_to_text(res.get("error") or res.get("details") or "Failed to generate project plan")
         conn.execute(
             "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
-            (PLAN_STATUS_FAILED, error_text[:5000], now, project_id),
+            (PLAN_STATUS_FAILED, previous_valid_plan_text[:20000], now, project_id),
         )
         conn.commit()
         conn.close()
@@ -2898,6 +3000,15 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
             project_root=str(row["project_root"] or ""),
             kind="plan.failed",
             text=error_text[:1200],
+        )
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="system",
+            actor_id="hivee",
+            actor_label="Hivee",
+            event_type="project.plan.failed",
+            summary="Project plan generation failed because the connector returned an error",
+            payload={"reason": error_text[:1200]},
         )
         await emit(project_id, "project.plan.failed", {"error": error_text[:1200]})
         return
@@ -2913,10 +3024,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         parsed_plan = _extract_agent_report_payload(raw_plan_text)
 
         def _plan_looks_substantive(txt: str) -> bool:
-            t = str(txt or "").strip()
-            if len(t) < 250:
-                return False
-            return any(marker in t for marker in ["## ", "\n- ", "\n* ", "\n1.", "\n#"])
+            return _project_plan_file_is_substantive(txt)
 
         def _extract_plan_content_from_payload(items: List[Dict[str, Any]]) -> str:
             best_effort = ""
@@ -2987,7 +3095,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
             )
             conn.execute(
                 "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
-                (PLAN_STATUS_FAILED, error_message[:5000], now, project_id),
+                (PLAN_STATUS_FAILED, previous_valid_plan_text[:20000], now, project_id),
             )
             conn.commit()
             conn.close()
@@ -2997,6 +3105,15 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
                 project_root=str(row["project_root"] or ""),
                 kind="plan.failed",
                 text=error_message[:1200],
+            )
+            _append_project_activity(
+                project_id=project_id,
+                actor_type="system",
+                actor_id="hivee",
+                actor_label="Hivee",
+                event_type="project.plan.invalid_artifact",
+                summary="Rejected invalid project plan artifact",
+                payload={"reason": error_message[:1200]},
             )
             await emit(project_id, "project.plan.failed", {"error": error_message[:600]})
             return
@@ -3111,7 +3228,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
             if _coerce_plan_status(fail_row["plan_status"] if fail_row else None) == PLAN_STATUS_GENERATING:
                 fail_conn.execute(
                     "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
-                    (PLAN_STATUS_FAILED, error_text[:5000], fail_now, project_id),
+                    (PLAN_STATUS_FAILED, previous_valid_plan_text[:20000], fail_now, project_id),
                 )
                 fail_conn.commit()
         finally:
@@ -3121,6 +3238,15 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
             project_root=str(row["project_root"] or ""),
             kind="plan.finalize.error",
             text=error_text[:1200],
+        )
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="system",
+            actor_id="hivee",
+            actor_label="Hivee",
+            event_type="project.plan.failed",
+            summary="Project plan finalization failed",
+            payload={"reason": error_text[:1200]},
         )
         await emit(project_id, "project.plan.failed", {"error": error_text[:600]})
 
@@ -3622,6 +3748,48 @@ def _parse_parallel_groups(
 
 
 async def _delegate_project_tasks(project_id: str) -> None:
+    try:
+        await _delegate_project_tasks_impl(project_id)
+    except Exception as exc:
+        reason = detail_to_text(exc)[:1200]
+        conn = db()
+        try:
+            row = conn.execute(
+                "SELECT user_id, project_root, progress_pct FROM projects WHERE id = ? LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        pause_pct = max(10, _clamp_progress(row["progress_pct"] if row else 10))
+        _set_project_execution_state(project_id, status=EXEC_STATUS_PAUSED, progress_pct=pause_pct)
+        _refresh_project_documents(project_id)
+        if row:
+            _append_project_daily_log(
+                owner_user_id=str(row["user_id"] or ""),
+                project_root=str(row["project_root"] or ""),
+                kind="execution.error",
+                text=f"Execution paused after an internal pipeline error: {reason}",
+                payload={"project_id": project_id},
+            )
+        payload = {
+            "status": EXEC_STATUS_PAUSED,
+            "progress_pct": pause_pct,
+            "reason": f"Execution pipeline error: {reason}",
+            "resume_hint": "Review the server log or latest activity, then press Resume to retry once fixed.",
+        }
+        await emit(project_id, "project.execution.auto_paused", payload)
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="system",
+            actor_id="hivee",
+            actor_label="Hivee",
+            event_type="project.execution.auto_paused",
+            summary="Execution paused after an internal pipeline error",
+            payload=payload,
+        )
+
+
+async def _delegate_project_tasks_impl(project_id: str) -> None:
     conn = db()
     row = conn.execute(
         """
@@ -3676,6 +3844,35 @@ async def _delegate_project_tasks(project_id: str) -> None:
             if str(r.get("agent_id") or "").strip() == str(primary_agent_id or "").strip()
         ),
         str(primary_agent_id or "primary"),
+    )
+
+    kickoff_result = _write_execution_kickoff_artifact(
+        owner_user_id=str(row["user_id"]),
+        project_root=str(row["project_root"] or ""),
+        project_id=project_id,
+        title=str(row["title"] or project_id),
+        primary_agent_id=primary_agent_id,
+        agent_count=len(role_rows),
+    )
+    for item in kickoff_result.get("saved") or []:
+        await emit(
+            project_id,
+            "project.file.written",
+            {
+                "path": str(item.get("path") or ""),
+                "mode": str(item.get("mode") or "w"),
+                "bytes": int(item.get("bytes") or 0),
+                "actor": "system:hivee",
+            },
+        )
+    _append_project_activity(
+        project_id=project_id,
+        actor_type="system",
+        actor_id="hivee",
+        actor_label="Hivee",
+        event_type="project.execution.kickoff",
+        summary="Execution kickoff artifact created",
+        payload={"saved_files": kickoff_result.get("saved") or [], "skipped": kickoff_result.get("skipped") or []},
     )
 
     _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=15)
@@ -3764,6 +3961,75 @@ async def _delegate_project_tasks(project_id: str) -> None:
     _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=55)
     primary_reply = str(res.get("text") or "").strip()
     parsed = _extract_agent_report_payload(primary_reply)
+    if not _delegation_payload_has_structured_work(parsed):
+        retry_instruction = (
+            "Your previous response was treated as chat only. Hivee execution cannot continue from chat alone.\n"
+            "Return JSON object only with real project mutations:\n"
+            "- `output_files`: include `delegation.md` and `progress_map.json` with full content.\n"
+            "- `actions`: include `create_task` actions for each assigned agent, at least one `update_execution`, "
+            "and `post_chat_message` handoffs that @mention each target agent.\n"
+            "- Do not ask the owner to type 'continue'. Start the execution handoff now.\n"
+            "If you are truly blocked by missing owner input, set `requires_user_input=true` and explain the exact blocker."
+        )
+        retry_res = await _project_chat(
+            row,
+            connection_api_key,
+            retry_instruction,
+            agent_id=primary_agent_id,
+            session_key=f"{project_id}:delegate",
+            timeout_sec=180,
+            user_id=str(row["user_id"] or ""),
+            from_agent_id="hivee",
+            from_label="Hivee System",
+            context_type="delegation_execution_contract",
+        )
+        rp, rc, _ = _extract_usage_counts(retry_res)
+        if rp <= 0:
+            rp = _estimate_tokens_from_text(retry_instruction)
+        if rc <= 0:
+            rc = _estimate_tokens_from_text(retry_res.get("text"))
+        _update_project_usage_metrics(project_id, prompt_tokens=rp, completion_tokens=rc)
+        if retry_res.get("ok"):
+            retry_text = str(retry_res.get("text") or "").strip()
+            retry_parsed = _extract_agent_report_payload(retry_text)
+            if _delegation_payload_has_structured_work(retry_parsed):
+                primary_reply = (primary_reply + "\n\n[EXECUTION CONTRACT RETRY]\n" + retry_text).strip()
+                parsed = retry_parsed
+                await emit(project_id, "project.delegation.contract_recovered", {"project_id": project_id})
+
+    if not _delegation_payload_has_structured_work(parsed):
+        pause_reason = (
+            "Primary agent returned only conversational text during execution delegation. "
+            "Hivee paused instead of leaving the project falsely running."
+        )
+        _set_project_execution_state(project_id, status=EXEC_STATUS_PAUSED, progress_pct=15)
+        _refresh_project_documents(project_id)
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="execution.waiting_for_artifact",
+            text=pause_reason,
+            payload={"agent_id": primary_agent_id or "", "stage": "delegation"},
+        )
+        payload = {
+            "status": EXEC_STATUS_PAUSED,
+            "progress_pct": 15,
+            "agent_id": primary_agent_id or "",
+            "agent_name": primary_agent_name,
+            "reason": pause_reason,
+            "resume_hint": "Press Resume to retry delegation after checking the primary agent response contract.",
+        }
+        await emit(project_id, "project.execution.waiting_for_artifact", payload)
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="project_agent",
+            actor_id=primary_agent_id,
+            actor_label=primary_agent_name,
+            event_type="project.execution.waiting_for_artifact",
+            summary="Execution paused because delegation produced no structured work",
+            payload=payload,
+        )
+        return
     by_id = {str(r.get("agent_id") or "").strip(): r for r in role_rows}
 
     if primary_reply:
@@ -4298,7 +4564,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "\n"
             + _build_project_chat_snapshot(project_id)
             + "\n"
-            + "Execute your assigned task and return JSON object only:\n"
+            + "EXECUTION CONTRACT: this is not casual project chat. Execute your assigned task now and return JSON object only:\n"
             + "{\n"
             + "  \"chat_update\": \"Human-friendly update sentence to show in chat\",\n"
             + "  \"output_files\": [{\"path\":\"relative/path.ext\",\"content\":\"file content\",\"append\":false}],\n"
@@ -4312,6 +4578,8 @@ async def _delegate_project_tasks(project_id: str) -> None:
             + "- chat_update must read like normal conversation.\n"
             + "- Put every created/updated artifact in output_files.\n"
             + "- Use `actions` when you need to change real project files, group chat state, or task/progress state.\n"
+            + "- Your response must include at least one real project mutation: output_files, create/update task actions, write_file actions, or update_execution.\n"
+            + "- A plain chat_update without artifact/action/progress is a failed execution step and Hivee will pause the run.\n"
             + "- FIRST action: create sub-task cards for each step of your sub-plan.\n"
             + "- Use exact IDs from roster when mentioning other agents.\n"
             + "- Mention handoff needs in chat_update with @agent_id.\n"
@@ -4715,6 +4983,132 @@ async def _delegate_project_tasks(project_id: str) -> None:
                     + detail_to_text(subtask_res.get("error") or subtask_res.get("details") or "unknown")
                 )
 
+        if not saved_files and not _applied_actions_have_project_work(applied_actions) and not requires_user_input:
+            await emit(
+                project_id,
+                "agent.task.live",
+                {
+                    "agent_id": aid,
+                    "agent_name": agent_name,
+                    "note": "Agent returned chat only. Retrying once with strict execution contract.",
+                },
+            )
+            strict_prompt = (
+                "Your previous execution response did not produce any project artifact, task mutation, or progress update.\n"
+                "Hivee cannot count chat-only text as execution work.\n"
+                "Return JSON object only and include at least one of:\n"
+                "- `output_files` with a concrete artifact under Outputs/;\n"
+                "- `actions` with create_task/update_task/write_file/update_execution;\n"
+                "- `requires_user_input=true` with a precise blocker and resume_hint.\n"
+                f"Agent: `{aid}` ({agent_name})\n"
+                f"Assigned task:\n{task_text[:3000]}\n"
+            )
+            strict_res = await _project_chat(
+                row,
+                connection_api_key,
+                strict_prompt,
+                agent_id=aid,
+                session_key=f"{project_id}:agent:{aid}",
+                timeout_sec=180,
+                user_id=str(row["user_id"] or ""),
+                from_agent_id="hivee",
+                from_label="Hivee System",
+                context_type="task_execution_contract",
+            )
+            sp, sc, _ = _extract_usage_counts(strict_res)
+            if sp <= 0:
+                sp = _estimate_tokens_from_text(strict_prompt)
+            if sc <= 0:
+                sc = _estimate_tokens_from_text(strict_res.get("text"))
+            _update_project_usage_metrics(project_id, prompt_tokens=sp, completion_tokens=sc)
+            if strict_res.get("ok"):
+                strict_text = str(strict_res.get("text") or "").strip()
+                parsed_strict = _extract_agent_report_payload(strict_text)
+                strict_chat = str(parsed_strict.get("chat_update") or "").strip()
+                strict_writes = parsed_strict.get("output_files") or []
+                strict_actions = parsed_strict.get("actions") or []
+                strict_write_result = _apply_project_file_writes(
+                    owner_user_id=str(row["user_id"]),
+                    project_root=str(row["project_root"] or ""),
+                    writes=strict_writes if isinstance(strict_writes, list) else [],
+                    default_prefix=f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+                    allow_paths=agent_output_allow_paths,
+                )
+                strict_saved = strict_write_result.get("saved") or []
+                strict_skipped = strict_write_result.get("skipped") or []
+                strict_action_result = _apply_project_actions(
+                    owner_user_id=str(row["user_id"]),
+                    project_id=project_id,
+                    project_root=str(row["project_root"] or ""),
+                    actions=strict_actions if isinstance(strict_actions, list) else [],
+                    allow_paths=agent_output_allow_paths,
+                    actor_type="project_agent",
+                    actor_id=aid,
+                    actor_label=f"agent:{aid}",
+                )
+                strict_applied = strict_action_result.get("applied") or []
+                strict_skipped_actions = strict_action_result.get("skipped") or []
+                if strict_saved:
+                    saved_files.extend(strict_saved)
+                if strict_skipped:
+                    skipped_files.extend(strict_skipped)
+                if strict_applied:
+                    applied_actions.extend(strict_applied)
+                if strict_skipped_actions:
+                    skipped_actions.extend(strict_skipped_actions)
+                requires_user_input = requires_user_input or bool(parsed_strict.get("requires_user_input"))
+                if not pause_reason:
+                    pause_reason = str(parsed_strict.get("pause_reason") or "").strip()
+                if not resume_hint:
+                    resume_hint = str(parsed_strict.get("resume_hint") or "").strip()
+                if not report_notes:
+                    report_notes = str(parsed_strict.get("notes") or "").strip()
+                if strict_chat:
+                    chat_update = strict_chat
+                if strict_text:
+                    report_text = (report_text + "\n\n[EXECUTION CONTRACT RETRY]\n" + strict_text).strip()
+                for note in _summarize_ws_frames(strict_res.get("frames"), limit=6):
+                    await emit(project_id, "agent.task.live", {"agent_id": aid, "agent_name": agent_name, "note": note})
+            else:
+                skipped_actions.append(
+                    "execution contract retry failed: "
+                    + detail_to_text(strict_res.get("error") or strict_res.get("details") or "unknown")
+                )
+
+        if not saved_files and not _applied_actions_have_project_work(applied_actions) and not requires_user_input:
+            reason = (
+                f"{agent_name} returned chat-only output after an execution retry. "
+                "Hivee paused instead of keeping the project falsely running."
+            )
+            _set_project_execution_state(project_id, status=EXEC_STATUS_PAUSED, progress_pct=max(10, _read_project_execution_state(project_id)[1]))
+            _refresh_project_documents(project_id)
+            payload = {
+                "status": EXEC_STATUS_PAUSED,
+                "progress_pct": _read_project_execution_state(project_id)[1],
+                "agent_id": aid,
+                "agent_name": agent_name,
+                "reason": reason,
+                "resume_hint": "Press Resume to retry this execution step after checking the agent response contract.",
+            }
+            await emit(project_id, "project.execution.waiting_for_artifact", payload)
+            _append_project_activity(
+                project_id=project_id,
+                actor_type="project_agent",
+                actor_id=aid,
+                actor_label=agent_name,
+                event_type="project.execution.waiting_for_artifact",
+                summary="Execution paused because agent produced no structured work",
+                payload=payload,
+            )
+            _append_project_daily_log(
+                owner_user_id=str(row["user_id"]),
+                project_root=str(row["project_root"] or ""),
+                kind="execution.waiting_for_artifact",
+                text=reason,
+                payload={"agent_id": aid, "task_title": task_title, "skipped_actions": skipped_actions[:10]},
+            )
+            return
+
         pause_decision = _infer_pause_request(
             chat_update=chat_update,
             notes=report_notes,
@@ -4965,6 +5359,10 @@ async def _delegate_project_tasks(project_id: str) -> None:
             })
             return
         await asyncio.gather(*[_run_one_agent(aid, grp_idx) for aid in grp])
+        state_after_group, _ = _read_project_execution_state(project_id)
+        if state_after_group in {EXEC_STATUS_PAUSED, EXEC_STATUS_STOPPED}:
+            _refresh_project_documents(project_id)
+            return
 
     final_primary_pause = _infer_pause_request(
         chat_update=primary_last_chat_update,
