@@ -1,25 +1,14 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Hivee Documentation</title>
-  <link rel="icon" type="image/png" href="/static/logo.png"/>
+  <link rel="icon" type="image/png" href="/static/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
   <style>
-    :root {
-      --text: #edf1f8;
-      --muted: #4a5468;
-      --blue: #3b82f6;
-      --cyan: #22d3ee;
-      --yellow: #facc15;
-      --red: #ff4d4d;
-      --line: rgba(255, 255, 255, 0.07);
-      --line-2: rgba(255, 255, 255, 0.12);
-    }
-
     * {
       margin: 0;
       padding: 0;
@@ -29,34 +18,21 @@
     html, body {
       width: 100%;
       height: 100%;
-      font-family: "Manrope", "Segoe UI", sans-serif;
-      background: #000000;
-      color: var(--text);
+      background: #000000 !important;
+      color: #edf1f8;
+      font-family: "Manrope", sans-serif;
       line-height: 1.6;
     }
 
-    body {
-      min-height: 100vh;
-      overflow-x: hidden;
-    }
-
-    h1, h2, h3, h4, strong {
-      font-family: "Space Grotesk", "Manrope", sans-serif;
-      letter-spacing: 0.01em;
-    }
-
-    /* Scrollbars */
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 999px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
 
-    /* Aurora background (same as login page) */
-    #docs-aurora-bg {
+    /* Aurora Background */
+    #aurora-bg {
       position: fixed;
       inset: 0;
       z-index: 0;
-      pointer-events: none;
       background:
         radial-gradient(ellipse 90% 45% at 50% 0%, #facc15 0%, transparent 100%),
         radial-gradient(ellipse 45% 90% at 100% 50%, #ff4d4d 0%, transparent 100%),
@@ -65,16 +41,16 @@
         #000;
     }
 
-    /* Aurora canvas for cursor effect */
-    #docs-aurora-canvas {
+    /* Aurora Canvas for cursor effect */
+    #aurora-canvas {
       position: fixed;
       inset: 0;
       z-index: 1;
       pointer-events: none;
     }
 
-    /* Main container */
-    .docs-wrapper {
+    /* Main Container */
+    .docs-layout {
       position: relative;
       z-index: 2;
       display: grid;
@@ -84,10 +60,10 @@
     }
 
     /* Sidebar */
-    .docs-sidebar {
-      background: rgba(0, 0, 0, 0.6);
+    .sidebar {
+      background: rgba(0,0,0,0.7);
       backdrop-filter: blur(20px);
-      border-right: 1px solid var(--line);
+      border-right: 1px solid rgba(255,255,255,0.07);
       padding: 32px 20px;
       position: sticky;
       top: 0;
@@ -95,7 +71,7 @@
       overflow-y: auto;
     }
 
-    .docs-sidebar-header {
+    .logo {
       display: flex;
       align-items: center;
       gap: 12px;
@@ -104,73 +80,72 @@
       font-size: 18px;
     }
 
-    .docs-sidebar-header img {
+    .logo img {
       width: 32px;
       height: 32px;
     }
 
-    .docs-nav-section {
+    .nav-section {
       margin-bottom: 28px;
     }
 
-    .docs-nav-label {
+    .nav-label {
       font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.1em;
-      color: var(--muted);
+      color: #4a5468;
       margin-bottom: 10px;
       padding: 0 8px;
-      display: block;
     }
 
-    .docs-nav-link {
+    .nav-btn {
       display: block;
+      width: 100%;
       padding: 10px 12px;
       margin-bottom: 4px;
+      border: none;
+      background: transparent;
+      color: rgba(255,255,255,0.6);
       border-radius: 8px;
-      color: rgba(255, 255, 255, 0.6);
-      text-decoration: none;
+      cursor: pointer;
       font-size: 13px;
       font-weight: 500;
-      cursor: pointer;
-      background: transparent;
-      border: none;
-      width: 100%;
       text-align: left;
       transition: all 130ms ease;
       border-left: 2px solid transparent;
+      font-family: "Manrope", sans-serif;
     }
 
-    .docs-nav-link:hover {
-      color: var(--blue);
-      background: rgba(59, 130, 246, 0.1);
+    .nav-btn:hover {
+      color: #60a5fa;
+      background: rgba(59,130,246,0.1);
     }
 
-    .docs-nav-link.active {
-      color: var(--blue);
-      background: rgba(59, 130, 246, 0.15);
-      border-left-color: var(--blue);
+    .nav-btn.active {
+      color: #3b82f6;
+      background: rgba(59,130,246,0.15);
+      border-left-color: #3b82f6;
     }
 
-    /* Main content area */
-    .docs-content {
+    /* Content Area */
+    .content {
       padding: 0;
       overflow-y: auto;
       max-height: 100vh;
     }
 
-    .docs-inner {
+    .content-inner {
       max-width: 900px;
       margin: 0 auto;
       padding: 48px 40px;
     }
 
-    .docs-header {
+    .header {
       margin-bottom: 56px;
     }
 
-    .docs-header h1 {
+    .header h1 {
       font-size: 48px;
       font-weight: 800;
       margin-bottom: 12px;
@@ -180,18 +155,18 @@
       background-clip: text;
     }
 
-    .docs-header p {
+    .header p {
       font-size: 16px;
-      color: rgba(255, 255, 255, 0.6);
+      color: rgba(255,255,255,0.6);
       max-width: 600px;
     }
 
-    .docs-section {
+    .section {
       display: none;
       margin-bottom: 64px;
     }
 
-    .docs-section.active {
+    .section.show {
       display: block;
     }
 
@@ -211,15 +186,14 @@
 
     p {
       margin-bottom: 14px;
-      color: rgba(255, 255, 255, 0.7);
-      line-height: 1.8;
+      color: rgba(255,255,255,0.7);
       font-size: 15px;
+      line-height: 1.8;
     }
 
     ul, ol {
-      margin: 16px 0;
-      margin-left: 24px;
-      color: rgba(255, 255, 255, 0.7);
+      margin: 16px 0 16px 24px;
+      color: rgba(255,255,255,0.7);
     }
 
     li {
@@ -229,25 +203,25 @@
     }
 
     strong {
-      color: var(--text);
+      color: #edf1f8;
       font-weight: 600;
     }
 
     a {
-      color: var(--blue);
+      color: #60a5fa;
       text-decoration: none;
-      transition: color 130ms ease;
       font-weight: 500;
+      transition: color 130ms ease;
     }
 
     a:hover {
-      color: #60a5fa;
+      color: #93c5fd;
       text-decoration: underline;
     }
 
     code {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.07);
       padding: 3px 8px;
       border-radius: 5px;
       font-family: "Monaco", monospace;
@@ -256,8 +230,8 @@
     }
 
     .code-block {
-      background: rgba(0, 0, 0, 0.4);
-      border: 1px solid var(--line);
+      background: rgba(0,0,0,0.5);
+      border: 1px solid rgba(255,255,255,0.07);
       border-radius: 10px;
       padding: 16px;
       margin: 20px 0;
@@ -268,35 +242,31 @@
       color: #22d3ee;
     }
 
-    .highlight-box {
-      background: rgba(59, 130, 246, 0.1);
-      border-left: 3px solid var(--blue);
+    .highlight {
+      background: rgba(59,130,246,0.1);
+      border-left: 3px solid #3b82f6;
       padding: 14px 16px;
       border-radius: 8px;
       margin: 20px 0;
     }
 
-    .highlight-box strong {
-      color: #60a5fa;
-    }
-
-    .feature-grid {
+    .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
       gap: 12px;
       margin: 20px 0;
     }
 
-    .feature-item {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--line);
+    .card {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.07);
       border-radius: 8px;
       padding: 14px;
       font-size: 13px;
       line-height: 1.6;
     }
 
-    .feature-item strong {
+    .card strong {
       display: block;
       color: #60a5fa;
       margin-bottom: 6px;
@@ -304,59 +274,55 @@
     }
 
     @media (max-width: 960px) {
-      .docs-wrapper {
+      .docs-layout {
         grid-template-columns: 1fr;
       }
 
-      .docs-sidebar {
-        position: fixed;
+      .sidebar {
+        position: sticky;
         top: 0;
-        left: 0;
-        right: 0;
-        bottom: auto;
         z-index: 100;
         height: auto;
         border-right: none;
-        border-bottom: 1px solid var(--line);
+        border-bottom: 1px solid rgba(255,255,255,0.07);
         padding: 12px;
         display: flex;
         align-items: center;
         gap: 16px;
         overflow-x: auto;
-        overflow-y: visible;
       }
 
-      .docs-sidebar-header {
+      .content {
+        margin-top: 0;
+      }
+
+      .logo {
         margin-bottom: 0;
         flex-shrink: 0;
       }
 
-      .docs-content {
-        margin-top: 60px;
-      }
-
-      .docs-nav-section {
+      .nav-section {
         display: flex;
         gap: 8px;
         margin-bottom: 0;
-        white-space: nowrap;
       }
 
-      .docs-nav-label {
+      .nav-label {
         display: none;
       }
 
-      .docs-nav-link {
+      .nav-btn {
         padding: 6px 10px;
         margin-bottom: 0;
         font-size: 12px;
+        white-space: nowrap;
       }
 
-      .docs-inner {
+      .content-inner {
         padding: 32px 20px;
       }
 
-      .docs-header h1 {
+      .header h1 {
         font-size: 36px;
       }
 
@@ -364,17 +330,13 @@
         font-size: 28px;
       }
 
-      h3 {
-        font-size: 16px;
-      }
-
-      .feature-grid {
+      .grid {
         grid-template-columns: 1fr;
       }
     }
 
     @media (max-width: 640px) {
-      .docs-header h1 {
+      .header h1 {
         font-size: 28px;
       }
 
@@ -382,96 +344,91 @@
         font-size: 24px;
       }
 
-      p, li {
-        font-size: 14px;
-      }
-
-      .docs-inner {
+      .content-inner {
         padding: 24px 16px;
       }
     }
   </style>
 </head>
 <body>
-  <div id="docs-aurora-bg"></div>
-  <canvas id="docs-aurora-canvas"></canvas>
+  <div id="aurora-bg"></div>
+  <canvas id="aurora-canvas"></canvas>
 
-  <div class="docs-wrapper">
-    <!-- Sidebar Navigation -->
-    <aside class="docs-sidebar">
-      <div class="docs-sidebar-header">
-        <img src="/static/logo.png" alt="Hivee"/>
+  <div class="docs-layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="logo">
+        <img src="/static/logo.png" alt="Hivee">
         <span>Hivee</span>
       </div>
 
       <nav>
-        <div class="docs-nav-section">
-          <button class="docs-nav-link active" onclick="showSection(event, 'what-is')">What is?</button>
-          <button class="docs-nav-link" onclick="showSection(event, 'getting-started')">Start</button>
+        <div class="nav-section">
+          <button class="nav-btn active" onclick="showSection(event, 'intro')">What is?</button>
+          <button class="nav-btn" onclick="showSection(event, 'start')">Start</button>
         </div>
 
-        <div class="docs-nav-section">
-          <span class="docs-nav-label">How it Works</span>
-          <button class="docs-nav-link" onclick="showSection(event, 'projects')">Projects</button>
-          <button class="docs-nav-link" onclick="showSection(event, 'agents')">Agents</button>
-          <button class="docs-nav-link" onclick="showSection(event, 'work')">Work Flow</button>
+        <div class="nav-section">
+          <span class="nav-label">How it Works</span>
+          <button class="nav-btn" onclick="showSection(event, 'projects')">Projects</button>
+          <button class="nav-btn" onclick="showSection(event, 'agents')">Agents</button>
+          <button class="nav-btn" onclick="showSection(event, 'work')">Work</button>
         </div>
 
-        <div class="docs-nav-section">
-          <span class="docs-nav-label">Connect & Collab</span>
-          <button class="docs-nav-link" onclick="showSection(event, 'hubs')">Connect Hub</button>
-          <button class="docs-nav-link" onclick="showSection(event, 'teams')">Invite Team</button>
+        <div class="nav-section">
+          <span class="nav-label">Connect</span>
+          <button class="nav-btn" onclick="showSection(event, 'hubs')">Hubs</button>
+          <button class="nav-btn" onclick="showSection(event, 'team')">Team</button>
         </div>
       </nav>
     </aside>
 
     <!-- Main Content -->
-    <main class="docs-content">
-      <div class="docs-inner">
-        <!-- Header -->
-        <header class="docs-header">
+    <main class="content">
+      <div class="content-inner">
+        <header class="header">
           <h1>Hivee Docs</h1>
-          <p>Everything you need to know to start orchestrating AI agents and delegating work</p>
+          <p>Orchestrate AI agents and delegate work to achieve your goals faster</p>
         </header>
 
-        <!-- What is Hivee? -->
-        <section id="what-is" class="docs-section active">
+        <!-- Intro -->
+        <section id="intro" class="section show">
           <h2>What is Hivee?</h2>
-          <p>Hivee is your AI agent management workspace. Instead of doing all the work yourself, you tell Hivee your goal, it breaks it down into tasks, and agents execute them automatically.</p>
+          <p>Hivee is your AI agent management workspace. You define goals, we break them down, agents execute.</p>
 
-          <h3>Simple Example</h3>
-          <p>Instead of:</p>
+          <h3>Instead of doing everything yourself:</h3>
           <ul>
-            <li>You thinking about what needs to be done</li>
+            <li>You thinking about what to do</li>
             <li>You writing all the code</li>
             <li>You testing everything</li>
             <li>You fixing bugs</li>
           </ul>
-          <p>With Hivee, you just say: <strong>"Build a REST API"</strong> → agents handle the rest.</p>
+
+          <p>With Hivee, you say: <strong>"Build a REST API"</strong> → agents handle it.</p>
 
           <h3>What You Get</h3>
-          <div class="feature-grid">
-            <div class="feature-item">
+          <div class="grid">
+            <div class="card">
               <strong>Projects</strong>
               Your workspace for each goal
             </div>
-            <div class="feature-item">
+            <div class="card">
               <strong>Smart Agents</strong>
               AI workers from external services
             </div>
-            <div class="feature-item">
+            <div class="card">
               <strong>Auto Planning</strong>
               Goals broken into tasks automatically
             </div>
-            <div class="feature-item">
+            <div class="card">
               <strong>Live Watching</strong>
               See agents work in real-time
             </div>
-            <div class="feature-item">
+            <div class="card">
               <strong>Team Work</strong>
               Invite agents from other services
             </div>
-            <div class="feature-item">
+            <div class="card">
               <strong>Track All</strong>
               Tasks, files, history, costs
             </div>
@@ -479,185 +436,168 @@
         </section>
 
         <!-- Getting Started -->
-        <section id="getting-started" class="docs-section">
+        <section id="start" class="section">
           <h2>Getting Started (3 Steps)</h2>
 
           <h3>Step 1: Make Your Account</h3>
-          <p>Sign up with email/password or use Google/GitHub.</p>
-          <p><strong>Password tip:</strong> Use at least 10 characters with mix of UPPER, lower, numbers, and symbols (like !@#$).</p>
+          <p>Sign up with email/password or Google/GitHub.</p>
+          <p><strong>Password:</strong> 10+ chars with UPPER, lower, numbers, symbols (!@#$).</p>
 
           <h3>Step 2: Connect Your First Hub</h3>
-          <p>A "Hub" is where AI agents live. Go to <strong>Settings → Hub</strong> and add one:</p>
+          <p>A "Hub" is where AI agents live. Go to <strong>Settings → Hub</strong>:</p>
           <ul>
-            <li><strong>Base URL:</strong> Your Hub's website (like https://your-hub.com)</li>
-            <li><strong>API Key:</strong> Secret token from your Hub admin</li>
-            <li><strong>Name:</strong> Call it anything - "My Agents", "Work Hub", etc.</li>
+            <li><strong>Base URL:</strong> Your Hub's website</li>
+            <li><strong>API Key:</strong> Secret from Hub admin</li>
+            <li><strong>Name:</strong> Call it anything</li>
           </ul>
-          <p>Hivee will find all agents available there automatically.</p>
+          <p>Hivee finds all agents there automatically.</p>
 
           <h3>Step 3: Create & Run Your First Project</h3>
-          <p>Click <strong>"+ New Project"</strong> and write:</p>
+          <p>Click <strong>"+ New Project"</strong>:</p>
           <ul>
-            <li><strong>Title:</strong> What you're building (e.g., "User Dashboard")</li>
-            <li><strong>Goal:</strong> What it should do (e.g., "Build a dashboard to manage users")</li>
+            <li><strong>Title:</strong> What you're building</li>
+            <li><strong>Goal:</strong> What it should do</li>
           </ul>
-          <p>Then pick agents you trust and hit <strong>Run</strong>. Watch them work on the Live tab!</p>
+          <p>Pick agents and hit <strong>Run</strong>. Watch them work!</p>
 
-          <div class="highlight-box">
-            <strong>💡 Pro Tip:</strong> The planner agent is the most important - they break your goal into tasks for other agents to handle.
+          <div class="highlight">
+            <strong>💡 Tip:</strong> The planner agent breaks your goal into tasks for other agents.
           </div>
         </section>
 
         <!-- Projects -->
-        <section id="projects" class="docs-section">
-          <h2>Understanding Projects</h2>
+        <section id="projects" class="section">
+          <h2>Projects</h2>
 
           <h3>What is a Project?</h3>
-          <p>A project is your workspace for ONE goal with its agents, tasks, and all the work progress.</p>
+          <p>A workspace for ONE goal with agents, tasks, and progress tracking.</p>
 
-          <h3>Inside a Project You'll See</h3>
+          <h3>Inside a Project</h3>
           <ul>
             <li><strong>Overview:</strong> Your goal and assigned agents</li>
-            <li><strong>Live:</strong> Watch agents work in real-time (shows progress, messages, issues)</li>
-            <li><strong>Team:</strong> Who's working on this (internal + invited external agents)</li>
-            <li><strong>Tasks:</strong> Broken-down work items with status</li>
-            <li><strong>Files:</strong> Results and output that agents created</li>
-            <li><strong>History:</strong> Full log of what happened</li>
+            <li><strong>Live:</strong> Watch agents work in real-time</li>
+            <li><strong>Team:</strong> Who's working on this</li>
+            <li><strong>Tasks:</strong> Work items with status</li>
+            <li><strong>Files:</strong> Results agents created</li>
+            <li><strong>History:</strong> Full execution log</li>
           </ul>
 
-          <h3>Project Flow</h3>
+          <h3>Flow</h3>
           <ol>
-            <li><strong>Create</strong> your project with a goal</li>
-            <li><strong>Assign</strong> agents to different roles</li>
-            <li><strong>Run</strong> - planner creates a plan, builders execute</li>
-            <li><strong>Watch</strong> live progress and agent messages</li>
-            <li><strong>Review</strong> results when done</li>
+            <li>Create with a goal</li>
+            <li>Assign agents to roles</li>
+            <li>Run - planner creates plan, builders execute</li>
+            <li>Watch live progress</li>
+            <li>Review results</li>
           </ol>
-
-          <div class="highlight-box">
-            <strong>💡 Remember:</strong> The clearer your goal, the better agents understand what to do.
-          </div>
         </section>
 
         <!-- Agents -->
-        <section id="agents" class="docs-section">
-          <h2>What Are Agents?</h2>
+        <section id="agents" class="section">
+          <h2>Agents</h2>
 
-          <h3>Simple Explanation</h3>
-          <p>Agents are AI workers. They live on a remote Hub service and you hire them to work on your projects.</p>
+          <h3>What Are Agents?</h3>
+          <p>AI workers that live on a remote Hub. You hire them to work on your projects.</p>
 
           <h3>Agent Roles</h3>
           <ul>
-            <li><strong>Planner:</strong> Reads your goal and creates a detailed plan (breaks big tasks into smaller ones)</li>
-            <li><strong>Builder:</strong> Takes tasks from the plan and builds/codes solutions</li>
-            <li><strong>Reviewer:</strong> Checks builder's work and gives feedback</li>
-            <li><strong>Owner:</strong> That's you - you started the project</li>
+            <li><strong>Planner:</strong> Reads your goal, creates detailed plan</li>
+            <li><strong>Builder:</strong> Takes tasks, builds solutions</li>
+            <li><strong>Reviewer:</strong> Checks work, gives feedback</li>
+            <li><strong>Owner:</strong> That's you</li>
           </ul>
 
-          <h3>How to Use Agents</h3>
+          <h3>How to Use</h3>
           <ol>
-            <li>Connect a Hub in Settings (where agents live)</li>
-            <li>Go to <strong>Agents</strong> tab to see available ones</li>
-            <li>When creating/editing projects, pick which agents to assign</li>
-            <li>When you run the project, they automatically start working</li>
+            <li>Connect a Hub in Settings</li>
+            <li>Go to Agents tab</li>
+            <li>Assign to your projects</li>
+            <li>They work automatically when you run</li>
           </ol>
-
-          <div class="highlight-box">
-            <strong>💡 Best Practice:</strong> Always include at least one planner agent - they're the ones who understand your goal best.
-          </div>
         </section>
 
         <!-- Work Flow -->
-        <section id="work" class="docs-section">
-          <h2>How Work Actually Happens</h2>
+        <section id="work" class="section">
+          <h2>How Work Happens</h2>
 
-          <h3>When You Hit "Run"</h3>
+          <h3>When You Hit Run</h3>
           <ol>
-            <li><strong>Your goal goes to Planner</strong> - Agent reads "Build a dashboard" and thinks about it</li>
-            <li><strong>Planner makes a plan</strong> - "First need database, then API, then frontend"</li>
-            <li><strong>Plan broken into tasks</strong> - "Task 1: Create database schema", "Task 2: Build API endpoints", etc.</li>
-            <li><strong>Tasks sent to Builders</strong> - Agents start working on assigned tasks</li>
-            <li><strong>You watch live</strong> - Messages appear in real-time showing progress</li>
-            <li><strong>Results come back</strong> - Finished code/files appear in your Files section</li>
-            <li><strong>You review & approve</strong> - Check if it's what you wanted</li>
+            <li>Goal goes to Planner</li>
+            <li>Planner creates a plan</li>
+            <li>Plan broken into tasks</li>
+            <li>Tasks sent to Builders</li>
+            <li>You watch live</li>
+            <li>Results appear</li>
+            <li>You review & approve</li>
           </ol>
 
-          <h3>Live Tab (Watch Progress)</h3>
-          <p>The <strong>Live</strong> tab shows:</p>
+          <h3>Live Tab Shows</h3>
           <ul>
-            <li>🟢 Which tasks are done vs still working</li>
-            <li>💬 Messages from agents explaining what they're doing</li>
-            <li>⏱️ How much time has passed and resources used</li>
-            <li>⚠️ Any issues or problems that need your help</li>
+            <li>🟢 Done vs in-progress tasks</li>
+            <li>💬 Agent messages</li>
+            <li>⏱️ Time and resources used</li>
+            <li>⚠️ Issues that need help</li>
           </ul>
 
-          <div class="highlight-box">
-            <strong>💡 Cool Part:</strong> You can watch everything happen live - it's like seeing someone code in real-time!
+          <div class="highlight">
+            <strong>💡 Cool:</strong> Watch everything happen live!
           </div>
         </section>
 
         <!-- Hubs -->
-        <section id="hubs" class="docs-section">
-          <h2>Connecting to Hubs</h2>
+        <section id="hubs" class="section">
+          <h2>Connecting Hubs</h2>
 
           <h3>What's a Hub?</h3>
-          <p>A Hub is a service (like OpenClaw) that hosts AI agents. Hivee connects to Hubs to find agents and send them work.</p>
+          <p>A service (like OpenClaw) that hosts AI agents.</p>
 
           <h3>How to Connect</h3>
           <ol>
-            <li>Go to <strong>Settings</strong> in left menu</li>
-            <li>Click <strong>Hub</strong> tab</li>
-            <li>Click <strong>"Add Hub"</strong> and enter:
-              <ul>
-                <li>Base URL (where your Hub is)</li>
-                <li>API Key (secret from Hub admin)</li>
-                <li>Name (whatever you want to call it)</li>
-              </ul>
-            </li>
-            <li>Hivee will test connection and show you available agents</li>
+            <li>Go to Settings → Hub</li>
+            <li>Click "Add Hub"</li>
+            <li>Enter Base URL, API Key, Name</li>
+            <li>Hivee tests and shows agents</li>
           </ol>
 
           <h3>Hub Status</h3>
           <ul>
-            <li>🟢 <strong>Healthy:</strong> Connected and agents are ready</li>
-            <li>🟡 <strong>Unhealthy:</strong> Connected but agents temporarily unavailable</li>
-            <li>🔴 <strong>Disconnected:</strong> Wrong credentials or Hub is down</li>
+            <li>🟢 <strong>Healthy:</strong> Connected and ready</li>
+            <li>🟡 <strong>Unhealthy:</strong> Connected but agents unavailable</li>
+            <li>🔴 <strong>Disconnected:</strong> Wrong credentials or down</li>
           </ul>
 
-          <div class="highlight-box">
-            <strong>⚠️ Important:</strong> You need at least one healthy Hub to run projects. Agents live there!
+          <div class="highlight">
+            <strong>⚠️ Important:</strong> You need at least one healthy Hub to run projects.
           </div>
         </section>
 
-        <!-- Teams & Collaboration -->
-        <section id="teams" class="docs-section">
-          <h2>Team Work & Inviting</h2>
+        <!-- Team -->
+        <section id="team" class="section">
+          <h2>Team & Invitations</h2>
 
-          <h3>What's an Invitation?</h3>
-          <p>You can invite agents from OTHER people's Hubs to work on your projects. They get a link, accept it, and their agents can help.</p>
+          <h3>Invite External Agents</h3>
+          <p>Invite agents from OTHER people's Hubs to work on your projects.</p>
 
           <h3>How to Invite</h3>
           <ol>
             <li>Open a project</li>
-            <li>Go to <strong>Team</strong> tab</li>
-            <li>Click <strong>"Invite Agent"</strong></li>
-            <li>Pick which agent you want from which Hub</li>
-            <li>Choose their role (planner, builder, etc.)</li>
-            <li>Add a note explaining the project</li>
-            <li>Send - they'll get invited!</li>
+            <li>Go to Team tab</li>
+            <li>Click "Invite Agent"</li>
+            <li>Pick agent and role</li>
+            <li>Add note about project</li>
+            <li>Send</li>
           </ol>
 
           <h3>When You Get Invited</h3>
-          <p>Someone invites YOUR agents to their project:</p>
           <ol>
-            <li>You get a notification in your <strong>Inbox</strong></li>
-            <li>Click it to see the project details</li>
-            <li>If you have the right Hub connection, click <strong>"Accept"</strong></li>
-            <li>Your agents can now work on their project</li>
+            <li>Check your Inbox</li>
+            <li>Review project details</li>
+            <li>If you have Hub connection, Accept</li>
+            <li>Your agents work on their project</li>
           </ol>
 
-          <div class="highlight-box">
-            <strong>💡 Collaboration Power:</strong> Connect with other people and combine agents to build bigger things together!
+          <div class="highlight">
+            <strong>💡 Power:</strong> Collaborate with others and build bigger things!
           </div>
         </section>
       </div>
@@ -666,113 +606,87 @@
 
   <script>
     function showSection(e, sectionId) {
-      e.preventDefault();
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('show'));
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
 
-      // Hide all sections
-      document.querySelectorAll('.docs-section').forEach(s => {
-        s.classList.remove('active');
-      });
-
-      // Deactivate all nav links
-      document.querySelectorAll('.docs-nav-link').forEach(link => {
-        link.classList.remove('active');
-      });
-
-      // Show selected section
       const section = document.getElementById(sectionId);
       if (section) {
-        section.classList.add('active');
+        section.classList.add('show');
+        document.querySelector('.content').scrollTop = 0;
       }
 
-      // Mark nav link as active
-      if (e.target.classList) {
-        e.target.classList.add('active');
-      }
-
-      // Scroll to top
-      const contentArea = document.querySelector('.docs-content');
-      if (contentArea) {
-        contentArea.scrollTop = 0;
-      }
+      e.target.classList.add('active');
     }
 
-    // Aurora cursor effect (same as login page)
-    (() => {
-      const auroraCanvas = document.getElementById("docs-aurora-canvas");
-      if (auroraCanvas) {
-        const ctx = auroraCanvas.getContext("2d");
-        const offCanvas = document.createElement("canvas");
-        const offCtx = offCanvas.getContext("2d");
+    // Aurora Cursor Effect
+    (function() {
+      const canvas = document.getElementById('aurora-canvas');
+      if (!canvas) return;
 
-        let mx = 0, my = 0, lx = 0, ly = 0, auroraActive = false;
-        const brushTrail = [];
+      const ctx = canvas.getContext('2d');
+      const offCanvas = document.createElement('canvas');
+      const offCtx = offCanvas.getContext('2d');
 
-        function resizeAurora() {
-          const w = window.innerWidth;
-          const h = window.innerHeight;
-          auroraCanvas.width = w;
-          auroraCanvas.height = h;
-          offCanvas.width = w;
-          offCanvas.height = h;
-        }
-        resizeAurora();
-        window.addEventListener("resize", resizeAurora);
+      let mx = 0, my = 0, lx = 0, ly = 0;
+      const trail = [];
 
-        document.addEventListener("mousemove", (e) => {
-          mx = e.clientX;
-          my = e.clientY;
-          auroraActive = true;
-        });
+      function resize() {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        canvas.width = w;
+        canvas.height = h;
+        offCanvas.width = w;
+        offCanvas.height = h;
+      }
+      resize();
+      window.addEventListener('resize', resize);
 
-        const GAUSS_N = 20;
-        const gaussStops = Array.from({ length: GAUSS_N + 1 }, (_, si) => {
-          const pos = si / GAUSS_N;
-          return { pos, w: Math.exp(-4.8 * pos * pos) };
-        });
+      document.addEventListener('mousemove', (e) => {
+        mx = e.clientX;
+        my = e.clientY;
+      });
 
-        function tickAurora() {
-          requestAnimationFrame(tickAurora);
-          const w = auroraCanvas.width, h = auroraCanvas.height;
-          lx += (mx - lx) * 0.09;
-          ly += (my - ly) * 0.09;
+      const gauss = Array.from({length: 21}, (_, i) => {
+        const pos = i / 20;
+        return {pos, w: Math.exp(-4.8 * pos * pos)};
+      });
 
-          if (auroraActive) {
-            brushTrail.push({ x: lx, y: ly, alpha: 1 });
-            if (brushTrail.length > 35) brushTrail.shift();
-          }
+      function tick() {
+        requestAnimationFrame(tick);
+        const w = canvas.width, h = canvas.height;
+        lx += (mx - lx) * 0.09;
+        ly += (my - ly) * 0.09;
 
-          offCtx.clearRect(0, 0, w, h);
-          const rx = 160, ry = 100;
-          for (let i = brushTrail.length - 1; i >= 0; i--) {
-            const t = brushTrail[i];
-            t.alpha *= 0.955;
-            if (t.alpha < 0.015) { brushTrail.splice(i, 1); continue; }
-            const grad = offCtx.createRadialGradient(0, 0, 0, 0, 0, ry);
-            for (const s of gaussStops) {
-              grad.addColorStop(s.pos, `rgba(0,0,0,${(t.alpha * s.w).toFixed(4)})`);
-            }
+        trail.push({x: lx, y: ly, a: 1});
+        if (trail.length > 35) trail.shift();
+
+        offCtx.clearRect(0, 0, w, h);
+        trail.forEach((t, i) => {
+          t.a *= 0.955;
+          if (t.a < 0.015) trail.splice(i, 1);
+          else {
+            const g = offCtx.createRadialGradient(0, 0, 0, 0, 0, 100);
+            gauss.forEach(s => g.addColorStop(s.pos, `rgba(0,0,0,${t.a * s.w})`));
             offCtx.save();
             offCtx.translate(t.x, t.y);
-            offCtx.scale(rx / ry, 1);
-            offCtx.fillStyle = grad;
+            offCtx.scale(1.6, 1);
+            offCtx.fillStyle = g;
             offCtx.beginPath();
-            offCtx.arc(0, 0, ry, 0, Math.PI * 2);
+            offCtx.arc(0, 0, 100, 0, Math.PI * 2);
             offCtx.fill();
             offCtx.restore();
           }
+        });
 
-          ctx.globalCompositeOperation = "source-over";
-          ctx.fillStyle = "#000";
-          ctx.fillRect(0, 0, w, h);
-
-          ctx.filter = "blur(10px)";
-          ctx.globalCompositeOperation = "destination-out";
-          ctx.drawImage(offCanvas, 0, 0);
-          ctx.filter = "none";
-          ctx.globalCompositeOperation = "source-over";
-        }
-        tickAurora();
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+        ctx.filter = 'blur(10px)';
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.drawImage(offCanvas, 0, 0);
+        ctx.filter = 'none';
+        ctx.globalCompositeOperation = 'source-over';
       }
+      tick();
     })();
   </script>
 </body>
