@@ -2138,9 +2138,8 @@ def register_routes(app: FastAPI) -> None:
                 scoped_message,
                 agent_id=primary_agent_id,
                 session_key=f"{project_id}:control",
-                timeout_sec=None if action == "resume" else 120,
+                timeout_sec=120,
                 user_id=user_id,
-                context_type="control",
             )
             if ctrl_res.get("ok"):
                 raw_ctrl_text = str(ctrl_res.get("text") or "").strip()
