@@ -7,7 +7,7 @@ from routes.projects import register_routes as register_projects_routes
 from routes.tasks import register_routes as register_tasks_routes
 from routes.connectors import register_routes as register_connector_routes
 
-app = FastAPI(title="hivee (Prototype)")
+app = FastAPI(title="hivee (Prototype)", docs_url=None, redoc_url=None, openapi_url=None)
 init_db()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/new-user", StaticFiles(directory=str(NEW_USER_ASSETS_DIR), check_dir=False), name="new_user_assets")
