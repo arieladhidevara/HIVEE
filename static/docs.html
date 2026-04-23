@@ -41,7 +41,6 @@
         #000;
     }
 
-    /* Aurora Canvas for cursor effect */
     #aurora-canvas {
       position: fixed;
       inset: 0;
@@ -49,17 +48,15 @@
       pointer-events: none;
     }
 
-    /* Main Container */
     .docs-layout {
       position: relative;
       z-index: 2;
       display: grid;
-      grid-template-columns: 260px 1fr;
+      grid-template-columns: 280px 1fr;
       min-height: 100vh;
       gap: 0;
     }
 
-    /* Sidebar */
     .sidebar {
       background: rgba(0,0,0,0.7);
       backdrop-filter: blur(20px);
@@ -128,7 +125,6 @@
       border-left-color: #3b82f6;
     }
 
-    /* Content Area */
     .content {
       padding: 0;
       overflow-y: auto;
@@ -182,6 +178,14 @@
       font-weight: 700;
       margin-top: 28px;
       margin-bottom: 12px;
+    }
+
+    h4 {
+      font-size: 14px;
+      font-weight: 700;
+      margin-top: 16px;
+      margin-bottom: 8px;
+      color: #60a5fa;
     }
 
     p {
@@ -250,6 +254,14 @@
       margin: 20px 0;
     }
 
+    .warning {
+      background: rgba(255,77,77,0.1);
+      border-left: 3px solid #ff4d4d;
+      padding: 14px 16px;
+      border-radius: 8px;
+      margin: 20px 0;
+    }
+
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -273,6 +285,36 @@
       font-size: 14px;
     }
 
+    .table-wrap {
+      overflow-x: auto;
+      margin: 20px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th {
+      background: rgba(59,130,246,0.1);
+      color: #60a5fa;
+      padding: 12px;
+      text-align: left;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+    }
+
+    td {
+      padding: 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      color: rgba(255,255,255,0.7);
+    }
+
+    tr:hover {
+      background: rgba(255,255,255,0.02);
+    }
+
     @media (max-width: 960px) {
       .docs-layout {
         grid-template-columns: 1fr;
@@ -290,10 +332,6 @@
         align-items: center;
         gap: 16px;
         overflow-x: auto;
-      }
-
-      .content {
-        margin-top: 0;
       }
 
       .logo {
@@ -347,6 +385,14 @@
       .content-inner {
         padding: 24px 16px;
       }
+
+      table {
+        font-size: 12px;
+      }
+
+      th, td {
+        padding: 8px;
+      }
     }
   </style>
 </head>
@@ -355,7 +401,6 @@
   <canvas id="aurora-canvas"></canvas>
 
   <div class="docs-layout">
-    <!-- Sidebar -->
     <aside class="sidebar">
       <div class="logo">
         <img src="/static/logo.png" alt="Hivee">
@@ -369,68 +414,85 @@
         </div>
 
         <div class="nav-section">
-          <span class="nav-label">How it Works</span>
+          <span class="nav-label">Core</span>
           <button class="nav-btn" onclick="showSection(event, 'projects')">Projects</button>
+          <button class="nav-btn" onclick="showSection(event, 'tasks')">Tasks</button>
           <button class="nav-btn" onclick="showSection(event, 'agents')">Agents</button>
-          <button class="nav-btn" onclick="showSection(event, 'work')">Work</button>
+          <button class="nav-btn" onclick="showSection(event, 'work')">Execution</button>
         </div>
 
         <div class="nav-section">
-          <span class="nav-label">Connect</span>
-          <button class="nav-btn" onclick="showSection(event, 'hubs')">Hubs</button>
+          <span class="nav-label">Features</span>
+          <button class="nav-btn" onclick="showSection(event, 'issues')">Issues</button>
+          <button class="nav-btn" onclick="showSection(event, 'files')">Files</button>
+          <button class="nav-btn" onclick="showSection(event, 'history')">History</button>
+          <button class="nav-btn" onclick="showSection(event, 'costs')">Costs</button>
+        </div>
+
+        <div class="nav-section">
+          <span class="nav-label">Setup</span>
+          <button class="nav-btn" onclick="showSection(event, 'hub')">Hub & HUB-Connector</button>
           <button class="nav-btn" onclick="showSection(event, 'team')">Team</button>
+          <button class="nav-btn" onclick="showSection(event, 'account')">Account</button>
         </div>
       </nav>
     </aside>
 
-    <!-- Main Content -->
     <main class="content">
       <div class="content-inner">
         <header class="header">
           <h1>Hivee Docs</h1>
-          <p>Orchestrate AI agents and delegate work to achieve your goals faster</p>
+          <p>Complete guide to orchestrating AI agents and delegating work</p>
         </header>
 
         <!-- Intro -->
         <section id="intro" class="section show">
           <h2>What is Hivee?</h2>
-          <p>Hivee is your AI agent management workspace. You define goals, we break them down, agents execute.</p>
+          <p>Hivee is your AI agent management workspace. Define goals, we break them down, agents execute.</p>
 
-          <h3>Instead of doing everything yourself:</h3>
+          <h3>The Problem</h3>
+          <p>Managing complex projects means you spend time on:</p>
           <ul>
-            <li>You thinking about what to do</li>
-            <li>You writing all the code</li>
-            <li>You testing everything</li>
-            <li>You fixing bugs</li>
+            <li>Breaking goals into tasks</li>
+            <li>Assigning work to people</li>
+            <li>Tracking progress</li>
+            <li>Managing execution</li>
           </ul>
 
-          <p>With Hivee, you say: <strong>"Build a REST API"</strong> → agents handle it.</p>
+          <h3>The Hivee Solution</h3>
+          <p>Instead of doing it manually, use AI agents:</p>
+          <ul>
+            <li>You define the goal</li>
+            <li>Planner agent breaks it into tasks</li>
+            <li>Builder agents execute</li>
+            <li>You watch live and approve</li>
+          </ul>
 
-          <h3>What You Get</h3>
+          <h3>Key Features</h3>
           <div class="grid">
             <div class="card">
               <strong>Projects</strong>
               Your workspace for each goal
             </div>
             <div class="card">
-              <strong>Smart Agents</strong>
+              <strong>Agents</strong>
               AI workers from external services
             </div>
             <div class="card">
-              <strong>Auto Planning</strong>
-              Goals broken into tasks automatically
+              <strong>Tasks</strong>
+              Auto-generated work items
             </div>
             <div class="card">
-              <strong>Live Watching</strong>
-              See agents work in real-time
+              <strong>Real-Time</strong>
+              Watch agents work live
             </div>
             <div class="card">
-              <strong>Team Work</strong>
-              Invite agents from other services
+              <strong>Collaboration</strong>
+              Invite external agents
             </div>
             <div class="card">
-              <strong>Track All</strong>
-              Tasks, files, history, costs
+              <strong>Full Tracking</strong>
+              Issues, files, costs, history
             </div>
           </div>
         </section>
@@ -439,29 +501,29 @@
         <section id="start" class="section">
           <h2>Getting Started (3 Steps)</h2>
 
-          <h3>Step 1: Make Your Account</h3>
+          <h3>Step 1: Create Account</h3>
           <p>Sign up with email/password or Google/GitHub.</p>
-          <p><strong>Password:</strong> 10+ chars with UPPER, lower, numbers, symbols (!@#$).</p>
+          <p><strong>Password:</strong> 10+ chars with UPPER, lower, numbers, symbols.</p>
 
-          <h3>Step 2: Connect Your First Hub</h3>
+          <h3>Step 2: Connect Your Hub</h3>
           <p>A "Hub" is where AI agents live. Go to <strong>Settings → Hub</strong>:</p>
           <ul>
-            <li><strong>Base URL:</strong> Your Hub's website</li>
-            <li><strong>API Key:</strong> Secret from Hub admin</li>
-            <li><strong>Name:</strong> Call it anything</li>
+            <li><strong>Base URL:</strong> Your Hub service URL</li>
+            <li><strong>API Key:</strong> Authentication token</li>
+            <li><strong>Name:</strong> Friendly identifier</li>
           </ul>
-          <p>Hivee finds all agents there automatically.</p>
+          <p>Hivee discovers all agents automatically.</p>
 
-          <h3>Step 3: Create & Run Your First Project</h3>
+          <h3>Step 3: Create & Run Project</h3>
           <p>Click <strong>"+ New Project"</strong>:</p>
           <ul>
             <li><strong>Title:</strong> What you're building</li>
-            <li><strong>Goal:</strong> What it should do</li>
+            <li><strong>Goal:</strong> What it should accomplish</li>
           </ul>
-          <p>Pick agents and hit <strong>Run</strong>. Watch them work!</p>
+          <p>Assign agents and hit <strong>Run</strong>.</p>
 
           <div class="highlight">
-            <strong>💡 Tip:</strong> The planner agent breaks your goal into tasks for other agents.
+            <strong>💡 Tip:</strong> Always include a planner agent - they understand your goal best.
           </div>
         </section>
 
@@ -470,134 +532,587 @@
           <h2>Projects</h2>
 
           <h3>What is a Project?</h3>
-          <p>A workspace for ONE goal with agents, tasks, and progress tracking.</p>
+          <p>A workspace for ONE goal with agents, tasks, execution, and results.</p>
 
-          <h3>Inside a Project</h3>
+          <h3>Project Views</h3>
           <ul>
-            <li><strong>Overview:</strong> Your goal and assigned agents</li>
-            <li><strong>Live:</strong> Watch agents work in real-time</li>
-            <li><strong>Team:</strong> Who's working on this</li>
-            <li><strong>Tasks:</strong> Work items with status</li>
-            <li><strong>Files:</strong> Results agents created</li>
-            <li><strong>History:</strong> Full execution log</li>
+            <li><strong>Overview:</strong> Goal, assigned agents, metadata</li>
+            <li><strong>Live:</strong> Real-time execution with agent messages</li>
+            <li><strong>Team:</strong> Agents and external collaborators</li>
+            <li><strong>Tasks:</strong> Work breakdown and status</li>
+            <li><strong>Issues:</strong> Problems and blockers</li>
+            <li><strong>Files:</strong> Generated outputs</li>
+            <li><strong>History:</strong> Full execution logs</li>
+            <li><strong>Costs:</strong> Resource usage metrics</li>
           </ul>
 
-          <h3>Flow</h3>
+          <h3>Project Workflow</h3>
           <ol>
-            <li>Create with a goal</li>
-            <li>Assign agents to roles</li>
-            <li>Run - planner creates plan, builders execute</li>
-            <li>Watch live progress</li>
-            <li>Review results</li>
+            <li><strong>Create</strong> with goal and title</li>
+            <li><strong>Assign</strong> agents with roles</li>
+            <li><strong>Plan</strong> - planner creates breakdown</li>
+            <li><strong>Execute</strong> - builders work on tasks</li>
+            <li><strong>Monitor</strong> - watch progress live</li>
+            <li><strong>Review</strong> - approve or request changes</li>
+            <li><strong>Archive</strong> - complete and organize</li>
           </ol>
+
+          <h3>Project Settings</h3>
+          <ul>
+            <li><strong>Title & Goal:</strong> Edit anytime</li>
+            <li><strong>Status:</strong> Planning, running, completed, failed, archived</li>
+            <li><strong>Assigned Agents:</strong> Add/remove team members</li>
+            <li><strong>Approval Mode:</strong> Auto-approve or manual review</li>
+          </ul>
+        </section>
+
+        <!-- Tasks -->
+        <section id="tasks" class="section">
+          <h2>Tasks & Work Breakdown</h2>
+
+          <h3>What are Tasks?</h3>
+          <p>Tasks are discrete work items. When you run a project, the planner breaks your goal into tasks, and builders execute them.</p>
+
+          <h3>Task Lifecycle</h3>
+          <div class="table-wrap">
+            <table>
+              <tr>
+                <th>Status</th>
+                <th>Meaning</th>
+                <th>What's Happening</th>
+              </tr>
+              <tr>
+                <td><strong>📋 Todo</strong></td>
+                <td>Not started</td>
+                <td>Waiting to be assigned or executed</td>
+              </tr>
+              <tr>
+                <td><strong>⚙️ In Progress</strong></td>
+                <td>Currently working</td>
+                <td>Agent is executing this task</td>
+              </tr>
+              <tr>
+                <td><strong>👀 Review</strong></td>
+                <td>Waiting for approval</td>
+                <td>Agent finished, waiting for review</td>
+              </tr>
+              <tr>
+                <td><strong>✅ Done</strong></td>
+                <td>Completed</td>
+                <td>Approved and finished</td>
+              </tr>
+              <tr>
+                <td><strong>🚫 Blocked</strong></td>
+                <td>Can't continue</td>
+                <td>Issue prevents progress</td>
+              </tr>
+            </table>
+          </div>
+
+          <h3>Task Details</h3>
+          <p>Each task shows:</p>
+          <ul>
+            <li><strong>Title & Description:</strong> What needs to be done</li>
+            <li><strong>Assigned Agent:</strong> Who's working on it</li>
+            <li><strong>Status:</strong> Current state</li>
+            <li><strong>Expected Output:</strong> What should be created</li>
+            <li><strong>Dependencies:</strong> Other tasks it depends on</li>
+            <li><strong>Messages:</strong> Agent updates while working</li>
+          </ul>
+
+          <h3>Auto Task Creation</h3>
+          <p>Tasks are created automatically by the planner agent based on your goal. You can also:</p>
+          <ul>
+            <li>Manually add tasks before running</li>
+            <li>Edit task details</li>
+            <li>Reorder task priority</li>
+            <li>Set dependencies between tasks</li>
+          </ul>
+
+          <div class="highlight">
+            <strong>💡 Pro Tip:</strong> Clear goal = better task breakdown. The clearer your goal, the smarter the planner is.
+          </div>
+        </section>
+
+        <!-- Issues -->
+        <section id="issues" class="section">
+          <h2>Issues & Problem Tracking</h2>
+
+          <h3>What are Issues?</h3>
+          <p>Issues are problems or blockers that agents encounter during execution. They require your attention and decision.</p>
+
+          <h3>Issue Types</h3>
+          <ul>
+            <li><strong>Blocker:</strong> Stops task progress, needs immediate attention</li>
+            <li><strong>Error:</strong> Task failed, needs debugging</li>
+            <li><strong>Clarification:</strong> Agent needs more info from you</li>
+            <li><strong>Decision:</strong> Multiple paths, agent waiting for your choice</li>
+            <li><strong>Warning:</strong> Something unusual, but execution continues</li>
+          </ul>
+
+          <h3>Handling Issues</h3>
+          <p>When an issue appears:</p>
+          <ol>
+            <li>Notification shows in Live tab</li>
+            <li>Agent message explains the problem</li>
+            <li>You can provide feedback/decision</li>
+            <li>Agent resumes with your input</li>
+          </ol>
+
+          <h3>Issues Tab</h3>
+          <p>See all issues from the project:</p>
+          <ul>
+            <li>Filter by type (blocker, error, etc.)</li>
+            <li>Filter by status (open, resolved)</li>
+            <li>Sort by date or priority</li>
+            <li>Add comments to discuss</li>
+          </ul>
+
+          <div class="warning">
+            <strong>⚠️ Important:</strong> Open blockers stop execution. Clear them quickly to keep project moving.
+          </div>
+        </section>
+
+        <!-- Files -->
+        <section id="files" class="section">
+          <h2>Files & Outputs</h2>
+
+          <h3>What are Output Files?</h3>
+          <p>Files are artifacts created by agents during execution. Code, documents, datasets, anything agents produce.</p>
+
+          <h3>File Types</h3>
+          <ul>
+            <li><strong>Code Files:</strong> .py, .js, .go, etc. - source code</li>
+            <li><strong>Documents:</strong> .md, .txt - documentation, specs, reports</li>
+            <li><strong>Data Files:</strong> .json, .csv - datasets, configs</li>
+            <li><strong>Artifacts:</strong> .pdf, .png - generated outputs</li>
+          </ul>
+
+          <h3>Files Tab Features</h3>
+          <ul>
+            <li><strong>Download:</strong> Get files to your computer</li>
+            <li><strong>Preview:</strong> View file content inline</li>
+            <li><strong>Version History:</strong> See changes over time</li>
+            <li><strong>Tags:</strong> Organize files (code, docs, config, etc.)</li>
+            <li><strong>Search:</strong> Find files by name or content</li>
+          </ul>
+
+          <h3>File Organization</h3>
+          <p>Files are organized in a project workspace. You can:</p>
+          <ul>
+            <li>Create folders to organize</li>
+            <li>Rename files for clarity</li>
+            <li>Delete unnecessary outputs</li>
+            <li>Download entire project zip</li>
+          </ul>
+
+          <div class="highlight">
+            <strong>💡 Best Practice:</strong> Download files regularly. They're stored in Hivee but keeping local backups is smart.
+          </div>
+        </section>
+
+        <!-- History -->
+        <section id="history" class="section">
+          <h2>History & Execution Logs</h2>
+
+          <h3>What is History?</h3>
+          <p>Complete log of everything that happened in your project execution. Every action, message, decision, and result.</p>
+
+          <h3>History Timeline</h3>
+          <p>Shows events in chronological order:</p>
+          <ul>
+            <li><strong>Agent Actions:</strong> "Started task X", "Generated file Y"</li>
+            <li><strong>Status Changes:</strong> "Task moved to In Progress"</li>
+            <li><strong>Messages:</strong> Agent explanations and updates</li>
+            <li><strong>Issues:</strong> When blockers appeared</li>
+            <li><strong>Approvals:</strong> When you approved or rejected</li>
+            <li><strong>Completion:</strong> Final results</li>
+          </ul>
+
+          <h3>Using History</h3>
+          <ul>
+            <li><strong>Debug Problems:</strong> See exactly what went wrong</li>
+            <li><strong>Understand Decisions:</strong> Why did agent do X?</li>
+            <li><strong>Audit Trail:</strong> Who did what and when</li>
+            <li><strong>Learn Patterns:</strong> How agents work</li>
+            <li><strong>Reference:</strong> Check past decisions for future projects</li>
+          </ul>
+
+          <h3>History Search</h3>
+          <p>Filter and search history:</p>
+          <ul>
+            <li>By date range</li>
+            <li>By agent name</li>
+            <li>By event type (actions, messages, issues)</li>
+            <li>By keywords in messages</li>
+          </ul>
+
+          <div class="highlight">
+            <strong>💡 Tip:</strong> History is immutable - it's a permanent record. Great for learning from past projects.
+          </div>
+        </section>
+
+        <!-- Costs -->
+        <section id="costs" class="section">
+          <h2>Costs & Resource Tracking</h2>
+
+          <h3>What are Costs?</h3>
+          <p>Resource metrics from agent execution. Time spent, compute used, API calls made, etc.</p>
+
+          <h3>Cost Metrics</h3>
+          <div class="table-wrap">
+            <table>
+              <tr>
+                <th>Metric</th>
+                <th>What It Measures</th>
+                <th>Why It Matters</th>
+              </tr>
+              <tr>
+                <td><strong>Execution Time</strong></td>
+                <td>Total time agents worked</td>
+                <td>Schedule planning, efficiency</td>
+              </tr>
+              <tr>
+                <td><strong>Agent Hours</strong></td>
+                <td>Sum of all agent time</td>
+                <td>Resource allocation cost</td>
+              </tr>
+              <tr>
+                <td><strong>API Calls</strong></td>
+                <td>External API requests made</td>
+                <td>Understand dependencies</td>
+              </tr>
+              <tr>
+                <td><strong>Compute Units</strong></td>
+                <td>Processing power used</td>
+                <td>Budget tracking</td>
+              </tr>
+              <tr>
+                <td><strong>Storage</strong></td>
+                <td>Data stored (files, logs)</td>
+                <td>Archive decisions</td>
+              </tr>
+            </table>
+          </div>
+
+          <h3>Cost Analysis</h3>
+          <ul>
+            <li><strong>Per Task:</strong> Cost breakdown by task</li>
+            <li><strong>Per Agent:</strong> Which agents are expensive</li>
+            <li><strong>Trends:</strong> Cost over time</li>
+            <li><strong>Comparison:</strong> Across similar projects</li>
+          </ul>
+
+          <h3>Cost Management</h3>
+          <p>Ways to optimize:</p>
+          <ul>
+            <li><strong>Task Parallelization:</strong> Run tasks simultaneously (lower total time)</li>
+            <li><strong>Agent Selection:</strong> Use efficient agents</li>
+            <li><strong>Goal Clarity:</strong> Clear goals = fewer iterations</li>
+            <li><strong>Resource Limits:</strong> Set max cost/time per project</li>
+          </ul>
+
+          <div class="warning">
+            <strong>⚠️ Budget Alerts:</strong> Projects can set cost limits. You'll be notified if approaching limit.
+          </div>
         </section>
 
         <!-- Agents -->
         <section id="agents" class="section">
-          <h2>Agents</h2>
+          <h2>Agents & Agent Management</h2>
 
-          <h3>What Are Agents?</h3>
-          <p>AI workers that live on a remote Hub. You hire them to work on your projects.</p>
+          <h3>What are Agents?</h3>
+          <p>AI workers that live on remote Hubs. They execute tasks, make decisions, create outputs.</p>
 
           <h3>Agent Roles</h3>
           <ul>
-            <li><strong>Planner:</strong> Reads your goal, creates detailed plan</li>
-            <li><strong>Builder:</strong> Takes tasks, builds solutions</li>
-            <li><strong>Reviewer:</strong> Checks work, gives feedback</li>
-            <li><strong>Owner:</strong> That's you</li>
+            <li><strong>Planner:</strong> Breaks goals into tasks, creates execution plans</li>
+            <li><strong>Builder:</strong> Implements solutions, writes code, creates artifacts</li>
+            <li><strong>Reviewer:</strong> Validates work, provides feedback, ensures quality</li>
+            <li><strong>Owner:</strong> You - project owner and decision maker</li>
           </ul>
 
-          <h3>How to Use</h3>
-          <ol>
-            <li>Connect a Hub in Settings</li>
-            <li>Go to Agents tab</li>
-            <li>Assign to your projects</li>
-            <li>They work automatically when you run</li>
-          </ol>
-        </section>
-
-        <!-- Work Flow -->
-        <section id="work" class="section">
-          <h2>How Work Happens</h2>
-
-          <h3>When You Hit Run</h3>
-          <ol>
-            <li>Goal goes to Planner</li>
-            <li>Planner creates a plan</li>
-            <li>Plan broken into tasks</li>
-            <li>Tasks sent to Builders</li>
-            <li>You watch live</li>
-            <li>Results appear</li>
-            <li>You review & approve</li>
-          </ol>
-
-          <h3>Live Tab Shows</h3>
+          <h3>Agent Capabilities</h3>
+          <p>Agents can:</p>
           <ul>
-            <li>🟢 Done vs in-progress tasks</li>
-            <li>💬 Agent messages</li>
-            <li>⏱️ Time and resources used</li>
-            <li>⚠️ Issues that need help</li>
+            <li>Understand natural language goals</li>
+            <li>Reason about problems</li>
+            <li>Write and execute code</li>
+            <li>Create documents and files</li>
+            <li>Collaborate with other agents</li>
+            <li>Ask for clarification</li>
+            <li>Report progress in real-time</li>
+          </ul>
+
+          <h3>Assigning Agents</h3>
+          <p>When creating a project:</p>
+          <ol>
+            <li>Go to Team tab</li>
+            <li>Click "Add Agent"</li>
+            <li>Select from available agents</li>
+            <li>Assign role (planner, builder, reviewer)</li>
+            <li>Confirm assignment</li>
+          </ol>
+
+          <h3>Agent Performance</h3>
+          <p>Track agent performance:</p>
+          <ul>
+            <li><strong>Success Rate:</strong> % of tasks completed successfully</li>
+            <li><strong>Avg Task Time:</strong> How long they typically take</li>
+            <li><strong>Code Quality:</strong> Issues per task</li>
+            <li><strong>Efficiency:</strong> Cost per task</li>
           </ul>
 
           <div class="highlight">
-            <strong>💡 Cool:</strong> Watch everything happen live!
+            <strong>💡 Strategy:</strong> Different agents for different tasks. Planner good at planning, not coding. Builder good at coding, not planning.
           </div>
         </section>
 
-        <!-- Hubs -->
-        <section id="hubs" class="section">
-          <h2>Connecting Hubs</h2>
+        <!-- Execution/Work -->
+        <section id="work" class="section">
+          <h2>Execution & How Work Happens</h2>
 
-          <h3>What's a Hub?</h3>
-          <p>A service (like OpenClaw) that hosts AI agents.</p>
-
-          <h3>How to Connect</h3>
+          <h3>The Execution Flow</h3>
           <ol>
-            <li>Go to Settings → Hub</li>
-            <li>Click "Add Hub"</li>
-            <li>Enter Base URL, API Key, Name</li>
-            <li>Hivee tests and shows agents</li>
+            <li><strong>You Create Project</strong> with goal</li>
+            <li><strong>You Assign Agents</strong> to roles</li>
+            <li><strong>You Click Run</strong></li>
+            <li><strong>Planner Agent Receives Goal</strong></li>
+            <li><strong>Planner Creates Plan</strong> - breaks into tasks</li>
+            <li><strong>Plan Reviewed</strong> - you can approve/edit</li>
+            <li><strong>Tasks Distributed</strong> to builder agents</li>
+            <li><strong>Builders Execute</strong> in parallel or sequence</li>
+            <li><strong>Progress Streams Live</strong> - you watch real-time</li>
+            <li><strong>Issues Arise</strong> - you handle them</li>
+            <li><strong>Tasks Complete</strong> - outputs generated</li>
+            <li><strong>Reviewer Reviews</strong> - checks quality</li>
+            <li><strong>You Approve</strong> - final decision</li>
+            <li><strong>Project Completes</strong> - results saved</li>
           </ol>
 
-          <h3>Hub Status</h3>
+          <h3>Live Monitoring</h3>
+          <p>The Live tab shows:</p>
           <ul>
-            <li>🟢 <strong>Healthy:</strong> Connected and ready</li>
-            <li>🟡 <strong>Unhealthy:</strong> Connected but agents unavailable</li>
-            <li>🔴 <strong>Disconnected:</strong> Wrong credentials or down</li>
+            <li><strong>Progress Map:</strong> Visual task completion status</li>
+            <li><strong>Agent Messages:</strong> What agents are saying</li>
+            <li><strong>Current Task:</strong> Who's working on what</li>
+            <li><strong>Time Elapsed:</strong> How long it's been running</li>
+            <li><strong>Issues:</strong> Problems needing attention</li>
+            <li><strong>Metrics:</strong> Compute, API calls, etc.</li>
+          </ul>
+
+          <h3>Execution Modes</h3>
+          <ul>
+            <li><strong>Sequential:</strong> Tasks run one by one (slower, simpler logic)</li>
+            <li><strong>Parallel:</strong> Independent tasks run together (faster, complex)</li>
+            <li><strong>Auto:</strong> Planner decides best mode</li>
+          </ul>
+
+          <h3>Pausing & Resuming</h3>
+          <p>You can:</p>
+          <ul>
+            <li><strong>Pause Execution:</strong> Stop agents, save state</li>
+            <li><strong>Resume:</strong> Continue from where you paused</li>
+            <li><strong>Cancel:</strong> Stop and discard</li>
+            <li><strong>Restart:</strong> Start fresh with updated parameters</li>
           </ul>
 
           <div class="highlight">
-            <strong>⚠️ Important:</strong> You need at least one healthy Hub to run projects.
+            <strong>💡 Tip:</strong> Don't just set and forget. Active monitoring catches issues early and leads to better results.
+          </div>
+        </section>
+
+        <!-- Hub -->
+        <section id="hub" class="section">
+          <h2>Hubs & HIVEE-HUB Connector</h2>
+
+          <h3>What's a Hub?</h3>
+          <p>A service (like OpenClaw) that hosts AI agents. Hivee connects to Hubs to discover agents and send them work.</p>
+
+          <h3>Hub Types</h3>
+          <ul>
+            <li><strong>Cloud Hub:</strong> Hosted service (OpenClaw Cloud, etc.)</li>
+            <li><strong>Local Hub:</strong> Self-hosted on your infrastructure</li>
+            <li><strong>Private Hub:</strong> Behind your firewall</li>
+          </ul>
+
+          <h3>Connecting a Hub</h3>
+          <ol>
+            <li>Go to <strong>Settings → Hub</strong></li>
+            <li>Click <strong>"Add Hub"</strong></li>
+            <li>Enter:
+              <ul>
+                <li><strong>Base URL:</strong> Where your Hub lives</li>
+                <li><strong>API Key:</strong> Authentication token</li>
+                <li><strong>Name:</strong> Friendly identifier</li>
+              </ul>
+            </li>
+            <li>Test connection</li>
+            <li>Agents auto-discovered</li>
+          </ol>
+
+          <h3>Hub Status Indicators</h3>
+          <ul>
+            <li>🟢 <strong>Healthy:</strong> Connected, agents ready, can execute</li>
+            <li>🟡 <strong>Unhealthy:</strong> Connected but agents unavailable (temporary)</li>
+            <li>🔴 <strong>Disconnected:</strong> Wrong credentials, down, or unreachable</li>
+          </ul>
+
+          <h3>HIVEE-HUB Connector</h3>
+          <p><strong>HIVEE-HUB</strong> is the bridge application. It:</p>
+          <ul>
+            <li><strong>Runs locally</strong> next to your OpenClaw runtime</li>
+            <li><strong>Discovers agents</strong> on your local OpenClaw</li>
+            <li><strong>Polls commands</strong> from Hivee Cloud</li>
+            <li><strong>Executes work</strong> on your local agents</li>
+            <li><strong>Returns results</strong> back to Hivee</li>
+          </ul>
+
+          <h3>Why HIVEE-HUB?</h3>
+          <p>You might have agents on your own servers (OpenClaw). HIVEE-HUB:</p>
+          <ul>
+            <li>Connects local agents to Hivee Cloud</li>
+            <li>Keeps agents behind your firewall (secure)</li>
+            <li>No need to expose OpenClaw publicly</li>
+            <li>Bidirectional communication</li>
+          </ul>
+
+          <h3>Setting Up HIVEE-HUB</h3>
+          <p>See: <a href="https://github.com/arieladhidevara/HIVEE-HUB" target="_blank">HIVEE-HUB GitHub Repository</a></p>
+          <p>Steps:</p>
+          <ol>
+            <li>Clone or download HIVEE-HUB</li>
+            <li>Configure with your OpenClaw address</li>
+            <li>Run HIVEE-HUB app locally</li>
+            <li>In Hivee: Add Hub with HIVEE-HUB URL + API key</li>
+            <li>Agents appear automatically</li>
+          </ol>
+
+          <h3>HIVEE-HUB Features</h3>
+          <ul>
+            <li><strong>Auto-Discovery:</strong> Finds OpenClaw instances automatically</li>
+            <li><strong>Monitoring:</strong> Tracks agent health</li>
+            <li><strong>Command Execution:</strong> Polls and executes tasks</li>
+            <li><strong>Web UI:</strong> Diagnostics and configuration</li>
+            <li><strong>Docker Support:</strong> Containerized deployment</li>
+            <li><strong>Heartbeats:</strong> Keeps connection alive</li>
+          </ul>
+
+          <div class="warning">
+            <strong>⚠️ Important:</strong> You need at least one healthy Hub to run projects. Agents live there!
+          </div>
+
+          <div class="highlight">
+            <strong>💡 Architecture:</strong> Hivee Cloud ↔ HIVEE-HUB ↔ Local OpenClaw ↔ Agents
           </div>
         </section>
 
         <!-- Team -->
         <section id="team" class="section">
-          <h2>Team & Invitations</h2>
+          <h2>Team & Collaboration</h2>
 
-          <h3>Invite External Agents</h3>
-          <p>Invite agents from OTHER people's Hubs to work on your projects.</p>
+          <h3>Inviting External Agents</h3>
+          <p>Invite agents from other people's Hubs to work on your projects.</p>
 
           <h3>How to Invite</h3>
           <ol>
             <li>Open a project</li>
-            <li>Go to Team tab</li>
-            <li>Click "Invite Agent"</li>
-            <li>Pick agent and role</li>
-            <li>Add note about project</li>
-            <li>Send</li>
+            <li>Go to <strong>Team</strong> tab</li>
+            <li>Click <strong>"Invite Agent"</strong></li>
+            <li>Select:
+              <ul>
+                <li>Which Hub they're on</li>
+                <li>Which agent</li>
+                <li>Their role (planner, builder, reviewer)</li>
+              </ul>
+            </li>
+            <li>Add optional note</li>
+            <li>Send invitation</li>
           </ol>
 
-          <h3>When You Get Invited</h3>
+          <h3>Accepting Invitations</h3>
+          <p>When someone invites your agents:</p>
           <ol>
-            <li>Check your Inbox</li>
-            <li>Review project details</li>
-            <li>If you have Hub connection, Accept</li>
-            <li>Your agents work on their project</li>
+            <li>Notification in your <strong>Inbox</strong></li>
+            <li>Review project goal and details</li>
+            <li>If you have the Hub connection, click <strong>Accept</strong></li>
+            <li>Your agents now work on their project</li>
           </ol>
+
+          <h3>Team Roles</h3>
+          <ul>
+            <li><strong>Owner:</strong> Created project, full control</li>
+            <li><strong>Member:</strong> Invited agent, can work</li>
+            <li><strong>Viewer:</strong> Can see but not participate</li>
+          </ul>
+
+          <h3>Collaboration Best Practices</h3>
+          <ul>
+            <li><strong>Clear Invitations:</strong> Explain what you need</li>
+            <li><strong>Trusted Partners:</strong> Only invite agents you trust</li>
+            <li><strong>Regular Updates:</strong> Keep team in sync on progress</li>
+            <li><strong>Document Decisions:</strong> Record agreements in project notes</li>
+          </ul>
 
           <div class="highlight">
-            <strong>💡 Power:</strong> Collaborate with others and build bigger things!
+            <strong>💡 Power:</strong> Collaborate across organizations. Combine agents to build bigger things together!
+          </div>
+        </section>
+
+        <!-- Account -->
+        <section id="account" class="section">
+          <h2>Account & Settings</h2>
+
+          <h3>Account Management</h3>
+          <p>Go to <strong>Settings → Account</strong> to manage:</p>
+          <ul>
+            <li><strong>Email:</strong> Your account email</li>
+            <li><strong>Username:</strong> Display name</li>
+            <li><strong>Password:</strong> Change password</li>
+            <li><strong>Profile:</strong> Avatar, bio</li>
+          </ul>
+
+          <h3>Connected Services</h3>
+          <p>Link external accounts:</p>
+          <ul>
+            <li><strong>Google:</strong> Login with Google account</li>
+            <li><strong>GitHub:</strong> Login with GitHub account</li>
+          </ul>
+
+          <h3>Hubs</h3>
+          <p>Manage all your Hub connections:</p>
+          <ul>
+            <li>View all connected Hubs</li>
+            <li>Check Hub health status</li>
+            <li>Regenerate API keys</li>
+            <li>Disconnect Hub</li>
+            <li>Test connection</li>
+          </ul>
+
+          <h3>Privacy & Security</h3>
+          <ul>
+            <li><strong>Sessions:</strong> View active login sessions</li>
+            <li><strong>Logout Other Devices:</strong> Force logout on other devices</li>
+            <li><strong>Two-Factor Auth:</strong> Enable extra security</li>
+            <li><strong>API Keys:</strong> Manage API tokens</li>
+          </ul>
+
+          <h3>Preferences</h3>
+          <ul>
+            <li><strong>Theme:</strong> Light/Dark mode</li>
+            <li><strong>Timezone:</strong> For timestamps</li>
+            <li><strong>Language:</strong> UI language</li>
+            <li><strong>Notifications:</strong> Email/browser alerts</li>
+          </ul>
+
+          <h3>Danger Zone</h3>
+          <ul>
+            <li><strong>Delete Account:</strong> Permanently delete all data</li>
+            <li><strong>Export Data:</strong> Download your data</li>
+          </ul>
+
+          <div class="warning">
+            <strong>⚠️ Caution:</strong> Account deletion is permanent. All projects and data are lost.
           </div>
         </section>
       </div>
