@@ -241,9 +241,12 @@ async def connector_chat_sync(
                 return {
                     "ok": False,
                     "error": "Connector went offline while waiting for agent response.",
+                    "error_code": "connector_offline",
                     "transport": "connector",
                     "connector_id": connector_id,
                     "command_id": command_id,
+                    "project_id": project_id or "",
+                    "agent_id": str(agent_id or "").strip(),
                 }
 
         result = latest_connector_result(command_id)
@@ -304,6 +307,7 @@ async def connector_chat_sync(
     return {
         "ok": False,
         "error": f"Connector chat timed out after {timeout_sec}s. The connector may be busy or offline.",
+        "error_code": "delivery_timeout",
         "transport": "connector",
         "connector_id": connector_id,
         "command_id": command_id,

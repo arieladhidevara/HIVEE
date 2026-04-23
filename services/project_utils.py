@@ -1593,12 +1593,12 @@ async def _dispatch_chat_mention_to_connector(
             resolved_workspace_root = ""
 
     try:
-        await connector_chat_sync(
+        dispatch_res = await connector_chat_sync(
             connector_id=connector_id,
             message=notification,
             agent_id=target,
             session_key=dispatch_session_key,
-            timeout_sec=30,
+            timeout_sec=None,
             from_agent_id=from_agent_id,
             from_label=from_label,
             context_type="mention",
@@ -1609,6 +1609,39 @@ async def _dispatch_chat_mention_to_connector(
             project_root=resolved_project_root,
             workspace_root=resolved_workspace_root,
         )
+        if not dispatch_res.get("ok") and project_owner_user_id and project_root:
+            err_text = detail_to_text(dispatch_res.get("error") or dispatch_res.get("details") or "Mention delivery failed")[:900]
+            err_low = err_text.lower()
+            event_type = "connector.offline" if "offline" in err_low or str(dispatch_res.get("error_code") or "") == "connector_offline" else "connector.delivery_failed"
+            conn = db()
+            try:
+                _append_project_activity_log_entry(
+                    conn,
+                    project_id=project_id,
+                    actor_type="system",
+                    actor_id="hivee",
+                    actor_label="Hivee",
+                    event_type=event_type,
+                    summary=f"Mention delivery warning for @{target}: {err_text[:180]}",
+                    payload={
+                        "target": target,
+                        "context_type": "mention",
+                        "session_key": dispatch_session_key,
+                        "error": err_text,
+                        "error_code": str(dispatch_res.get("error_code") or "")[:120] or None,
+                        "command_id": str(dispatch_res.get("command_id") or "") or None,
+                    },
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            _append_project_daily_log(
+                owner_user_id=project_owner_user_id,
+                project_root=project_root,
+                kind=event_type,
+                text=f"Mention delivery warning for @{target}: {err_text}",
+                payload={"target": target, "command_id": str(dispatch_res.get("command_id") or "") or None},
+            )
     except Exception as exc:
         print(f"[mention_dispatch] Failed to dispatch @{target} in project {project_id}: {exc}", flush=True)
 

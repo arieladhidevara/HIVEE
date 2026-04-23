@@ -262,6 +262,39 @@ def _write_execution_kickoff_artifact(
     )
 
 
+BACKGROUND_PROJECT_CHAT_CONTEXTS = {
+    "plan_generation",
+    "project_info",
+    "delegation",
+    "delegation_execution_contract",
+    "subplan",
+    "subplan_review",
+    "task_execution",
+    "task_execution_contract",
+    "agent_onboarding",
+    "mention",
+}
+
+
+def _project_chat_effective_timeout(timeout_sec: Optional[int], context_type: Optional[str]) -> Optional[int]:
+    ctx = str(context_type or "").strip().lower()
+    if ctx in BACKGROUND_PROJECT_CHAT_CONTEXTS:
+        return None
+    return timeout_sec
+
+
+def _connector_wait_failure_kind(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return "connector.delivery_failed"
+    code = str(payload.get("error_code") or "").strip().lower()
+    err = detail_to_text(payload.get("error") or payload.get("details") or "").lower()
+    if code == "connector_offline" or "went offline" in err or "no live hivee hub" in err:
+        return "connector.offline"
+    if code == "delivery_timeout" or "timed out after" in err:
+        return "connector.delivery_timeout"
+    return "connector.delivery_failed"
+
+
 def _read_project_delegation_state(project_id: str) -> Dict[str, Any]:
     conn = db()
     try:
@@ -1996,7 +2029,7 @@ async def openclaw_chat(
     max_output_tokens: Optional[int] = None,
     session_key: Optional[str] = None,
     user_id: Optional[str] = None,
-    timeout_sec: int = 90,
+    timeout_sec: Optional[int] = 90,
 ) -> Dict[str, Any]:
     cap = _to_int(max_output_tokens) if max_output_tokens is not None else 0
     if cap <= 0:
@@ -2128,7 +2161,7 @@ async def openclaw_chat(
                     message=message,
                     agent_id=agent_id,
                     session_key=session_key,
-                    timeout_sec=max(timeout_sec, 90),
+                    timeout_sec=None if timeout_sec is None else max(timeout_sec, 90),
                 )
                 if connector_res.get("ok"):
                     return connector_res
@@ -2232,7 +2265,7 @@ async def openclaw_ws_chat(
     message: str,
     agent_id: Optional[str] = None,
     session_key: str = "main",
-    timeout_sec: int = 25,
+    timeout_sec: Optional[int] = 25,
     user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     # HTTP-only mode: keep function name for backward compatibility with existing callers.
@@ -2407,6 +2440,7 @@ async def _project_chat(
             resolved_workspace_root = _user_workspace_root_dir(owner_user_id).resolve().as_posix()
         except Exception:
             resolved_workspace_root = ""
+    effective_timeout_sec = _project_chat_effective_timeout(timeout_sec, context_type)
 
     should_log_hivee_dispatch = (
         bool(project_id)
@@ -2433,6 +2467,8 @@ async def _project_chat(
                 "context_type": str(context_type or "").strip() or "message",
                 "agent_id": str(agent_id or "").strip() or None,
                 "from_label": str(from_label or "Hivee System").strip() or "Hivee System",
+                "requested_timeout_sec": timeout_sec,
+                "effective_timeout_sec": effective_timeout_sec,
             },
         )
 
@@ -2441,7 +2477,7 @@ async def _project_chat(
         message=message,
         agent_id=agent_id,
         session_key=session_key,
-        timeout_sec=timeout_sec,
+        timeout_sec=effective_timeout_sec,
         from_agent_id=from_agent_id or "hivee",
         from_label=from_label or "Hivee",
         context_type=context_type or "message",
@@ -2477,8 +2513,32 @@ async def _project_chat(
                 "agent_id": str(agent_id or "").strip() or None,
                 "ok": bool(res.get("ok")),
                 "error": str(res.get("error") or "")[:500] or None,
+                "error_code": str(res.get("error_code") or "")[:120] or None,
+                "requested_timeout_sec": timeout_sec,
+                "effective_timeout_sec": effective_timeout_sec,
             },
         )
+        if not res.get("ok"):
+            failure_kind = _connector_wait_failure_kind(res)
+            failure_text = detail_to_text(res.get("error") or res.get("details") or "Connector delivery failed")[:900]
+            _append_project_activity(
+                project_id=project_id,
+                actor_type="system",
+                actor_id="hivee",
+                actor_label="Hivee",
+                event_type=failure_kind,
+                summary=f"{failure_kind.replace('.', ' ')}: {failure_text[:180]}",
+                payload={
+                    "context_type": str(context_type or "").strip() or "message",
+                    "session_key": str(session_key or "").strip(),
+                    "agent_id": str(agent_id or "").strip() or None,
+                    "error": failure_text,
+                    "error_code": str(res.get("error_code") or "")[:120] or None,
+                    "command_id": str(res.get("command_id") or "") or None,
+                    "requested_timeout_sec": timeout_sec,
+                    "effective_timeout_sec": effective_timeout_sec,
+                },
+            )
     return res
 async def _ensure_project_info_document(
     project_id: str,
@@ -3977,7 +4037,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             retry_instruction,
             agent_id=primary_agent_id,
             session_key=f"{project_id}:delegate",
-            timeout_sec=180,
+            timeout_sec=None,
             user_id=str(row["user_id"] or ""),
             from_agent_id="hivee",
             from_label="Hivee System",
@@ -4709,7 +4769,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 followup_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=120,
+                timeout_sec=None,
                 user_id=str(row["user_id"] or ""),
                 from_agent_id="hivee",
                 from_label="Hivee System",
@@ -4798,7 +4858,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 rescue_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=120,
+                timeout_sec=None,
                 user_id=str(row["user_id"] or ""),
                 from_agent_id="hivee",
                 from_label="Hivee System",
@@ -4917,7 +4977,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 subtask_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=120,
+                timeout_sec=None,
                 user_id=str(row["user_id"] or ""),
                 from_agent_id="hivee",
                 from_label="Hivee System",
@@ -5009,7 +5069,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 strict_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=180,
+                timeout_sec=None,
                 user_id=str(row["user_id"] or ""),
                 from_agent_id="hivee",
                 from_label="Hivee System",
