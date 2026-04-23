@@ -10,7 +10,11 @@ from services.managed_agents import (
     _is_default_placeholder_agent,
 )
 from services.project_activity import append_project_activity_log_entry
-from services.project_utils import _project_plan_file_snapshot, _reconcile_project_state_from_files
+from services.project_utils import (
+    _ensure_canonical_project_root,
+    _project_plan_file_snapshot,
+    _reconcile_project_state_from_files,
+)
 
 
 def _is_project_plan_rel_path(path: Any) -> bool:
@@ -23,7 +27,7 @@ async def _start_project_execution_run(*, project_id: str, owner_user_id: str, t
     conn = db()
     proj = conn.execute(
         """
-        SELECT id, user_id, title, brief, goal, plan_status, project_root, execution_status, progress_pct
+        SELECT id, user_id, title, brief, goal, plan_status, project_root, workspace_root, execution_status, progress_pct
         FROM projects WHERE id = ? AND user_id = ?
         """,
         (project_id, owner_user_id),
@@ -53,11 +57,24 @@ async def _start_project_execution_run(*, project_id: str, owner_user_id: str, t
             "status": current_status,
         }
 
+    project_root = str(proj["project_root"] or "")
+    try:
+        root_alignment = _ensure_canonical_project_root(
+            project_id=project_id,
+            owner_user_id=str(proj["user_id"] or ""),
+            title=str(proj["title"] or ""),
+            current_project_root=project_root,
+            workspace_root=str(proj["workspace_root"] or ""),
+        )
+        project_root = str(root_alignment.get("project_root") or project_root or "")
+    except Exception:
+        project_root = str(proj["project_root"] or "")
+
     role_rows = [dict(a) for a in agents]
     readiness = _project_readiness_snapshot(
         owner_user_id=str(proj["user_id"]),
         project_id=project_id,
-        project_root=str(proj["project_root"] or ""),
+        project_root=project_root,
         plan_status=proj["plan_status"],
         execution_status=proj["execution_status"],
         role_rows=role_rows,
@@ -84,7 +101,7 @@ async def _start_project_execution_run(*, project_id: str, owner_user_id: str, t
     )
     _append_project_daily_log(
         owner_user_id=str(proj["user_id"]),
-        project_root=str(proj["project_root"] or ""),
+        project_root=project_root,
         kind=log_kind,
         text=log_text,
         payload={"agents": len(agents), "trigger": trigger},
@@ -102,6 +119,29 @@ async def _start_project_execution_run(*, project_id: str, owner_user_id: str, t
     )
     asyncio.create_task(_delegate_project_tasks(project_id))
     return {"ok": True}
+
+
+async def _continue_project_after_plan_approval(*, project_id: str, owner_user_id: str) -> None:
+    try:
+        await _ensure_project_info_document(
+            project_id,
+            force=True,
+            start_chat_text=(
+                "@owner I am updating project info now. "
+                "After that I will prepare delegation from the approved plan."
+            ),
+            done_chat_text=(
+                "@owner I finished updating project info. "
+                "I am starting delegation now."
+            ),
+        )
+    except Exception:
+        pass
+    await _start_project_execution_run(
+        project_id=project_id,
+        owner_user_id=owner_user_id,
+        trigger="plan_approved",
+    )
 
 
 def _new_project_external_invite_token() -> str:
@@ -1360,10 +1400,6 @@ def register_routes(app: FastAPI) -> None:
         conn.close()
     
         _refresh_project_documents(project_id)
-        try:
-            asyncio.create_task(_ensure_project_info_document(project_id, force=True))
-        except Exception:
-            pass
         _append_project_daily_log(
             owner_user_id=str(row["user_id"]),
             project_root=str(row["project_root"] or ""),
@@ -1400,11 +1436,15 @@ def register_routes(app: FastAPI) -> None:
             pass
 
         await emit(project_id, "project.plan.approved", {"project_id": project_id, "status": new_status})
-        await _start_project_execution_run(
-            project_id=project_id,
-            owner_user_id=user_id,
-            trigger="plan_approved",
-        )
+        try:
+            asyncio.create_task(
+                _continue_project_after_plan_approval(
+                    project_id=project_id,
+                    owner_user_id=user_id,
+                )
+            )
+        except Exception:
+            pass
     
         return ProjectPlanOut(
             project_id=project_id,

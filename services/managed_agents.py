@@ -2293,6 +2293,8 @@ async def _project_chat(
 
     owner_user_id = ""
     project_root = ""
+    project_title = ""
+    project_workspace_root = ""
     try:
         owner_user_id = str(row["user_id"] or "").strip()
     except Exception:
@@ -2301,6 +2303,26 @@ async def _project_chat(
         project_root = str(row["project_root"] or "").strip()
     except Exception:
         project_root = ""
+    try:
+        project_title = str(row["title"] or "").strip()
+    except Exception:
+        project_title = ""
+    try:
+        project_workspace_root = str(row["workspace_root"] or "").strip()
+    except Exception:
+        project_workspace_root = ""
+    if project_id and owner_user_id:
+        try:
+            root_alignment = _ensure_canonical_project_root(
+                project_id=project_id,
+                owner_user_id=owner_user_id,
+                title=project_title,
+                current_project_root=project_root,
+                workspace_root=project_workspace_root,
+            )
+            project_root = str(root_alignment.get("project_root") or project_root or "").strip()
+        except Exception:
+            pass
     resolved_project_root = project_root
     if owner_user_id and project_root:
         try:
@@ -2386,7 +2408,13 @@ async def _project_chat(
             },
         )
     return res
-async def _ensure_project_info_document(project_id: str, *, force: bool = False) -> Dict[str, Any]:
+async def _ensure_project_info_document(
+    project_id: str,
+    *,
+    force: bool = False,
+    start_chat_text: Optional[str] = None,
+    done_chat_text: Optional[str] = None,
+) -> Dict[str, Any]:
     conn = db()
     row = conn.execute(
         """
@@ -2419,9 +2447,29 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         primary_agent_id = str(row["main_agent_id"] or "").strip() or None
     if not primary_agent_id:
         return {"ok": False, "error": "Primary agent is not configured"}
+    primary_agent_name = next(
+        (
+            str(r.get("agent_name") or r.get("agent_id") or "")
+            for r in role_rows
+            if str(r.get("agent_id") or "").strip() == str(primary_agent_id or "").strip()
+        ),
+        str(primary_agent_id or "primary"),
+    )
+    project_root = str(row["project_root"] or "").strip()
+    try:
+        root_alignment = _ensure_canonical_project_root(
+            project_id=str(row["id"] or project_id),
+            owner_user_id=str(row["user_id"] or ""),
+            title=str(row["title"] or ""),
+            current_project_root=project_root,
+            workspace_root=str(row["workspace_root"] or ""),
+        )
+        project_root = str(root_alignment.get("project_root") or project_root or "").strip()
+    except Exception:
+        project_root = str(row["project_root"] or "").strip()
 
     try:
-        project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
+        project_dir = _resolve_owner_project_dir(str(row["user_id"]), project_root)
     except Exception as e:
         return {"ok": False, "error": detail_to_text(e)[:300]}
 
@@ -2503,6 +2551,20 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
     if info_context:
         task = f"{task}\n\n{info_context}"
 
+    start_text = str(start_chat_text or "").strip() or "@owner I am updating project info now."
+    done_text = str(done_chat_text or "").strip() or "@owner I finished updating project info."
+    try:
+        await _post_project_agent_status_message(
+            project_id=project_id,
+            agent_id=primary_agent_id,
+            agent_name=primary_agent_name,
+            text=start_text,
+            mentions=["owner"] if "@owner" in start_text.lower() else [],
+            metadata={"phase": "project_info.start"},
+        )
+    except Exception:
+        pass
+
     await emit(project_id, "project.info.generating", {"project_id": project_id})
     res = await _project_chat(
         row,
@@ -2542,6 +2604,17 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
             text=detail_to_text(res.get("error") or res.get("details"))[:1200],
         )
         await emit(project_id, "project.info.ready", {"status": "fallback", "preview": fallback[:900]})
+        try:
+            await _post_project_agent_status_message(
+                project_id=project_id,
+                agent_id=primary_agent_id,
+                agent_name=primary_agent_name,
+                text=done_text,
+                mentions=["owner"] if "@owner" in done_text.lower() else [],
+                metadata={"phase": "project_info.done", "source": "fallback"},
+            )
+        except Exception:
+            pass
         return {"ok": True, "text": fallback, "source": "fallback", "agent_id": primary_agent_id}
 
     raw_text = str(res.get("text") or "").strip()
@@ -2617,6 +2690,17 @@ async def _ensure_project_info_document(project_id: str, *, force: bool = False)
         "project.info.ready",
         {"status": "ok", "agent_id": primary_agent_id, "preview": text[:900], "saved_files": saved[:12]},
     )
+    try:
+        await _post_project_agent_status_message(
+            project_id=project_id,
+            agent_id=primary_agent_id,
+            agent_name=primary_agent_name,
+            text=done_text,
+            mentions=["owner"] if "@owner" in done_text.lower() else [],
+            metadata={"phase": "project_info.done", "source": "agent"},
+        )
+    except Exception:
+        pass
     return {"ok": True, "text": text, "source": "agent", "agent_id": primary_agent_id}
 
 async def _generate_project_plan(project_id: str, *, force: bool = False) -> None:
@@ -4174,6 +4258,17 @@ async def _delegate_project_tasks(project_id: str) -> None:
             summary=f"{agent_name} started a delegated task",
             payload=started_payload,
         )
+        try:
+            await _post_project_agent_status_message(
+                project_id=project_id,
+                agent_id=aid,
+                agent_name=agent_name,
+                text=f"I am starting `{task_title}` now. I will share another update when this step is done.",
+                mentions=[],
+                metadata={"phase": "task.start", "task_title": task_title, "task_id": resolved_task_id or ""},
+            )
+        except Exception:
+            pass
 
         subplan_section = (
             f"\n\n## Your Approved Sub-Plan\n{approved_subplan[:2000]}\n\n"

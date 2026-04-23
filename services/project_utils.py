@@ -1236,7 +1236,14 @@ def _artifact_sync_rule_lines(*, project_root: Optional[str] = None) -> List[str
         f"- Preferred artifact-sync roots: `{USER_OUTPUTS_DIRNAME}`, `{PROJECT_INFO_DIRNAME}`, `agents`, `logs`.",
     ]
     if project_root_hint:
-        lines.append(f"- Hivee source-of-truth project root: `{project_root_hint}`.")
+        lines.extend(
+            [
+                f"- Hivee source-of-truth project root: `{project_root_hint}`.",
+                "- Treat that root as the storage scope for project-relative paths and as the canonical folder name for any mirrored local workspace copy.",
+                "- If your local runtime has the same project under a differently named folder and the canonical folder is missing, rename or recreate the local mirror under the canonical Hivee folder name before continuing.",
+                "- Only pause for owner approval if multiple candidate folders contain conflicting project contents and you cannot safely reconcile them into the canonical folder.",
+            ]
+        )
     return lines
 
 def _project_context_instruction(
@@ -2417,10 +2424,20 @@ def _refresh_project_documents(project_id: str) -> None:
         return
     role_rows = _project_agent_rows(conn, project_id)
     conn.close()
+    owner_user_id = str(row["user_id"] or "")
+    title = str(row["title"] or "")
+    project_root = str(row["project_root"] or "")
+    root_alignment = _ensure_canonical_project_root(
+        project_id=str(row["id"] or project_id),
+        owner_user_id=owner_user_id,
+        title=title,
+        current_project_root=project_root,
+    )
+    project_root = str(root_alignment.get("project_root") or project_root or "")
     _write_project_overview_file(
-        owner_user_id=str(row["user_id"]),
-        project_root=str(row["project_root"] or ""),
-        title=str(row["title"] or ""),
+        owner_user_id=owner_user_id,
+        project_root=project_root,
+        title=title,
         brief=str(row["brief"] or ""),
         goal=str(row["goal"] or ""),
         setup_details=_normalize_setup_details(_parse_setup_json(row["setup_json"])),
@@ -2437,12 +2454,12 @@ def _refresh_project_documents(project_id: str) -> None:
     )
     _write_project_meta_bundle(
         project_id=str(row["id"] or project_id),
-        owner_user_id=str(row["user_id"]),
+        owner_user_id=owner_user_id,
         env_id=(str(row["env_id"]).strip() if row["env_id"] is not None else None),
         connection_id=str(row["connection_id"] or ""),
         created_at=row["created_at"],
-        project_root=str(row["project_root"] or ""),
-        title=str(row["title"] or ""),
+        project_root=project_root,
+        title=title,
         brief=str(row["brief"] or ""),
         goal=str(row["goal"] or ""),
         setup_details=_normalize_setup_details(_parse_setup_json(row["setup_json"])),
@@ -2458,10 +2475,10 @@ def _refresh_project_documents(project_id: str) -> None:
         usage_updated_at=row["usage_updated_at"],
     )
     try:
-        project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
+        project_dir = _resolve_owner_project_dir(owner_user_id, project_root)
         _initialize_project_folder(
             project_dir,
-            str(row["title"] or ""),
+            title,
             str(row["brief"] or ""),
             str(row["goal"] or ""),
             setup_details=_normalize_setup_details(_parse_setup_json(row["setup_json"])),
@@ -2583,6 +2600,192 @@ def _build_project_root(project_id: str, title: str, workspace_root: str = HIVEE
     suffix = project_id.split("_", 1)[-1][:8]
     projects_root = f"{workspace_root}/PROJECTS"
     return f"{projects_root}/{_slugify(title)}-{suffix}"
+
+def _project_dir_embedded_project_id(project_dir: Path) -> str:
+    try:
+        resolved_dir = project_dir.resolve()
+    except Exception:
+        resolved_dir = project_dir
+    if not resolved_dir.exists() or not resolved_dir.is_dir():
+        return ""
+
+    card_path = (_project_meta_dir(resolved_dir) / Path(PROJECT_CARD_FILE).name).resolve()
+    try:
+        if _path_within(card_path, resolved_dir):
+            card_payload = _read_json_file(card_path, {})
+            if isinstance(card_payload, dict):
+                card_project_id = str(card_payload.get("project_id") or card_payload.get("id") or "").strip()
+                if card_project_id:
+                    return card_project_id
+    except Exception:
+        pass
+
+    fundamentals_path = (resolved_dir / FUNDAMENTALS_FILE).resolve()
+    try:
+        if _path_within(fundamentals_path, resolved_dir) and fundamentals_path.exists():
+            fundamentals_text = fundamentals_path.read_text(encoding="utf-8", errors="replace")
+            match = re.search(
+                r"(?im)^\|\s*\*\*Project ID\*\*\s*\|\s*`([^`]+)`\s*\|?\s*$",
+                fundamentals_text,
+            )
+            if match:
+                return str(match.group(1) or "").strip()
+    except Exception:
+        pass
+
+    return ""
+
+def _find_existing_project_dir_for_id(
+    owner_user_id: str,
+    project_id: str,
+    *,
+    preferred_dirs: Optional[List[Path]] = None,
+) -> Optional[Path]:
+    if not owner_user_id or not project_id:
+        return None
+    try:
+        projects_root = _user_projects_dir(owner_user_id).resolve()
+    except Exception:
+        return None
+    if not projects_root.exists():
+        return None
+
+    candidates: List[Path] = []
+    seen: set[str] = set()
+
+    def _push(path: Optional[Path]) -> None:
+        if path is None:
+            return
+        try:
+            resolved = path.resolve()
+        except Exception:
+            return
+        key = resolved.as_posix()
+        if key in seen:
+            return
+        if not _path_within(resolved, projects_root):
+            return
+        seen.add(key)
+        candidates.append(resolved)
+
+    for item in preferred_dirs or []:
+        _push(item)
+
+    try:
+        for child in projects_root.iterdir():
+            if child.is_dir():
+                _push(child)
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        if _project_dir_embedded_project_id(candidate) == project_id:
+            return candidate
+    return None
+
+def _ensure_canonical_project_root(
+    *,
+    project_id: str,
+    owner_user_id: str,
+    title: str,
+    current_project_root: str,
+    workspace_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    project_id_value = str(project_id or "").strip()
+    owner_user_id_value = str(owner_user_id or "").strip()
+    title_value = str(title or "").strip()
+    current_root_value = str(current_project_root or "").strip()
+    workspace_root_value = str(workspace_root or "").strip()
+
+    if not project_id_value or not owner_user_id_value:
+        return {
+            "project_root": current_root_value,
+            "project_dir": current_root_value,
+            "canonical_project_root": current_root_value,
+            "canonical_project_dir": current_root_value,
+            "renamed_from": "",
+            "db_updated": False,
+        }
+
+    try:
+        owner_workspace = _user_workspace_root_dir(owner_user_id_value).resolve()
+    except Exception:
+        return {
+            "project_root": current_root_value,
+            "project_dir": current_root_value,
+            "canonical_project_root": current_root_value,
+            "canonical_project_dir": current_root_value,
+            "renamed_from": "",
+            "db_updated": False,
+        }
+
+    workspace_dir = owner_workspace
+    if workspace_root_value:
+        try:
+            resolved_workspace = Path(workspace_root_value).resolve()
+            if _path_within(resolved_workspace, owner_workspace.parent.resolve()):
+                workspace_dir = resolved_workspace
+        except Exception:
+            workspace_dir = owner_workspace
+
+    canonical_project_root = _build_project_root(project_id_value, title_value or project_id_value, workspace_root=workspace_dir.as_posix())
+    canonical_project_dir = Path(canonical_project_root).resolve()
+    if not _path_within(canonical_project_dir, owner_workspace):
+        canonical_project_dir = (owner_workspace / "PROJECTS" / Path(canonical_project_root).name).resolve()
+    canonical_project_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    current_project_dir: Optional[Path] = None
+    if current_root_value:
+        try:
+            current_project_dir = _resolve_owner_project_dir(owner_user_id_value, current_root_value).resolve()
+        except Exception:
+            current_project_dir = None
+
+    matching_project_dir = _find_existing_project_dir_for_id(
+        owner_user_id_value,
+        project_id_value,
+        preferred_dirs=[current_project_dir, canonical_project_dir] if current_project_dir else [canonical_project_dir],
+    )
+
+    final_project_dir = canonical_project_dir
+    renamed_from = ""
+    if canonical_project_dir.exists():
+        final_project_dir = canonical_project_dir
+    elif matching_project_dir and matching_project_dir.exists():
+        if matching_project_dir == canonical_project_dir:
+            final_project_dir = canonical_project_dir
+        else:
+            try:
+                shutil.move(matching_project_dir.as_posix(), canonical_project_dir.as_posix())
+                final_project_dir = canonical_project_dir
+                renamed_from = matching_project_dir.as_posix()
+            except Exception:
+                final_project_dir = matching_project_dir
+    elif current_project_dir and current_project_dir.exists():
+        final_project_dir = current_project_dir
+
+    final_project_root = final_project_dir.as_posix()
+    db_updated = False
+    if final_project_root and final_project_root != current_root_value:
+        conn = db()
+        try:
+            conn.execute(
+                "UPDATE projects SET project_root = ?, workspace_root = ? WHERE id = ? AND user_id = ?",
+                (final_project_root, workspace_dir.as_posix(), project_id_value, owner_user_id_value),
+            )
+            conn.commit()
+            db_updated = True
+        finally:
+            conn.close()
+
+    return {
+        "project_root": final_project_root,
+        "project_dir": final_project_root,
+        "canonical_project_root": canonical_project_dir.as_posix(),
+        "canonical_project_dir": canonical_project_dir.as_posix(),
+        "renamed_from": renamed_from,
+        "db_updated": db_updated,
+    }
 
 def _initialize_project_folder(
     project_dir: Path,
@@ -5383,8 +5586,10 @@ def _workspace_policy_lines(workspace_root: str, project_root: Optional[str] = N
     if project_root_hint:
         lines.extend(
             [
-                f"- For this project, use `{project_root_hint}` as the default working directory.",
-                "- Ask project owner first before touching paths outside the project root.",
+                f"- For this project, treat `{project_root_hint}` as the Hivee project scope for project-relative paths and synced artifacts.",
+                "- Keep the local mirrored project folder name aligned with that canonical Hivee path whenever you work in a local workspace copy.",
+                "- If you discover the same project under a different local alias, normalize it back to the canonical folder name before continuing unless that would overwrite conflicting contents.",
+                "- Ask project owner first before touching unrelated paths outside the project scope.",
             ]
         )
     lines.append("- If permission is needed, ask a clear question first and wait for confirmation.")
