@@ -2480,74 +2480,6 @@ async def _project_chat(
             },
         )
     return res
-
-
-async def _project_chat_long_running(
-    row: Any,
-    connection_api_key: str,
-    message: str,
-    **kwargs: Any,
-) -> Dict[str, Any]:
-    """Dispatch a background agent task without a finite connector deadline."""
-    kwargs["timeout_sec"] = None
-    return await _project_chat(row, connection_api_key, message, **kwargs)
-
-
-async def _fail_project_plan_generation(
-    *,
-    project_id: str,
-    row: Any,
-    previous_valid_plan_text: str,
-    reason: str,
-    generation_started_at: Optional[int] = None,
-    activity_summary: str = "Project plan generation failed",
-    event_type: str = "project.plan.failed",
-) -> bool:
-    error_text = detail_to_text(reason or "Failed to generate project plan").strip()
-    now = int(time.time())
-    conn = db()
-    try:
-        if generation_started_at is not None:
-            current = conn.execute(
-                "SELECT plan_status, plan_updated_at FROM projects WHERE id = ?",
-                (project_id,),
-            ).fetchone()
-            current_status = _coerce_plan_status(current["plan_status"] if current else None)
-            current_updated_at = int((current["plan_updated_at"] if current else 0) or 0)
-            if current_status != PLAN_STATUS_GENERATING or current_updated_at != int(generation_started_at or 0):
-                return False
-        conn.execute(
-            "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
-            (PLAN_STATUS_FAILED, str(previous_valid_plan_text or "")[:20000], now, project_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    _refresh_project_documents(project_id)
-    _append_project_daily_log(
-        owner_user_id=str(row["user_id"]),
-        project_root=str(row["project_root"] or ""),
-        kind="plan.failed",
-        text=error_text[:1200],
-    )
-    _append_project_activity(
-        project_id=project_id,
-        actor_type="system",
-        actor_id="hivee",
-        actor_label="Hivee",
-        event_type=event_type,
-        summary=activity_summary,
-        payload={"reason": error_text[:1200]},
-    )
-    await emit(
-        project_id,
-        "project.plan.failed",
-        {"status": PLAN_STATUS_FAILED, "error": error_text[:1200]},
-    )
-    return True
-
-
 async def _ensure_project_info_document(
     project_id: str,
     *,
@@ -2906,27 +2838,8 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
             summary="Project plan generation failed before contacting the primary agent",
             payload={"reason": msg},
         )
-        await emit(project_id, "project.plan.failed", {"status": PLAN_STATUS_FAILED, "error": msg})
+        await emit(project_id, "project.plan.failed", {"error": msg})
         return
-
-    primary_agent_id = None
-    for r in role_rows:
-        if bool(r.get("is_primary")):
-            primary_agent_id = str(r.get("agent_id") or "").strip() or None
-            break
-    if not primary_agent_id:
-        primary_agent_id = str(row["main_agent_id"] or "").strip() or None
-    if not primary_agent_id:
-        conn.close()
-        await _fail_project_plan_generation(
-            project_id=project_id,
-            row=row,
-            previous_valid_plan_text=previous_valid_plan_text,
-            reason="Primary agent is not configured for project plan generation.",
-            activity_summary="Project plan generation failed before contacting the primary agent",
-        )
-        return
-
     generation_started_at = int(time.time())
     conn.execute(
         "UPDATE projects SET plan_status = ?, plan_updated_at = ? WHERE id = ?",
@@ -2943,8 +2856,16 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
     )
 
     setup_details = _normalize_setup_details(_parse_setup_json(row["setup_json"]))
+    primary_agent_id = None
+    for r in role_rows:
+        if bool(r.get("is_primary")):
+            primary_agent_id = str(r.get("agent_id") or "").strip() or None
+            break
+    if not primary_agent_id:
+        primary_agent_id = str(row["main_agent_id"] or "").strip() or None
+
     hivee_api_base = _get_hivee_api_base(project_id)
-    agent_token = _issue_agent_session_token(project_id, primary_agent_id)
+    agent_token = _issue_agent_session_token(project_id, primary_agent_id or "")
     inline_plan_context = _build_project_file_context(
         owner_user_id=str(row["user_id"] or ""),
         project_root=str(row["project_root"] or ""),
@@ -3016,29 +2937,18 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
     )
     await _emit_project_action_results(project_id, plan_start_result.get("applied") or [])
 
-    try:
-        res = await _project_chat_long_running(
-            row,
-            connection_api_key,
-            instruction,
-            agent_id=primary_agent_id,
-            session_key=f"{project_id}:plan",
-            user_id=str(row["user_id"] or ""),
-            from_agent_id="hivee",
-            from_label="Hivee System",
-            context_type="plan_generation",
-        )
-    except Exception as exc:
-        error_text = f"Connector plan generation failed before returning a response: {detail_to_text(exc)}"
-        await _fail_project_plan_generation(
-            project_id=project_id,
-            row=row,
-            previous_valid_plan_text=previous_valid_plan_text,
-            reason=error_text,
-            generation_started_at=generation_started_at,
-            activity_summary="Project plan generation failed because the connector call raised an error",
-        )
-        return
+    res = await _project_chat(
+        row,
+        connection_api_key,
+        instruction,
+        agent_id=primary_agent_id,
+        session_key=f"{project_id}:plan",
+        timeout_sec=None,
+        user_id=str(row["user_id"] or ""),
+        from_agent_id="hivee",
+        from_label="Hivee System",
+        context_type="plan_generation",
+    )
     prompt_tokens, completion_tokens, _ = _extract_usage_counts(res)
     if prompt_tokens <= 0:
         prompt_tokens = _estimate_tokens_from_text(instruction)
@@ -3078,15 +2988,29 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
         return
     if not res.get("ok"):
         error_text = detail_to_text(res.get("error") or res.get("details") or "Failed to generate project plan")
-        conn.close()
-        await _fail_project_plan_generation(
-            project_id=project_id,
-            row=row,
-            previous_valid_plan_text=previous_valid_plan_text,
-            reason=error_text,
-            generation_started_at=generation_started_at,
-            activity_summary="Project plan generation failed because the connector returned an error",
+        conn.execute(
+            "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
+            (PLAN_STATUS_FAILED, previous_valid_plan_text[:20000], now, project_id),
         )
+        conn.commit()
+        conn.close()
+        _refresh_project_documents(project_id)
+        _append_project_daily_log(
+            owner_user_id=str(row["user_id"]),
+            project_root=str(row["project_root"] or ""),
+            kind="plan.failed",
+            text=error_text[:1200],
+        )
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="system",
+            actor_id="hivee",
+            actor_label="Hivee",
+            event_type="project.plan.failed",
+            summary="Project plan generation failed because the connector returned an error",
+            payload={"reason": error_text[:1200]},
+        )
+        await emit(project_id, "project.plan.failed", {"error": error_text[:1200]})
         return
 
     try:
@@ -3169,35 +3093,29 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
                 "Click Regenerate Plan to retry.\n\n"
                 f"Agent response preview:\n{fallback_text[:1200]}"
             )
+            conn.execute(
+                "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
+                (PLAN_STATUS_FAILED, previous_valid_plan_text[:20000], now, project_id),
+            )
+            conn.commit()
             conn.close()
-            await _fail_project_plan_generation(
+            _refresh_project_documents(project_id)
+            _append_project_daily_log(
+                owner_user_id=str(row["user_id"]),
+                project_root=str(row["project_root"] or ""),
+                kind="plan.failed",
+                text=error_message[:1200],
+            )
+            _append_project_activity(
                 project_id=project_id,
-                row=row,
-                previous_valid_plan_text=previous_valid_plan_text,
-                reason=error_message,
-                generation_started_at=generation_started_at,
+                actor_type="system",
+                actor_id="hivee",
+                actor_label="Hivee",
                 event_type="project.plan.invalid_artifact",
-                activity_summary="Rejected invalid project plan artifact",
+                summary="Rejected invalid project plan artifact",
+                payload={"reason": error_message[:1200]},
             )
-            return
-
-        try:
-            project_dir = _resolve_owner_project_dir(str(row["user_id"]), str(row["project_root"] or ""))
-            plan_md_content = plan_text.strip() + "\n"
-            (project_dir / "plan.md").write_text(plan_md_content, encoding="utf-8")
-            project_plan_path = project_dir / PROJECT_PLAN_FILE
-            project_plan_path.parent.mkdir(parents=True, exist_ok=True)
-            project_plan_path.write_text(plan_md_content, encoding="utf-8")
-        except Exception as exc:
-            conn.close()
-            await _fail_project_plan_generation(
-                project_id=project_id,
-                row=row,
-                previous_valid_plan_text=previous_valid_plan_text,
-                reason=f"Could not write generated plan files: {detail_to_text(exc)}",
-                generation_started_at=generation_started_at,
-                activity_summary="Project plan generation failed while writing plan files",
-            )
+            await emit(project_id, "project.plan.failed", {"error": error_message[:600]})
             return
 
         conn.execute(
@@ -3330,7 +3248,7 @@ async def _generate_project_plan(project_id: str, *, force: bool = False) -> Non
             summary="Project plan finalization failed",
             payload={"reason": error_text[:1200]},
         )
-        await emit(project_id, "project.plan.failed", {"status": PLAN_STATUS_FAILED, "error": error_text[:600]})
+        await emit(project_id, "project.plan.failed", {"error": error_text[:600]})
 
 async def _run_agent_subplan_phase(
     project_id: str,
