@@ -588,8 +588,9 @@ label {
 /* ===== AUTH FOOTER ===== */
 .auth-footer {
   position: absolute;
-  bottom: 16px;
+  bottom: 80px;
   right: 20px;
+  z-index: 10;
 }
 .auth-footer-link {
   font-size: 11px;
@@ -598,6 +599,7 @@ label {
   letter-spacing: 0.01em;
   transition: all 130ms ease;
   opacity: 0.8;
+  cursor: pointer;
 }
 .auth-footer-link:hover {
   color: #9ca3af;
