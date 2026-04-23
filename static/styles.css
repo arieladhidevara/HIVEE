@@ -585,6 +585,23 @@ label {
 }
 .social-auth-hint { margin-top: 0; text-align: left; min-height: 16px; }
 
+/* ===== AUTH FOOTER ===== */
+.auth-footer {
+  margin-top: 16px;
+  text-align: center;
+}
+.auth-footer-link {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+  text-decoration: none;
+  letter-spacing: 0.02em;
+  transition: color 130ms ease;
+}
+.auth-footer-link:hover {
+  color: rgba(255, 255, 255, 0.7);
+  text-decoration: underline;
+}
+
 /* ===== AGENT GUIDE ===== */
 .agent-guide {
   border: 1px solid var(--line);

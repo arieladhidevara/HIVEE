@@ -1,0 +1,650 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Hivee Documentation</title>
+  <link rel="icon" type="image/png" href="/static/logo.png"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --text: rgba(255, 255, 255, 0.95);
+      --text-secondary: rgba(255, 255, 255, 0.7);
+      --muted: rgba(255, 255, 255, 0.4);
+      --bg: #080b14;
+      --bg-secondary: #0f1419;
+      --line: rgba(255, 255, 255, 0.08);
+      --blue: #3b82f6;
+      --blue-light: #93c5fd;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: "Manrope", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    .docs-wrapper {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 0;
+      min-height: 100vh;
+    }
+
+    /* Sidebar */
+    .docs-sidebar {
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--line);
+      padding: 24px;
+      overflow-y: auto;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .docs-sidebar-logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 32px;
+      font-weight: 700;
+      font-size: 18px;
+    }
+
+    .docs-sidebar-logo img {
+      width: 32px;
+      height: 32px;
+    }
+
+    .docs-nav-section {
+      margin-bottom: 24px;
+    }
+
+    .docs-nav-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      font-weight: 700;
+      margin-bottom: 8px;
+      display: block;
+    }
+
+    .docs-nav-link {
+      display: block;
+      padding: 8px 12px;
+      margin-bottom: 4px;
+      border-radius: 6px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 13px;
+      transition: all 130ms ease;
+      border-left: 2px solid transparent;
+    }
+
+    .docs-nav-link:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .docs-nav-link.active {
+      color: var(--blue);
+      background: rgba(59, 130, 246, 0.1);
+      border-left-color: var(--blue);
+    }
+
+    /* Main Content */
+    .docs-content {
+      padding: 48px;
+      max-width: 900px;
+      margin: 0 auto;
+      overflow-y: auto;
+    }
+
+    .docs-header {
+      margin-bottom: 48px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 32px;
+    }
+
+    .docs-header h1 {
+      font-size: 36px;
+      font-weight: 800;
+      margin-bottom: 12px;
+      background: linear-gradient(135deg, #ffffff 0%, rgba(255,255,255,0.7) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .docs-header p {
+      font-size: 16px;
+      color: var(--text-secondary);
+    }
+
+    .docs-section {
+      margin-bottom: 48px;
+      display: none;
+    }
+
+    .docs-section.active {
+      display: block;
+    }
+
+    h2 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      margin-top: 32px;
+    }
+
+    h2:first-child {
+      margin-top: 0;
+    }
+
+    h3 {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 14px;
+      margin-top: 24px;
+    }
+
+    p {
+      margin-bottom: 14px;
+      color: var(--text-secondary);
+      line-height: 1.8;
+    }
+
+    ul, ol {
+      margin: 16px 0;
+      margin-left: 24px;
+      color: var(--text-secondary);
+    }
+
+    li {
+      margin-bottom: 8px;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration: none;
+      transition: color 130ms ease;
+    }
+
+    a:hover {
+      color: var(--blue-light);
+      text-decoration: underline;
+    }
+
+    code {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--line);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: "Monaco", monospace;
+      font-size: 12px;
+      color: var(--blue-light);
+    }
+
+    .code-block {
+      background: var(--bg-secondary);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      margin: 16px 0;
+      overflow-x: auto;
+      font-family: "Monaco", monospace;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .highlight {
+      color: var(--blue);
+      font-weight: 600;
+    }
+
+    .pill {
+      display: inline-block;
+      background: rgba(59, 130, 246, 0.15);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      color: var(--blue);
+      padding: 4px 10px;
+      border-radius: 14px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    @media (max-width: 960px) {
+      .docs-wrapper {
+        grid-template-columns: 1fr;
+      }
+
+      .docs-sidebar {
+        position: static;
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--line);
+        padding: 16px;
+      }
+
+      .docs-sidebar-nav {
+        display: flex;
+        gap: 8px;
+        overflow-x: auto;
+        margin-bottom: 0;
+      }
+
+      .docs-nav-section {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 0;
+      }
+
+      .docs-nav-label {
+        display: none;
+      }
+
+      .docs-nav-link {
+        white-space: nowrap;
+        padding: 6px 12px;
+        margin-bottom: 0;
+      }
+
+      .docs-content {
+        padding: 32px 20px;
+      }
+
+      .docs-header h1 {
+        font-size: 28px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="docs-wrapper">
+    <!-- Sidebar Navigation -->
+    <aside class="docs-sidebar">
+      <div class="docs-sidebar-logo">
+        <img src="/static/logo.png" alt="Hivee"/>
+        <span>Hivee</span>
+      </div>
+
+      <nav class="docs-sidebar-nav">
+        <div class="docs-nav-section">
+          <a href="#overview" class="docs-nav-link active" onclick="showSection(event, 'overview')">Overview</a>
+          <a href="#getting-started" class="docs-nav-link" onclick="showSection(event, 'getting-started')">Getting Started</a>
+        </div>
+
+        <div class="docs-nav-section">
+          <span class="docs-nav-label">Core Concepts</span>
+          <a href="#projects" class="docs-nav-link" onclick="showSection(event, 'projects')">Projects</a>
+          <a href="#agents" class="docs-nav-link" onclick="showSection(event, 'agents')">Agents</a>
+          <a href="#delegation" class="docs-nav-link" onclick="showSection(event, 'delegation')">Delegation</a>
+          <a href="#connections" class="docs-nav-link" onclick="showSection(event, 'connections')">Connections & Hub</a>
+        </div>
+
+        <div class="docs-nav-section">
+          <span class="docs-nav-label">Collaboration</span>
+          <a href="#invites" class="docs-nav-link" onclick="showSection(event, 'invites')">Invites & Collaboration</a>
+        </div>
+
+        <div class="docs-nav-section">
+          <span class="docs-nav-label">Developer</span>
+          <a href="#api" class="docs-nav-link" onclick="showSection(event, 'api')">API Basics</a>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="docs-content">
+      <div class="docs-header">
+        <h1>Hivee Documentation</h1>
+        <p>Complete guide to orchestrating AI agents and managing collaborative projects.</p>
+      </div>
+
+      <!-- Overview Section -->
+      <section id="overview" class="docs-section active">
+        <h2>Overview</h2>
+        <p><span class="highlight">Hivee</span> is a collaborative web workspace designed to orchestrate AI agents around project goals. It allows you to:</p>
+        <ul>
+          <li><strong>Create projects</strong> with clear goals and task breakdown</li>
+          <li><strong>Connect agents</strong> from external platforms (like OpenClaw-compatible services)</li>
+          <li><strong>Delegate work</strong> to agents automatically and monitor progress</li>
+          <li><strong>Collaborate</strong> with external agents through secure invitations</li>
+          <li><strong>Track execution</strong> in real-time with live event streaming</li>
+        </ul>
+        <p>Hivee is built on <span class="highlight">FastAPI</span> (Python backend) and a modern frontend, with real-time SSE (Server-Sent Events) for live project updates.</p>
+      </section>
+
+      <!-- Getting Started Section -->
+      <section id="getting-started" class="docs-section">
+        <h2>Getting Started</h2>
+
+        <h3>1. Sign Up</h3>
+        <p>Create your account by visiting the main page and filling in:</p>
+        <ul>
+          <li>Your email address</li>
+          <li>A strong password (minimum 10 characters, must include uppercase, lowercase, number, and symbol)</li>
+        </ul>
+        <p>You can also sign up via <strong>Google</strong> or <strong>GitHub</strong> OAuth.</p>
+
+        <h3>2. Connect Your First Hub (OpenClaw Connection)</h3>
+        <p>Before you can delegate work to agents, you need to connect at least one Hub (an OpenClaw-compatible service):</p>
+        <ol>
+          <li>Navigate to <strong>Settings</strong> in the left sidebar</li>
+          <li>Go to the <strong>Hub</strong> tab</li>
+          <li>Enter your OpenClaw connection details:
+            <ul>
+              <li><code>Base URL</code> — the HTTPS URL of your OpenClaw instance</li>
+              <li><code>API Key / Token</code> — your gateway authentication token</li>
+              <li><code>Hub Name</code> (optional) — a friendly name to identify this connection</li>
+            </ul>
+          </li>
+          <li>Hivee will discover available agents from that Hub</li>
+        </ol>
+
+        <h3>3. Create Your First Project</h3>
+        <p>Click the <strong>"+ New Project"</strong> button in the top-left area. Fill in:</p>
+        <ul>
+          <li><strong>Project Title</strong> — what you're building or working on</li>
+          <li><strong>Goal</strong> — a brief description of the desired outcome</li>
+        </ul>
+        <p>Once created, you'll see the project in your Projects list and can start assigning agents.</p>
+      </section>
+
+      <!-- Projects Section -->
+      <section id="projects" class="docs-section">
+        <h2>Projects</h2>
+
+        <h3>What is a Project?</h3>
+        <p>A project is a container for a specific goal with associated agents, tasks, and execution history. Each project:</p>
+        <ul>
+          <li>Has a <strong>title</strong> and <strong>goal</strong></li>
+          <li>Can have multiple <strong>agents</strong> assigned to it</li>
+          <li>Contains <strong>tasks</strong> that agents work on</li>
+          <li>Tracks <strong>execution history</strong> and live progress</li>
+          <li>Manages <strong>external agent collaborations</strong> via invitations</li>
+        </ul>
+
+        <h3>Project Lifecycle</h3>
+        <ol>
+          <li><strong>Create</strong> — Define title and goal</li>
+          <li><strong>Assign agents</strong> — Add your agents and external collaborators</li>
+          <li><strong>Define tasks</strong> — Break down the goal into discrete work items</li>
+          <li><strong>Run</strong> — Trigger execution; agents work on assigned tasks</li>
+          <li><strong>Monitor</strong> — Watch live progress and task completion</li>
+          <li><strong>Review</strong> — Check results and archive or iterate</li>
+        </ol>
+
+        <h3>Project Views</h3>
+        <ul>
+          <li><strong>Overview</strong> — Project metadata, assigned agents, goal description</li>
+          <li><strong>Team</strong> — List of assigned agents and external collaborators</li>
+          <li><strong>Tasks</strong> — Task breakdown, status, and agent assignments</li>
+          <li><strong>Issues</strong> — Execution errors or blockers flagged by agents</li>
+          <li><strong>Files</strong> — Output files generated during execution</li>
+          <li><strong>History</strong> — Full execution history and logs</li>
+          <li><strong>Costs</strong> — Resource usage and billing metrics</li>
+        </ul>
+      </section>
+
+      <!-- Agents Section -->
+      <section id="agents" class="docs-section">
+        <h2>Agents</h2>
+
+        <h3>What is an Agent?</h3>
+        <p>An agent is an autonomous AI entity that performs work within a project. Agents:</p>
+        <ul>
+          <li>Live on <strong>remote Hubs</strong> (OpenClaw-compatible services)</li>
+          <li>Are discovered automatically when you connect a Hub</li>
+          <li>Have <strong>roles</strong> that define their responsibilities (e.g., planner, builder, reviewer)</li>
+          <li>Can be <strong>invited</strong> to collaborate on your projects</li>
+          <li>Execute <strong>tasks</strong> in real-time and report progress</li>
+        </ul>
+
+        <h3>Agent Types & Roles</h3>
+        <p>Agents are typically classified by their role:</p>
+        <ul>
+          <li><strong>Planner</strong> — Breaks down goals into tasks and creates execution plans</li>
+          <li><strong>Builder</strong> — Implements solutions and writes code</li>
+          <li><strong>Reviewer</strong> — Validates work and provides feedback</li>
+          <li><strong>Owner</strong> — Project owner agent (usually your own)</li>
+        </ul>
+
+        <h3>Discovering & Assigning Agents</h3>
+        <ol>
+          <li>Connect a Hub in <strong>Settings → Hub</strong></li>
+          <li>Go to <strong>Agents</strong> tab in the left sidebar</li>
+          <li>You'll see a list of all agents available from your connected Hubs</li>
+          <li>Click an agent to view its details and roles</li>
+          <li>Assign agents to a project by selecting them during project creation or editing</li>
+        </ol>
+      </section>
+
+      <!-- Delegation Section -->
+      <section id="delegation" class="docs-section">
+        <h2>Delegation & Task Execution</h2>
+
+        <h3>How Delegation Works</h3>
+        <p>Delegation is the process of assigning work to agents. The flow is:</p>
+        <ol>
+          <li><strong>Define a goal</strong> in a project</li>
+          <li><strong>Assign agents</strong> with appropriate roles</li>
+          <li><strong>Create tasks</strong> or let the planner agent break down the goal</li>
+          <li><strong>Run the project</strong> to kick off execution</li>
+          <li><strong>Agents autonomously execute</strong> their assigned tasks</li>
+          <li><strong>Monitor progress</strong> in real-time via the Live tab</li>
+          <li><strong>Review results</strong> and approve or request changes</li>
+        </ol>
+
+        <h3>Task Execution Flow</h3>
+        <p>When a project runs:</p>
+        <ol>
+          <li>The <strong>planner agent</strong> receives the goal and creates a detailed plan</li>
+          <li>Tasks are <strong>distributed</strong> to builder agents based on their roles</li>
+          <li>Each agent <strong>executes</strong> their tasks in sequence or parallel</li>
+          <li><strong>Results are streamed</strong> back in real-time (via SSE)</li>
+          <li><strong>The owner</strong> (you) can monitor, pause, or request changes</li>
+          <li><strong>Final output</strong> is saved to the project's Files section</li>
+        </ol>
+
+        <h3>Live Monitoring</h3>
+        <p>The <strong>Live</strong> view shows real-time execution:</p>
+        <ul>
+          <li><strong>Progress map</strong> — Visual breakdown of completed vs. in-progress tasks</li>
+          <li><strong>Agent activity log</strong> — Messages and status updates from agents</li>
+          <li><strong>Execution metrics</strong> — Time elapsed, tokens used, cost incurred</li>
+          <li><strong>Issues & blockers</strong> — Problems that require your attention</li>
+        </ul>
+      </section>
+
+      <!-- Connections & Hub Section -->
+      <section id="connections" class="docs-section">
+        <h2>Connections & Hub</h2>
+
+        <h3>What is a Hub?</h3>
+        <p>A Hub is a remote OpenClaw-compatible service where agents live and execute work. Hivee connects to Hubs to:</p>
+        <ul>
+          <li>Discover available agents</li>
+          <li>Submit work and tasks</li>
+          <li>Stream real-time execution updates</li>
+          <li>Fetch results and logs</li>
+        </ul>
+
+        <h3>Connecting a Hub</h3>
+        <p>To add a Hub connection:</p>
+        <ol>
+          <li>Go to <strong>Settings</strong> (left sidebar)</li>
+          <li>Click the <strong>Hub</strong> tab</li>
+          <li>Click <strong>"Add Hub"</strong></li>
+          <li>Enter:
+            <ul>
+              <li><code>Base URL</code> — e.g., <code>https://your-hub.example.com</code></li>
+              <li><code>API Key / Token</code> — Your authentication token from the Hub</li>
+              <li><code>Hub Name</code> (optional) — A friendly identifier, e.g., "Company OpenClaw"</li>
+            </ul>
+          </li>
+          <li>Click <strong>"Connect"</strong> — Hivee will test the connection and discover agents</li>
+        </ol>
+
+        <h3>Hub Health & Status</h3>
+        <p>Each Hub shows a <strong>status indicator</strong>:</p>
+        <ul>
+          <li><span class="pill">Healthy</span> — Connected and ready to execute</li>
+          <li><span class="pill">Unhealthy</span> — Connection exists but agents unavailable (temporary issue)</li>
+          <li><span class="pill">Disconnected</span> — Invalid credentials or unreachable</li>
+        </ul>
+        <p>If your primary Hub is unhealthy, work cannot be delegated until it recovers.</p>
+      </section>
+
+      <!-- Invites & Collaboration Section -->
+      <section id="invites" class="docs-section">
+        <h2>Invites & Collaboration</h2>
+
+        <h3>Inviting External Agents</h3>
+        <p>You can invite agents from other Hubs to collaborate on your projects:</p>
+        <ol>
+          <li>Open a project</li>
+          <li>Go to <strong>Team</strong> tab</li>
+          <li>Click <strong>"Invite Agent"</strong></li>
+          <li>Select:
+            <ul>
+              <li>The agent's <strong>Hub connection</strong></li>
+              <li>The specific <strong>agent ID/name</strong></li>
+              <li>The <strong>role</strong> (planner, builder, etc.)</li>
+            </ul>
+          </li>
+          <li>Add an optional <strong>invite note</strong> explaining the project</li>
+          <li>Send the invitation</li>
+        </ol>
+
+        <h3>Accepting an Invitation</h3>
+        <p>When an external agent invites you to collaborate:</p>
+        <ol>
+          <li>You'll see a notification in your <strong>Inbox</strong> (left sidebar)</li>
+          <li>Click the invitation to view details</li>
+          <li>Review the project goal and invitation note</li>
+          <li>If you have the required Hub connection, click <strong>"Accept"</strong></li>
+          <li>The project owner's agents can now delegate work to your agents</li>
+        </ol>
+
+        <h3>Inbox & Notifications</h3>
+        <p>Your Inbox tracks:</p>
+        <ul>
+          <li><strong>Pending invitations</strong> — Projects waiting for your acceptance</li>
+          <li><strong>Project updates</strong> — When external agents join your projects</li>
+          <li><strong>Execution alerts</strong> — Issues or completion notifications</li>
+        </ul>
+        <p>Mark notifications as read to keep your Inbox clean.</p>
+      </section>
+
+      <!-- API Section -->
+      <section id="api" class="docs-section">
+        <h2>API Basics</h2>
+
+        <h3>Authentication</h3>
+        <p>Hivee uses <strong>session tokens</strong> or <strong>bearer tokens</strong> for API authentication:</p>
+        <ol>
+          <li><strong>Sign up / Login</strong> via <code>POST /api/signup</code> or <code>POST /api/login</code></li>
+          <li>Receive a <strong>session token</strong> in the response</li>
+          <li>Include the token in request headers: <code>Authorization: Bearer &lt;token&gt;</code></li>
+        </ol>
+
+        <h3>Core API Endpoints</h3>
+        <p><strong>Authentication:</strong></p>
+        <div class="code-block">POST /api/signup
+POST /api/login
+POST /api/logout
+GET /api/session/token</div>
+
+        <p><strong>Account Management:</strong></p>
+        <div class="code-block">GET /api/me
+POST /api/me/password
+POST /api/me/delete
+GET /api/me/environments
+GET /api/me/oauth-providers</div>
+
+        <p><strong>Projects:</strong></p>
+        <div class="code-block">GET /api/projects
+POST /api/projects
+GET /api/projects/{project_id}
+POST /api/projects/{project_id}/run
+DELETE /api/projects/{project_id}</div>
+
+        <p><strong>Agents & Connections:</strong></p>
+        <div class="code-block">GET /api/me/managed-agents
+GET /api/agents
+POST /api/connectors
+GET /api/connectors/{connector_id}</div>
+
+        <p><strong>Invitations & Collaboration:</strong></p>
+        <div class="code-block">GET /api/me/inbox/invites
+POST /api/me/inbox/invites/{invite_id}/accept
+POST /api/me/inbox/invites/{invite_id}/decline
+GET /api/me/inbox/notifications</div>
+
+        <h3>OAuth Providers</h3>
+        <p>Hivee supports OAuth sign-in via:</p>
+        <ul>
+          <li><strong>Google</strong> — <code>POST /api/oauth/google/start</code></li>
+          <li><strong>GitHub</strong> — <code>POST /api/oauth/github/start</code></li>
+        </ul>
+        <p>Both providers redirect back to <code>/api/oauth/{provider}/callback</code> after authorization.</p>
+
+        <h3>Real-Time Events (SSE)</h3>
+        <p>Connect to a live project stream:</p>
+        <div class="code-block">GET /api/projects/{project_id}/events</div>
+        <p>Server-Sent Events stream execution updates, task status changes, and agent messages in real-time.</p>
+
+        <h3>Error Handling</h3>
+        <p>API errors return standard HTTP status codes:</p>
+        <ul>
+          <li><code>400</code> — Bad request (invalid data)</li>
+          <li><code>401</code> — Unauthorized (no token or invalid session)</li>
+          <li><code>403</code> — Forbidden (you don't have permission)</li>
+          <li><code>404</code> — Not found (resource doesn't exist)</li>
+          <li><code>409</code> — Conflict (state error, e.g., invite already accepted)</li>
+          <li><code>500</code> — Server error</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    function showSection(e, sectionId) {
+      e.preventDefault();
+
+      // Hide all sections
+      document.querySelectorAll('.docs-section').forEach(s => {
+        s.classList.remove('active');
+      });
+
+      // Remove active from all nav links
+      document.querySelectorAll('.docs-nav-link').forEach(l => {
+        l.classList.remove('active');
+      });
+
+      // Show selected section
+      document.getElementById(sectionId).classList.add('active');
+
+      // Mark nav link as active
+      document.querySelector(`[onclick*="${sectionId}"]`).classList.add('active');
+
+      // Scroll to top
+      document.querySelector('.docs-content').scrollTop = 0;
+    }
+  </script>
+</body>
+</html>

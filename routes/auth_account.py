@@ -4,7 +4,11 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/", response_class=HTMLResponse)
     async def index():
         return FileResponse("static/index.html")
-    
+
+    @app.get("/docs", response_class=HTMLResponse)
+    async def docs():
+        return FileResponse("static/docs.html")
+
     @app.post("/api/signup", response_model=SessionOut)
     async def signup(payload: SignupIn, response: Response):
         email = _normalize_email(payload.email)
