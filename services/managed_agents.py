@@ -2791,103 +2791,6 @@ async def _ensure_project_info_document(
     return {"ok": True, "text": text, "source": "agent", "agent_id": primary_agent_id}
 
 async def _generate_project_plan(project_id: str, *, force: bool = False) -> None:
-    try:
-        await _generate_project_plan_impl(project_id, force=force)
-    except Exception as exc:
-        await _fail_project_plan_generation(
-            project_id,
-            reason=f"Unexpected plan-generation pipeline error: {detail_to_text(exc)}",
-            kind="plan.pipeline.error",
-            event_summary="Project plan generation pipeline failed",
-        )
-
-
-async def _fail_project_plan_generation(
-    project_id: str,
-    *,
-    reason: str,
-    kind: str = "plan.failed",
-    event_summary: str = "Project plan generation failed",
-    previous_valid_plan_text: str = "",
-) -> None:
-    now = int(time.time())
-    reason_text = detail_to_text(reason)[:1200]
-    conn = db()
-    try:
-        row = conn.execute(
-            "SELECT user_id, project_root, plan_text, plan_status FROM projects WHERE id = ? LIMIT 1",
-            (project_id,),
-        ).fetchone()
-        if not row:
-            return
-        preserved_plan = previous_valid_plan_text.strip()
-        if not preserved_plan and _project_plan_file_is_substantive(row["plan_text"]):
-            preserved_plan = str(row["plan_text"] or "").strip()
-        if _coerce_plan_status(row["plan_status"]) == PLAN_STATUS_GENERATING:
-            conn.execute(
-                "UPDATE projects SET plan_status = ?, plan_text = ?, plan_updated_at = ? WHERE id = ?",
-                (PLAN_STATUS_FAILED, preserved_plan[:20000], now, project_id),
-            )
-            conn.commit()
-    finally:
-        conn.close()
-
-    _refresh_project_documents(project_id)
-    owner_user_id = ""
-    project_root = ""
-    lookup_conn = db()
-    try:
-        lookup = lookup_conn.execute(
-            "SELECT user_id, project_root FROM projects WHERE id = ? LIMIT 1",
-            (project_id,),
-        ).fetchone()
-        if lookup:
-            owner_user_id = str(lookup["user_id"] or "")
-            project_root = str(lookup["project_root"] or "")
-    finally:
-        lookup_conn.close()
-    if owner_user_id:
-        _append_project_daily_log(
-            owner_user_id=owner_user_id,
-            project_root=project_root,
-            kind=kind,
-            text=reason_text,
-        )
-    _append_project_activity(
-        project_id=project_id,
-        actor_type="system",
-        actor_id="hivee",
-        actor_label="Hivee",
-        event_type="project.plan.failed",
-        summary=event_summary,
-        payload={"reason": reason_text},
-    )
-    await emit(project_id, "project.plan.failed", {"error": reason_text})
-
-
-async def _project_plan_generation_chat(
-    row: Any,
-    connection_api_key: str,
-    instruction: str,
-    *,
-    project_id: str,
-    primary_agent_id: Optional[str],
-) -> Dict[str, Any]:
-    return await _project_chat(
-        row,
-        connection_api_key,
-        instruction,
-        agent_id=primary_agent_id,
-        session_key=f"{project_id}:plan",
-        timeout_sec=None,
-        user_id=str(row["user_id"] or ""),
-        from_agent_id="hivee",
-        from_label="Hivee System",
-        context_type="plan_generation",
-    )
-
-
-async def _generate_project_plan_impl(project_id: str, *, force: bool = False) -> None:
     conn = db()
     row = conn.execute(
         """
@@ -2960,14 +2863,6 @@ async def _generate_project_plan_impl(project_id: str, *, force: bool = False) -
             break
     if not primary_agent_id:
         primary_agent_id = str(row["main_agent_id"] or "").strip() or None
-    if not primary_agent_id:
-        await _fail_project_plan_generation(
-            project_id,
-            reason="Primary project agent is not configured. Set one primary agent, then regenerate the plan.",
-            event_summary="Project plan generation failed because no primary agent is configured",
-            previous_valid_plan_text=previous_valid_plan_text,
-        )
-        return
 
     hivee_api_base = _get_hivee_api_base(project_id)
     agent_token = _issue_agent_session_token(project_id, primary_agent_id or "")
@@ -3042,12 +2937,17 @@ async def _generate_project_plan_impl(project_id: str, *, force: bool = False) -
     )
     await _emit_project_action_results(project_id, plan_start_result.get("applied") or [])
 
-    res = await _project_plan_generation_chat(
+    res = await _project_chat(
         row,
         connection_api_key,
         instruction,
-        project_id=project_id,
-        primary_agent_id=primary_agent_id,
+        agent_id=primary_agent_id,
+        session_key=f"{project_id}:plan",
+        timeout_sec=None,
+        user_id=str(row["user_id"] or ""),
+        from_agent_id="hivee",
+        from_label="Hivee System",
+        context_type="plan_generation",
     )
     prompt_tokens, completion_tokens, _ = _extract_usage_counts(res)
     if prompt_tokens <= 0:
