@@ -33,6 +33,124 @@ def _project_plan_validity_fields(text: Any) -> Dict[str, Any]:
         "invalid_reason": None if valid or not body else "Plan is incomplete or contains an upstream error.",
     }
 
+async def _dispatch_project_execution_control_ack(
+    *,
+    project_id: str,
+    owner_user_id: str,
+    action: str,
+) -> None:
+    conn = db()
+    row = conn.execute(
+        """
+        SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.workspace_root,
+               p.plan_status, p.execution_status, p.progress_pct, p.connection_id,
+               p.backend_mode, p.connector_id,
+               c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
+        FROM projects p
+        LEFT JOIN openclaw_connections c ON c.id = p.connection_id
+        LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
+        WHERE p.id = ? AND p.user_id = ?
+        """,
+        (project_id, owner_user_id),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return
+    connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=owner_user_id, row=row)
+    role_rows = _project_agent_rows(conn, project_id)
+    conn.close()
+
+    primary_agent_id = None
+    for r in role_rows:
+        if bool(r.get("is_primary")):
+            primary_agent_id = str(r.get("agent_id") or "").strip() or None
+            break
+    if not primary_agent_id:
+        primary_agent_id = str(row["main_agent_id"] or "").strip() or None
+    if not primary_agent_id:
+        return
+
+    command_text = {
+        "pause": "Owner pressed PAUSE. Pause current execution and wait for resume instruction.",
+        "resume": "Owner pressed RESUME. Continue execution from latest checkpoint.",
+        "stop": "Owner pressed STOP. Stop all ongoing execution immediately and report final status.",
+    }.get(action)
+    if not command_text:
+        return
+
+    instruction = _project_context_instruction(
+        title=str(row["title"] or ""),
+        brief=str(row["brief"] or ""),
+        goal=str(row["goal"] or ""),
+        setup_details=_parse_setup_json(row["setup_json"]),
+        role_rows=role_rows,
+        project_root=str(row["project_root"] or ""),
+        plan_status=_coerce_plan_status(row["plan_status"]),
+    )
+    scoped_message = _compose_guardrailed_message(
+        command_text,
+        workspace_root=str(row["workspace_root"] or _user_workspace_root_dir(owner_user_id).as_posix()),
+        project_root=str(row["project_root"] or ""),
+        task_instruction=instruction,
+    )
+    ctrl_res = await _project_chat(
+        row,
+        connection_api_key,
+        scoped_message,
+        agent_id=primary_agent_id,
+        session_key=f"{project_id}:control",
+        timeout_sec=None,
+        user_id=owner_user_id,
+    )
+
+    current_status = _coerce_execution_status(row["execution_status"])
+    current_progress = _clamp_progress(row["progress_pct"])
+    event_kind = f"execution.{action}.ack"
+    summary = f"Agent acknowledged `{action}`."
+
+    if ctrl_res.get("ok"):
+        raw_ctrl_text = str(ctrl_res.get("text") or "").strip()
+        parsed_ctrl = _extract_agent_report_payload(raw_ctrl_text)
+        parsed_summary = str(parsed_ctrl.get("chat_update") or "").strip()
+        parsed_requires_input = bool(parsed_ctrl.get("requires_user_input"))
+        parsed_pause_reason = str(parsed_ctrl.get("pause_reason") or "").strip()
+        parsed_resume_hint = str(parsed_ctrl.get("resume_hint") or "").strip()
+
+        if action == "resume" and parsed_requires_input:
+            event_kind = "execution.pause"
+            current_status = EXEC_STATUS_PAUSED
+            _set_project_execution_state(project_id, status=current_status, progress_pct=current_progress)
+            _refresh_project_documents(project_id)
+            reason_text = parsed_pause_reason or parsed_summary or "Primary agent still needs more input before continuing."
+            summary = f"Resume requested, but primary agent is still blocked: {reason_text[:700]}"
+            if parsed_resume_hint:
+                summary += f" Next: {parsed_resume_hint[:220]}"
+        else:
+            summary = (parsed_summary or raw_ctrl_text or summary)[:1000]
+
+        ptk, ctk, _ = _extract_usage_counts(ctrl_res)
+        if ptk <= 0:
+            ptk = _estimate_tokens_from_text(scoped_message)
+        if ctk <= 0:
+            ctk = _estimate_tokens_from_text(ctrl_res.get("text"))
+        _update_project_usage_metrics(project_id, prompt_tokens=ptk, completion_tokens=ctk)
+        _refresh_project_documents(project_id)
+    else:
+        summary = f"Agent ack for `{action}` failed: {detail_to_text(ctrl_res.get('error') or ctrl_res.get('details'))[:700]}"
+
+    _append_project_daily_log(
+        owner_user_id=owner_user_id,
+        project_root=str(row["project_root"] or ""),
+        kind=event_kind,
+        text=summary,
+        payload={"status": current_status, "progress_pct": current_progress},
+    )
+    await emit(
+        project_id,
+        f"project.{event_kind}",
+        {"status": current_status, "progress_pct": current_progress, "summary": summary},
+    )
+
 
 async def _start_project_execution_run(*, project_id: str, owner_user_id: str, trigger: str = "manual") -> Dict[str, Any]:
     conn = db()
@@ -2108,70 +2226,22 @@ def register_routes(app: FastAPI) -> None:
                 break
         if not primary_agent_id:
             primary_agent_id = str(row["main_agent_id"] or "").strip() or None
-    
+
         control_summary = f"Execution action `{action}` accepted."
         event_kind = f"execution.{action}"
         if primary_agent_id:
-            command_text = {
-                "pause": "Owner pressed PAUSE. Pause current execution and wait for resume instruction.",
-                "resume": "Owner pressed RESUME. Continue execution from latest checkpoint.",
-                "stop": "Owner pressed STOP. Stop all ongoing execution immediately and report final status.",
-            }[action]
-            instruction = _project_context_instruction(
-                title=str(row["title"] or ""),
-                brief=str(row["brief"] or ""),
-                goal=str(row["goal"] or ""),
-                setup_details=_parse_setup_json(row["setup_json"]),
-                role_rows=role_rows,
-                project_root=str(row["project_root"] or ""),
-                plan_status=_coerce_plan_status(row["plan_status"]),
+            asyncio.create_task(
+                _dispatch_project_execution_control_ack(
+                    project_id=project_id,
+                    owner_user_id=user_id,
+                    action=action,
+                )
             )
-            scoped_message = _compose_guardrailed_message(
-                command_text,
-                workspace_root=str(row["workspace_root"] or _user_workspace_root_dir(user_id).as_posix()),
-                project_root=str(row["project_root"] or ""),
-                task_instruction=instruction,
+            control_summary = (
+                f"Execution action `{action}` accepted. "
+                "Agent ack is continuing in the background."
             )
-            ctrl_res = await _project_chat(
-                row,
-                connection_api_key,
-                scoped_message,
-                agent_id=primary_agent_id,
-                session_key=f"{project_id}:control",
-                timeout_sec=120,
-                user_id=user_id,
-            )
-            if ctrl_res.get("ok"):
-                raw_ctrl_text = str(ctrl_res.get("text") or "").strip()
-                parsed_ctrl = _extract_agent_report_payload(raw_ctrl_text)
-                parsed_summary = str(parsed_ctrl.get("chat_update") or "").strip()
-                parsed_requires_input = bool(parsed_ctrl.get("requires_user_input"))
-                parsed_pause_reason = str(parsed_ctrl.get("pause_reason") or "").strip()
-                parsed_resume_hint = str(parsed_ctrl.get("resume_hint") or "").strip()
-                if action == "resume" and parsed_requires_input:
-                    event_kind = "execution.pause"
-                    new_status = EXEC_STATUS_PAUSED
-                    new_progress = _clamp_progress((state or {}).get("progress_pct") if state else current_progress)
-                    state = _set_project_execution_state(project_id, status=new_status, progress_pct=new_progress)
-                    reason_text = parsed_pause_reason or parsed_summary or "Primary agent still needs more input before continuing."
-                    control_summary = f"Resume requested, but primary agent is still blocked: {reason_text[:700]}"
-                    if parsed_resume_hint:
-                        control_summary += f" Next: {parsed_resume_hint[:220]}"
-                else:
-                    if parsed_summary:
-                        control_summary = parsed_summary[:1000]
-                    elif raw_ctrl_text and not (raw_ctrl_text.startswith("{") and raw_ctrl_text.endswith("}")):
-                        control_summary = raw_ctrl_text[:1000]
-                ptk, ctk, _ = _extract_usage_counts(ctrl_res)
-                if ptk <= 0:
-                    ptk = _estimate_tokens_from_text(scoped_message)
-                if ctk <= 0:
-                    ctk = _estimate_tokens_from_text(ctrl_res.get("text"))
-                _update_project_usage_metrics(project_id, prompt_tokens=ptk, completion_tokens=ctk)
-                _refresh_project_documents(project_id)
-            else:
-                control_summary = f"Action saved, but agent ack failed: {detail_to_text(ctrl_res.get('error') or ctrl_res.get('details'))[:700]}"
-    
+
         _append_project_daily_log(
             owner_user_id=user_id,
             project_root=str(row["project_root"] or ""),

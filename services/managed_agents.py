@@ -3790,6 +3790,7 @@ async def _delegate_project_tasks(project_id: str) -> None:
 
 
 async def _delegate_project_tasks_impl(project_id: str) -> None:
+    from core.session_project_access import _get_project_agent_permissions
     conn = db()
     row = conn.execute(
         """
@@ -4709,7 +4710,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 followup_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=120,
+                timeout_sec=None,
                 user_id=str(row["user_id"] or ""),
                 from_agent_id="hivee",
                 from_label="Hivee System",
@@ -4798,7 +4799,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 rescue_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=120,
+                timeout_sec=None,
                 user_id=str(row["user_id"] or ""),
                 from_agent_id="hivee",
                 from_label="Hivee System",
@@ -4917,7 +4918,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 subtask_prompt,
                 agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=120,
+                timeout_sec=None,
                 user_id=str(row["user_id"] or ""),
                 from_agent_id="hivee",
                 from_label="Hivee System",
