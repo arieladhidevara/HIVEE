@@ -7,6 +7,9 @@ from services.project_utils import *
 from services.project_activity import append_project_activity_log_entry
 
 
+TASK_EXECUTION_WAIT_NOTE_INTERVAL_SEC = 60
+
+
 def _append_project_activity(
     *,
     project_id: str,
@@ -3978,7 +3981,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             retry_instruction,
             agent_id=primary_agent_id,
             session_key=f"{project_id}:delegate",
-            timeout_sec=180,
+            timeout_sec=None,
             user_id=str(row["user_id"] or ""),
             from_agent_id="hivee",
             from_label="Hivee System",
@@ -4593,16 +4596,71 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
         if agent_file_context:
             agent_instruction = f"{agent_instruction}\n\n{agent_file_context}"
 
-        agent_res = await _project_chat(
-            row,
-            connection_api_key,
+        async def _project_chat_with_wait_notes(
+            prompt: str,
+            *,
+            session_key: str,
+            context_type: str,
+            timeout_sec: Optional[int] = None,
+        ) -> Dict[str, Any]:
+            started_at = time.time()
+            chat_task = asyncio.create_task(
+                _project_chat(
+                    row,
+                    connection_api_key,
+                    prompt,
+                    agent_id=aid,
+                    session_key=session_key,
+                    timeout_sec=timeout_sec,
+                    user_id=str(row["user_id"] or ""),
+                    from_agent_id="hivee",
+                    from_label="Hivee System",
+                    context_type=context_type,
+                )
+            )
+            while True:
+                done, _ = await asyncio.wait(
+                    {chat_task},
+                    timeout=TASK_EXECUTION_WAIT_NOTE_INTERVAL_SEC,
+                )
+                if done:
+                    break
+                elapsed = max(1, int(time.time() - started_at))
+                elapsed_min = max(1, round(elapsed / 60))
+                note = f"Still waiting for connector response after {elapsed_min} min."
+                live_payload = {
+                    "agent_id": aid,
+                    "agent_name": agent_name,
+                    "task_title": task_title,
+                    "task_id": resolved_task_id or "",
+                    "note": note,
+                    "elapsed_sec": elapsed,
+                    "timeout_sec": timeout_sec,
+                    "context_type": context_type,
+                }
+                await emit(project_id, "agent.task.live", live_payload)
+                _append_project_activity(
+                    project_id=project_id,
+                    actor_type="project_agent",
+                    actor_id=aid,
+                    actor_label=agent_name,
+                    event_type="agent.task.live",
+                    summary=f"{agent_name}: {note}",
+                    payload=live_payload,
+                )
+            try:
+                return await chat_task
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "error": detail_to_text(exc)[:1200],
+                    "transport": "connector",
+                    "agent_id": aid,
+                }
+
+        agent_res = await _project_chat_with_wait_notes(
             agent_instruction,
-            agent_id=aid,
             session_key=f"{project_id}:agent:{aid}",
-            timeout_sec=None,
-            user_id=str(row["user_id"] or ""),
-            from_agent_id="hivee",
-            from_label="Hivee System",
             context_type="task_execution",
         )
         p_tokens, c_tokens, _ = _extract_usage_counts(agent_res)
@@ -4704,16 +4762,9 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 user_message=task_text,
                 previous_response=report_text,
             )
-            followup_res = await _project_chat(
-                row,
-                connection_api_key,
+            followup_res = await _project_chat_with_wait_notes(
                 followup_prompt,
-                agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=None,
-                user_id=str(row["user_id"] or ""),
-                from_agent_id="hivee",
-                from_label="Hivee System",
                 context_type="task_execution",
             )
             if followup_res.get("ok"):
@@ -4793,16 +4844,9 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 task_text=task_text,
                 previous_response=report_text,
             )
-            rescue_res = await _project_chat(
-                row,
-                connection_api_key,
+            rescue_res = await _project_chat_with_wait_notes(
                 rescue_prompt,
-                agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=None,
-                user_id=str(row["user_id"] or ""),
-                from_agent_id="hivee",
-                from_label="Hivee System",
                 context_type="task_execution",
             )
             if rescue_res.get("ok"):
@@ -4912,16 +4956,9 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 "Base the breakdown on your approved sub-plan or the assigned task. Keep `chat_update` short and mention that the progress map was expanded.\n"
                 "Do not repeat the full deliverable unless needed; focus on task breakdown and dependency structure."
             )
-            subtask_res = await _project_chat(
-                row,
-                connection_api_key,
+            subtask_res = await _project_chat_with_wait_notes(
                 subtask_prompt,
-                agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=None,
-                user_id=str(row["user_id"] or ""),
-                from_agent_id="hivee",
-                from_label="Hivee System",
                 context_type="task_execution",
             )
             if subtask_res.get("ok"):
@@ -5004,17 +5041,11 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 f"Agent: `{aid}` ({agent_name})\n"
                 f"Assigned task:\n{task_text[:3000]}\n"
             )
-            strict_res = await _project_chat(
-                row,
-                connection_api_key,
+            strict_res = await _project_chat_with_wait_notes(
                 strict_prompt,
-                agent_id=aid,
                 session_key=f"{project_id}:agent:{aid}",
-                timeout_sec=180,
-                user_id=str(row["user_id"] or ""),
-                from_agent_id="hivee",
-                from_label="Hivee System",
                 context_type="task_execution_contract",
+                timeout_sec=None,
             )
             sp, sc, _ = _extract_usage_counts(strict_res)
             if sp <= 0:

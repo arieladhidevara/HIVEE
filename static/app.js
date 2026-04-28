@@ -4627,6 +4627,7 @@ function activityEventMeta(eventType) {
   if (t.startsWith("project.delegation")) return { color: "var(--yellow)", label: "Delegation ready" };
   if (t === "agent.task.assigned")      return { color: "var(--yellow)", label: "Assigned" };
   if (t === "agent.task.started")       return { color: "var(--cyan)",   label: "Started" };
+  if (t === "agent.task.live")          return { color: "var(--yellow)", label: "Waiting" };
   if (t === "agent.task.reported")      return { color: "var(--green)",  label: "Agent update" };
   if (t === "agent.task.failed")        return { color: "var(--red)",    label: "Agent failed" };
   return { color: "var(--muted)", label: eventType || "Event" };
