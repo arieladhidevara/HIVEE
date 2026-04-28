@@ -5245,7 +5245,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             actor_id=aid,
             actor_label=agent_name,
             event_type="agent.task.reported",
-            summary=f"{agent_name} submitted an update",
+            summary=f"{agent_name}: {chat_update[:900]}",
             payload=reported_payload,
         )
         if applied_actions:

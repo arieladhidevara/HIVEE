@@ -8,12 +8,16 @@
   --bg:       #000000;
   --bg-soft:  #0a0a0a;
   --surface:  #111111;
+  --surface2: #0b0b0b;
+  --surface3: #080808;
   --modal-backdrop: rgba(0, 0, 0, 0.88);
   --modal-surface: #0f0f0f;
   --modal-surface-2: #1a1a1a;
   --modal-line: rgba(255, 255, 255, 0.1);
   --line:     rgba(255, 255, 255, 0.07);
+  --line-1:   rgba(255, 255, 255, 0.08);
   --line-2:   rgba(255, 255, 255, 0.12);
+  --border:   rgba(255, 255, 255, 0.12);
   --text:     #edf1f8;
   --muted:    #4a5468;
   --yellow:   #facc15;
@@ -21,6 +25,8 @@
   --orange:   #f97316;
   --cyan:     #22d3ee;
   --blue:     #3b82f6;
+  --green:    #34d399;
+  --purple:   #a78bfa;
   --gradient: linear-gradient(135deg, #facc15 0%, #ff4d4d 40%, #22d3ee 70%, #3b82f6 100%);
   --radius:   12px;
   --shadow:   0 24px 56px rgba(0, 0, 0, 0.55);
@@ -3063,7 +3069,7 @@ textarea[readonly]:focus {
 .dsr-fill { height: 100%; border-radius: 999px; transition: width 600ms; }
 
 /* ===== AGENT DETAIL MODAL ===== */
-.agent-modal { background: var(--surface); border: 1px solid var(--line-2); border-radius: 12px; padding: 0; width: min(520px, 96vw); max-height: 90vh; overflow: hidden; box-shadow: 0 24px 48px rgba(0,0,0,0.6); color: var(--text); }
+.agent-modal { background: #050505; border: 1px solid rgba(255,255,255,.16); border-radius: 12px; padding: 0; width: min(520px, 96vw); max-height: 90vh; overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,0.78); color: var(--text); }
 .agent-modal::backdrop { background: rgba(0,0,0,0.65); backdrop-filter: blur(4px); }
 .agent-modal-inner { display: flex; flex-direction: column; max-height: 90vh; }
 .agent-modal-header { display: flex; align-items: center; gap: 14px; padding: 20px 20px 16px; border-bottom: 1px solid var(--line-1); }
@@ -3170,7 +3176,7 @@ textarea[readonly]:focus {
 .pmap-section { margin-bottom: 16px; }
 .pmap-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .pmap-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
-.pmap-viewport { position: relative; overflow: hidden; width: 100%; height: 380px; border: 1px solid var(--line-1); border-radius: 8px; background: var(--bg); cursor: grab; user-select: none; }
+.pmap-viewport { position: relative; overflow: hidden; width: 100%; height: 380px; border: 1px solid var(--line-1); border-radius: 8px; background: #020202; cursor: grab; user-select: none; }
 .pmap-viewport:active { cursor: grabbing; }
 .pmap-canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .pmap-svg { position: absolute; top: 0; left: 0; pointer-events: none; }
@@ -3248,6 +3254,128 @@ textarea[readonly]:focus {
 .task-srow-controls select { font-size: 11px; padding: 3px 6px; height: 26px; }
 .task-srow-controls button { font-size: 11px; padding: 3px 10px; height: 26px; }
 
+.task-table-head,
+.task-table-row {
+  display: grid;
+  grid-template-columns: minmax(136px, .85fr) minmax(180px, 1.45fr) minmax(96px, .45fr);
+  gap: 12px;
+  align-items: center;
+}
+.task-table-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #050505;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.task-table-row {
+  min-height: 58px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: #070707;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+.task-table-row:hover,
+.task-table-row:focus-visible {
+  border-color: rgba(34, 211, 238, .45);
+  background: #0d0d0d;
+  outline: none;
+}
+.task-table-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.task-table-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex: 0 0 28px;
+  object-fit: contain;
+  background: rgba(255, 255, 255, .05);
+  border: 1px solid var(--line-2);
+}
+.task-table-avatar-empty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-weight: 700;
+}
+.task-table-agent-name,
+.task-table-title strong,
+.task-table-title span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-table-agent-name {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.task-table-title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.task-table-title strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.task-table-title span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-table-status {
+  display: flex;
+  justify-content: flex-end;
+}
+.task-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 78px;
+  min-height: 26px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, .04);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.task-status-pill.status-in_progress { color: var(--cyan); border-color: rgba(34, 211, 238, .35); background: rgba(34, 211, 238, .08); }
+.task-status-pill.status-blocked { color: var(--red); border-color: rgba(255, 77, 77, .35); background: rgba(255, 77, 77, .08); }
+.task-status-pill.status-review { color: var(--purple); border-color: rgba(167, 139, 250, .35); background: rgba(167, 139, 250, .08); }
+.task-status-pill.status-done { color: var(--green); border-color: rgba(52, 211, 153, .35); background: rgba(52, 211, 153, .08); }
+
+@media (max-width: 720px) {
+  .task-table-head { display: none; }
+  .task-table-row {
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+  }
+  .task-table-agent {
+    grid-column: 1 / -1;
+  }
+  .task-table-status {
+    justify-content: flex-start;
+  }
+}
+
 /* ===== NEW TASK MODAL ===== */
 .ntask-dialog { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 0; max-width: 480px; width: 100%; color: var(--text); box-shadow: 0 8px 32px rgba(0,0,0,.45); }
 .ntask-dialog::backdrop { background: rgba(0,0,0,.55); }
@@ -3270,9 +3398,11 @@ textarea[readonly]:focus {
 
 
 /* ===== PROJECT MAP — mixed Agent+Task nodes ===== */
-.pmap-mnode { position: absolute; border-radius: 8px; border: 1.5px solid var(--border); background: var(--surface3); display: flex; flex-direction: column; overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s; user-select: none; }
+.pmap-mnode { position: absolute; border-radius: 8px; border: 1.5px solid var(--border); background: #050505; display: flex; flex-direction: column; overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s; user-select: none; box-shadow: 0 8px 22px rgba(0,0,0,.45); }
 .pmap-mnode:hover { border-color: var(--pmap-accent, var(--cyan)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--pmap-accent, var(--cyan)) 25%, transparent); }
 .pmap-mnode-agent { border-style: dashed; }
+.pmap-mnode-task { background: #030303; border-color: rgba(255,255,255,.16); }
+.pmap-mnode-stage { background: #080603; border-style: solid; }
 .pmap-mnode-bar { height: 3px; flex: 0 0 3px; background: var(--pmap-accent, var(--border)); }
 .pmap-mnode-body { padding: 5px 8px 6px; display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .pmap-mnode-label { font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -3281,7 +3411,7 @@ textarea[readonly]:focus {
 .pmap-edge-dep { stroke: rgba(99,202,255,0.45); stroke-width: 1.5; }
 
 /* ===== TASK DETAIL MODAL ===== */
-.tdm-dialog { background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; padding: 0; max-width: 580px; width: 100%; color: var(--text); box-shadow: 0 12px 40px rgba(0,0,0,.55); max-height: 85vh; }
+.tdm-dialog { background: #050505; border: 1px solid rgba(255,255,255,.16); border-radius: 12px; padding: 0; max-width: 580px; width: 100%; color: var(--text); box-shadow: 0 24px 60px rgba(0,0,0,.78); max-height: 85vh; }
 .tdm-dialog[open] { display: flex; flex-direction: column; }
 .tdm-dialog::backdrop { background: rgba(0,0,0,.6); }
 .tdm-inner { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow: hidden; }
@@ -3332,7 +3462,7 @@ textarea[readonly]:focus {
 #tdm_msg.error { color: var(--red); }
 .tdm-weight-badge { font-size: 11px; font-weight: 700; color: var(--muted); }
 .tdm-weight-badge.has-weight { color: var(--cyan); background: rgba(0,229,255,.08); padding: 1px 6px; border-radius: 8px; border: 1px solid rgba(0,229,255,.2); }
-.tdm-card-fields { background: var(--surface3); border-radius: 8px; padding: 10px 14px; border: 1px solid var(--border); }
+.tdm-card-fields { background: #080808; border-radius: 8px; padding: 10px 14px; border: 1px solid rgba(255,255,255,.12); }
 .tdm-card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }
 .tdm-card-field { display: flex; flex-direction: column; gap: 3px; }
 .tdm-card-field-label { font-size: 9px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }

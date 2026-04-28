@@ -1710,6 +1710,114 @@ function buildTaskAssigneeOptions(selectedAgentId, { emptyLabel = "Unassigned" }
   return options;
 }
 
+function projectAgentId(agentOrId) {
+  if (agentOrId && typeof agentOrId === "object") {
+    return String(agentOrId.agent_id || agentOrId.id || "").trim();
+  }
+  return String(agentOrId || "").trim();
+}
+
+function findProjectAssignedAgent(agentOrId) {
+  const agentId = projectAgentId(agentOrId);
+  if (!agentId) return null;
+  return (Array.isArray(selectedAssignedAgents) ? selectedAssignedAgents : [])
+    .find((agent) => String(agent?.id || agent?.agent_id || "").trim() === agentId) || null;
+}
+
+function projectAgentDisplayName(agentOrId, fallback = "Unassigned") {
+  const agentId = projectAgentId(agentOrId);
+  const assigned = findProjectAssignedAgent(agentId);
+  const summary = (Array.isArray(summaryAgents) ? summaryAgents : [])
+    .find((agent) => String(agent?.agent_id || agent?.id || "").trim() === agentId);
+  const current = (Array.isArray(currentAgents) ? currentAgents : [])
+    .find((agent) => String(agent?.id || agent?.agent_id || "").trim() === agentId);
+  const base = String(
+    (agentOrId && typeof agentOrId === "object" ? (agentOrId.agent_name || agentOrId.name) : "")
+    || assigned?.name
+    || assigned?.agent_name
+    || summary?.agent_name
+    || summary?.name
+    || current?.name
+    || agentId
+    || fallback
+  ).trim();
+  if (!base) return fallback;
+  const sourceUser = String(assigned?.source_username || "").trim();
+  const sourceType = String(assigned?.source_type || "").trim().toLowerCase();
+  return sourceUser && sourceType === "external" ? `${sourceUser}/${base}` : base;
+}
+
+function projectAgentDetailModel(agentOrId) {
+  const source = agentOrId && typeof agentOrId === "object" ? agentOrId : {};
+  const agentId = projectAgentId(source) || projectAgentId(agentOrId);
+  const sourceConn = String(source.connection_id || "").trim();
+  const summary = (Array.isArray(summaryAgents) ? summaryAgents : [])
+    .find((agent) => {
+      const sameId = String(agent?.agent_id || agent?.id || "").trim() === agentId;
+      if (!sameId) return false;
+      const summaryConn = String(agent?.connection_id || "").trim();
+      return !sourceConn || !summaryConn || summaryConn === sourceConn;
+    }) || null;
+  const assigned = findProjectAssignedAgent(agentId);
+  const current = (Array.isArray(currentAgents) ? currentAgents : [])
+    .find((agent) => String(agent?.id || agent?.agent_id || "").trim() === agentId) || null;
+  const raw = source.raw || summary?.raw || current?.raw || assigned?.raw || null;
+  const capabilities = Array.isArray(source.capabilities) ? source.capabilities
+    : Array.isArray(summary?.capabilities) ? summary.capabilities
+    : Array.isArray(raw?.capabilities) ? raw.capabilities
+    : [];
+  return {
+    ...summary,
+    ...source,
+    agent_id: agentId,
+    agent_name: projectAgentDisplayName(source.agent_id || source.id || agentId, agentId || "Agent"),
+    status: String(source.status || summary?.status || assigned?.execution_status || "active").trim() || "active",
+    capabilities,
+    connection_id: sourceConn || String(summary?.connection_id || current?.connection_id || assigned?.connection_id || activeConnectionId || "").trim(),
+    model: source.model || summary?.model || raw?.model || source.adapter_type || summary?.adapter_type || "",
+    adapter_type: source.adapter_type || summary?.adapter_type || raw?.adapter_type || "",
+    raw,
+  };
+}
+
+function openProjectAgentDetailModal(agentOrId) {
+  const agent = projectAgentDetailModel(agentOrId);
+  if (!agent.agent_id) return;
+  openAgentDetailModal(agent);
+}
+
+function taskMapLabel(task) {
+  const text = String(task?.title || task?.name || task?.description || "").trim();
+  if (!text) return "Task";
+  const lower = text.toLowerCase();
+  const patterns = [
+    [/auth|login|signin|signup|password|session|oauth|account/, "Auth"],
+    [/database|schema|sql|sqlite|postgres|mysql|storage|model|migration|data/, "Data"],
+    [/\bapi\b|endpoint|route|server|backend|webhook|request/, "API"],
+    [/\bui\b|ux|interface|screen|page|frontend|component|layout/, "UI"],
+    [/design|wireframe|style|visual|brand|mockup/, "Design"],
+    [/test|qa|spec|coverage|verify|validation/, "Test"],
+    [/deploy|release|ship|hosting|docker|ci|pipeline/, "Deploy"],
+    [/doc|readme|guide|manual|copy|content/, "Docs"],
+    [/research|analyse|analyze|audit|discover|investigate/, "Research"],
+    [/review|approve|feedback|handoff/, "Review"],
+    [/bug|fix|repair|patch|issue/, "Fix"],
+    [/plan|scope|roadmap|milestone/, "Plan"],
+    [/setup|config|configure|bootstrap|install/, "Setup"],
+  ];
+  for (const [rx, label] of patterns) {
+    if (rx.test(lower)) return label;
+  }
+  const stop = new Set([
+    "the", "and", "for", "with", "from", "into", "task", "work", "create", "build", "make", "add",
+    "update", "implement", "prepare", "setup", "buat", "bikin", "membuat", "untuk", "dengan", "dan",
+  ]);
+  const word = (text.match(/[A-Za-z0-9]+/g) || [])
+    .find((part) => part.length > 2 && !stop.has(part.toLowerCase()));
+  if (!word) return "Task";
+  return word.charAt(0).toUpperCase() + word.slice(1, 14).toLowerCase();
+}
+
 function hydrateTaskCreateAssigneeSelect() {
   const select = $("task_new_assignee");
   if (!select) return;
@@ -1869,6 +1977,11 @@ function renderProjectTaskList() {
     return;
   }
 
+  const header = document.createElement("div");
+  header.className = "task-table-head";
+  header.innerHTML = "<span>Agent</span><span>Task</span><span>Status</span>";
+  list.appendChild(header);
+
   for (const task of rows) {
     const taskId = String(task?.id || "").trim();
     const statusValue = normalizeTaskStatus(task?.status);
@@ -1876,8 +1989,18 @@ function renderProjectTaskList() {
     const assignee = String(task?.assignee_agent_id || "").trim();
 
     const card = document.createElement("article");
-    card.className = "task-srow";
+    card.className = "task-table-row";
     card.dataset.taskId = taskId;
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", `Open task ${String(task?.title || taskId || "Untitled task")}`);
+    card.addEventListener("click", () => openTaskDetailModal(taskId));
+    card.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        openTaskDetailModal(taskId);
+      }
+    });
 
     const dot = document.createElement("button");
     dot.type = "button";
@@ -1912,13 +2035,45 @@ function renderProjectTaskList() {
     openBtn.title = "Open task";
     openBtn.addEventListener("click", (e) => { e.stopPropagation(); openTaskDetailModal(taskId); });
 
-    badges.appendChild(priBadge);
-    badges.appendChild(agentBadge);
+    const assigneeName = assignee ? projectAgentDisplayName(assignee, assignee) : "Unassigned";
+    const assigneeAvatar = assignee ? createAgentAvatarImg(assignee, `${assigneeName} avatar`) : null;
 
-    card.appendChild(dot);
-    card.appendChild(titleEl);
-    card.appendChild(badges);
-    card.appendChild(openBtn);
+    const agentCell = document.createElement("div");
+    agentCell.className = "task-table-agent";
+    if (assigneeAvatar) {
+      assigneeAvatar.className = "task-table-avatar";
+      assigneeAvatar.onerror = () => { assigneeAvatar.src = AGENT_MASCOT_PATH || SUMMARY_AGENT_DEFAULT_AVATAR; };
+      agentCell.appendChild(assigneeAvatar);
+    } else {
+      const emptyAvatar = document.createElement("span");
+      emptyAvatar.className = "task-table-avatar task-table-avatar-empty";
+      emptyAvatar.textContent = "-";
+      agentCell.appendChild(emptyAvatar);
+    }
+    const agentText = document.createElement("span");
+    agentText.className = "task-table-agent-name";
+    agentText.textContent = assigneeName;
+    agentCell.appendChild(agentText);
+
+    const taskCell = document.createElement("div");
+    taskCell.className = "task-table-title";
+    const taskName = document.createElement("strong");
+    taskName.textContent = String(task?.title || "Untitled task");
+    const taskMeta = document.createElement("span");
+    taskMeta.textContent = `${taskPriorityLabel(priorityValue)} priority`;
+    taskCell.appendChild(taskName);
+    taskCell.appendChild(taskMeta);
+
+    const statusCell = document.createElement("div");
+    statusCell.className = "task-table-status";
+    const statusPill = document.createElement("span");
+    statusPill.className = `task-status-pill status-${statusValue}`;
+    statusPill.textContent = taskStatusLabel(statusValue);
+    statusCell.appendChild(statusPill);
+
+    card.appendChild(agentCell);
+    card.appendChild(taskCell);
+    card.appendChild(statusCell);
     list.appendChild(card);
     /* eslint-disable no-unreachable */ if (false) {
     const lockedByOther = false, commentsExpanded = false;
@@ -2567,7 +2722,14 @@ function renderProjectActivityFeed() {
     const kind = String(item?.event_type || "event").trim();
     const summary = String(item?.summary || "").trim();
     const payload = item?.payload && typeof item.payload === "object" ? item.payload : {};
-    const fullText = String(payload?.full_text || "").replace(/\r/g, "").trim();
+    const payloadText = payload?.full_text || payload?.text || payload?.notes || "";
+    const actionText = Array.isArray(payload?.applied_actions) && payload.applied_actions.length
+      ? `\n\nActions:\n${JSON.stringify(payload.applied_actions, null, 2)}`
+      : "";
+    const fileText = Array.isArray(payload?.saved_files) && payload.saved_files.length
+      ? `\n\nFiles:\n${payload.saved_files.map((item) => `- ${item?.path || item}`).join("\n")}`
+      : "";
+    const fullText = String(`${payloadText}${fileText}${actionText}`).replace(/\r/g, "").trim();
     const hasFullText = Boolean(fullText && fullText !== summary);
     const meta = activityEventMeta(kind);
 
@@ -2754,6 +2916,7 @@ async function loadProjectTasks(projectId = selectedProjectId, { silent = false 
   }
 
   renderProjectTaskList();
+  if (activeProjectPane === "live") renderProgressMap();
   if (!silent) setMessage("tasks_msg", `Loaded ${projectTasks.length} task(s).`, "ok");
 }
 
@@ -3561,8 +3724,12 @@ function eventSummary(kind, payload) {
     const label = data.task_title || data.task_id || data.task_file || data.role || "task";
     return `${name} assigned: ${label}.`;
   }
-  if (kind === "agent.task.started") return `${name} started task.`;
-  if (kind === "agent.task.reported") return `${name} reported update.`;
+  if (kind === "agent.task.started") return `${name} started ${data.task_title || "task"}.`;
+  if (kind === "agent.task.reported") {
+    const taskLabel = data.task_title || data.task_id || "task";
+    const update = shortText(data.text || data.notes || "", 150);
+    return update ? `${name} finished ${taskLabel}: ${update}` : `${name} finished ${taskLabel}.`;
+  }
   if (kind === "agent.task.actions_applied") return `${name} applied project actions.`;
   if (kind === "agent.chat.actions_applied") return `${name} applied structured project actions.`;
   if (kind === "agent.task.failed") return `${name} failed: ${shortText(data.error || "", 180)}`;
@@ -3622,7 +3789,18 @@ function eventChatMessage(kind, payload) {
     return { role: "agent", agentId: data.agent_id || name, text: `Hey team, I got my assigned task: ${label}. I am starting now.${mentions}`, meta: `${name}` };
   }
   if (kind === "agent.task.started") return { role: "agent", agentId: data.agent_id || name, text: "I started working on my assigned task.", meta: `${name}` };
-  if (kind === "agent.task.reported") return null;
+  if (kind === "agent.task.reported") {
+    const taskLabel = String(data.task_title || data.task_id || "assigned task").trim();
+    const update = String(data.text || "").trim();
+    if (!update) return null;
+    return {
+      role: "agent",
+      agentId: data.agent_id || name,
+      text: `Task update for ${taskLabel}: ${update}`,
+      meta: `${name}`,
+      messageKey: `agent.task.reported:${data.agent_id || name}:${data.task_id || data.output_file || taskLabel}`,
+    };
+  }
   if (kind === "agent.task.actions_applied") return { role: "system", text: `${name} applied structured project actions.`, meta: "workflow" };
   if (kind === "agent.chat.actions_applied") return { role: "system", text: `${name} applied structured project actions.`, meta: "workflow" };
   if (kind === "agent.chat.update") return null;
@@ -4447,6 +4625,10 @@ function activityEventMeta(eventType) {
   if (t === "project.execution.resume") return { color: "var(--cyan)",   label: "Resumed" };
   if (t === "project.execution.stop")   return { color: "var(--red)",    label: "Stopped" };
   if (t.startsWith("project.delegation")) return { color: "var(--yellow)", label: "Delegation ready" };
+  if (t === "agent.task.assigned")      return { color: "var(--yellow)", label: "Assigned" };
+  if (t === "agent.task.started")       return { color: "var(--cyan)",   label: "Started" };
+  if (t === "agent.task.reported")      return { color: "var(--green)",  label: "Agent update" };
+  if (t === "agent.task.failed")        return { color: "var(--red)",    label: "Agent failed" };
   return { color: "var(--muted)", label: eventType || "Event" };
 }
 
@@ -6905,6 +7087,8 @@ function toggleTaskMapView() {}
 /* ===== PROGRESS MAP (Live panel DAG) ===== */
 function agentShortName(agentId) {
   if (!agentId) return null;
+  const pa = findProjectAssignedAgent(agentId);
+  if (pa) return String(pa.name || pa.agent_name || pa.id || "").split(/[\s_-]/)[0];
   const sa = summaryAgents.find((a) => a.agent_id === agentId);
   if (sa) return String(sa.agent_name || sa.agent_id || "").split(/[\s_-]/)[0];
   const ca = currentAgents.find((a) => a.id === agentId);
@@ -6928,32 +7112,109 @@ function renderProgressMap() {
   const proj    = selectedProjectData;
   if (!proj) { nodesEl.innerHTML = '<p class="helper" style="padding:20px">No project selected.</p>'; return; }
 
-  const primaryId   = String(selectedPrimaryAgentId || agents[0]?.id || "").trim();
-  const agentById   = new Map(agents.map((a) => [String(a.id), a]));
-  const taskById    = new Map(tasks.map((t) => [String(t.id), t]));
-  const agentsWithTasks = new Set(tasks.map((t) => String(t.assignee_agent_id || "")).filter(Boolean));
-  const relevantAgentIds = [...new Set([primaryId, ...agentsWithTasks].filter(Boolean))];
+  const rawPrimaryId = String(
+    selectedPrimaryAgentId
+    || agents.find((agent) => Boolean(agent?.is_primary))?.id
+    || agents[0]?.id
+    || ""
+  ).trim();
+  const primaryId = _isDefaultPlaceholderAgent(rawPrimaryId) ? "" : rawPrimaryId;
+  const taskById = new Map(tasks.map((task) => [String(task.id), task]));
+  const assignedIds = agents
+    .map((agent) => String(agent?.id || agent?.agent_id || "").trim())
+    .filter((agentId) => Boolean(agentId) && !_isDefaultPlaceholderAgent(agentId));
+  const taskAgentIds = tasks
+    .map((task) => String(task?.assignee_agent_id || "").trim())
+    .filter((agentId) => Boolean(agentId) && !_isDefaultPlaceholderAgent(agentId));
+  const relevantAgentIds = [...new Set([primaryId, ...assignedIds, ...taskAgentIds].filter(Boolean))];
+  const delegatedAgentIds = relevantAgentIds.filter((agentId) => agentId !== primaryId);
+  const delegationNodeId = "stage:delegate";
 
   // ── Node list (type: agent | task) ────────────────────────────────────────
   const nodes = [];
-  for (const aid of relevantAgentIds) {
-    const agent = agentById.get(aid);
-    nodes.push({ id: `agent:${aid}`, type: "agent", label: String(agent?.name || aid).slice(0, 18),
-      sub: aid === primaryId ? "Main Agent" : (agent?.role || "Agent"), agentId: aid, w: 148, h: 48 });
+  if (primaryId) {
+    nodes.push({
+      id: `agent:${primaryId}`,
+      type: "agent",
+      label: projectAgentDisplayName(primaryId, primaryId).slice(0, 18),
+      sub: "Primary",
+      agentId: primaryId,
+      w: 156,
+      h: 52,
+      fixedLevel: 0,
+    });
+  }
+  nodes.push({
+    id: delegationNodeId,
+    type: "stage",
+    label: "Delegate",
+    sub: delegatedAgentIds.length ? `${delegatedAgentIds.length} agent${delegatedAgentIds.length === 1 ? "" : "s"}` : "Route",
+    w: 132,
+    h: 48,
+    fixedLevel: primaryId ? 1 : 0,
+  });
+  for (const aid of delegatedAgentIds) {
+    const assigned = findProjectAssignedAgent(aid);
+    nodes.push({
+      id: `agent:${aid}`,
+      type: "agent",
+      label: projectAgentDisplayName(aid, aid).slice(0, 18),
+      sub: String(assigned?.role || "Agent").slice(0, 24),
+      agentId: aid,
+      w: 156,
+      h: 52,
+      fixedLevel: primaryId ? 2 : 1,
+    });
+  }
+
+  const taskDepthMemo = new Map();
+  function taskDepth(taskId, stack = new Set()) {
+    const tid = String(taskId || "").trim();
+    if (!tid || !taskById.has(tid)) return 0;
+    if (taskDepthMemo.has(tid)) return taskDepthMemo.get(tid);
+    if (stack.has(tid)) return 0;
+    stack.add(tid);
+    const task = taskById.get(tid);
+    const deps = Array.isArray(task?.dependencies) ? task.dependencies : Array.isArray(task?.depends_on) ? task.depends_on : [];
+    let depth = 0;
+    for (const depId of deps) {
+      const did = String(depId || "").trim();
+      if (taskById.has(did)) depth = Math.max(depth, taskDepth(did, stack) + 1);
+    }
+    stack.delete(tid);
+    taskDepthMemo.set(tid, depth);
+    return depth;
   }
   for (const task of tasks) {
     const tid = String(task.id);
-    nodes.push({ id: `task:${tid}`, type: "task", label: String(task.title || "Untitled").slice(0, 28),
-      sub: taskStatusLabel(normalizeTaskStatus(task.status)), status: normalizeTaskStatus(task.status),
-      agentId: String(task.assignee_agent_id || ""), taskId: tid, w: 158, h: 54 });
+    const depth = taskDepth(tid);
+    nodes.push({
+      id: `task:${tid}`,
+      type: "task",
+      label: taskMapLabel(task),
+      fullLabel: String(task.title || "Untitled task"),
+      sub: taskStatusLabel(normalizeTaskStatus(task.status)),
+      status: normalizeTaskStatus(task.status),
+      agentId: String(task.assignee_agent_id || ""),
+      taskId: tid,
+      w: 148,
+      h: 54,
+      fixedLevel: (primaryId ? 3 : 2) + depth,
+    });
   }
 
   // ── Edge list ─────────────────────────────────────────────────────────────
   const edges = [];
+  if (primaryId) edges.push({ from: `agent:${primaryId}`, to: delegationNodeId, kind: "stage" });
+  for (const aid of delegatedAgentIds) {
+    edges.push({ from: delegationNodeId, to: `agent:${aid}`, kind: "delegate" });
+  }
   for (const task of tasks) {
+    const tid = String(task.id);
     const aid = String(task.assignee_agent_id || "").trim();
-    const agNodeId = aid && relevantAgentIds.includes(aid) ? `agent:${aid}` : (primaryId ? `agent:${primaryId}` : null);
-    if (agNodeId) edges.push({ from: agNodeId, to: `task:${String(task.id)}`, kind: "assign" });
+    const agentNodeId = aid && delegatedAgentIds.includes(aid) ? `agent:${aid}` : "";
+    const fromNode = agentNodeId || delegationNodeId || (primaryId ? `agent:${primaryId}` : "");
+    if (fromNode) edges.push({ from: fromNode, to: `task:${tid}`, kind: "assign" });
   }
   for (const task of tasks) {
     const deps = Array.isArray(task.dependencies) ? task.dependencies : Array.isArray(task.depends_on) ? task.depends_on : [];
@@ -6964,29 +7225,7 @@ function renderProgressMap() {
 
   // ── Topological level assignment ──────────────────────────────────────────
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
-  const outAdj  = new Map(nodes.map((n) => [n.id, []]));
-  const inDeg   = new Map(nodes.map((n) => [n.id, 0]));
-  for (const e of edges) {
-    if (outAdj.has(e.from) && nodeMap.has(e.to)) {
-      outAdj.get(e.from).push(e.to);
-      inDeg.set(e.to, (inDeg.get(e.to) || 0) + 1);
-    }
-  }
-  const level = new Map(nodes.map((n) => [n.id, 0]));
-  const seen = new Set();
-  let bfsQ = nodes.filter((n) => !(inDeg.get(n.id) || 0)).map((n) => n.id);
-  while (bfsQ.length) {
-    const id = bfsQ.shift();
-    if (seen.has(id)) continue;
-    seen.add(id);
-    const lvl = level.get(id) || 0;
-    for (const nid of (outAdj.get(id) || [])) {
-      level.set(nid, Math.max(level.get(nid) || 0, lvl + 1));
-      if (!seen.has(nid)) bfsQ.push(nid);
-    }
-  }
-  const maxLvl = Math.max(0, ...[...level.values()]);
-  for (const n of nodes) { if (!seen.has(n.id)) level.set(n.id, maxLvl + 1); }
+  const level = new Map(nodes.map((n) => [n.id, Math.max(0, Number(n.fixedLevel || 0))]));
 
   const byLevel = new Map();
   const statusOrd = { in_progress: 0, blocked: 1, todo: 2, review: 3, done: 4 };
@@ -7024,7 +7263,8 @@ function renderProgressMap() {
   const pos = new Map();
   for (const n of nodes) {
     const saved = pmapNodePositions[n.id];
-    pos.set(n.id, saved ? { ...saved } : (autoPos.get(n.id) || { x: PAD, y: PAD }));
+    const savedPos = saved && saved.v === "chrono-v1" ? { x: Number(saved.x || 0), y: Number(saved.y || 0) } : null;
+    pos.set(n.id, savedPos || (autoPos.get(n.id) || { x: PAD, y: PAD }));
   }
 
   // ── SVG defs ──────────────────────────────────────────────────────────────
@@ -7068,12 +7308,17 @@ function renderProgressMap() {
       const color = colorHexForAgent(n.agentId) || "var(--cyan)";
       el.style.setProperty("--pmap-accent", color);
       el.innerHTML = `<div class="pmap-mnode-bar"></div><div class="pmap-mnode-body"><div class="pmap-mnode-label">${esc(n.label)}</div><div class="pmap-mnode-sub" style="color:${color}">${esc(n.sub)}</div></div>`;
+    } else if (n.type === "stage") {
+      const color = "var(--yellow)";
+      el.style.setProperty("--pmap-accent", color);
+      el.innerHTML = `<div class="pmap-mnode-bar"></div><div class="pmap-mnode-body"><div class="pmap-mnode-label">${esc(n.label)}</div><div class="pmap-mnode-sub" style="color:${color}">${esc(n.sub)}</div></div>`;
     } else {
       const sc = STATUS_COLOR[n.status] || "var(--muted)";
       const agColor = n.agentId ? (colorHexForAgent(n.agentId) || "var(--muted)") : "var(--muted)";
       el.style.setProperty("--pmap-accent", sc);
       el.innerHTML = `<div class="pmap-mnode-bar" style="background:${sc}"></div><div class="pmap-mnode-body"><div class="pmap-mnode-label">${esc(n.label)}</div><div class="pmap-mnode-sub" style="color:${agColor}">@${esc(agentShortName(n.agentId) || n.agentId.slice(0,8) || "—")} · ${esc(n.sub)}</div></div>`;
     }
+    if (n.type === "task") el.title = n.fullLabel || n.label;
     nodesEl.appendChild(el);
     nodeEls.set(n.id, el);
   }
@@ -7113,7 +7358,7 @@ function renderProgressMap() {
       const n = nodeMap.get(nid);
       if (!n) return;
       if (n.type === "task") openTaskDetailModal(n.taskId);
-      else { const ag = agentById.get(n.agentId); if (ag) openAgentDetailModal(ag); }
+      else if (n.type === "agent") openProjectAgentDetailModal(n.agentId);
     });
   }
 
@@ -7149,7 +7394,7 @@ function renderProgressMap() {
   }
   function onMUp() {
     if (nodeDrag) {
-      pmapNodePositions[nodeDrag.nodeId] = { ...pos.get(nodeDrag.nodeId) };
+      pmapNodePositions[nodeDrag.nodeId] = { ...pos.get(nodeDrag.nodeId), v: "chrono-v1" };
       const el = nodeEls.get(nodeDrag.nodeId);
       if (el) { el.style.zIndex = ""; el.style.cursor = "grab"; }
       nodeDrag = null;
@@ -7511,14 +7756,7 @@ function renderTeamTree() {
     `;
 
     // Click → open agent detail modal
-    const agentForModal = summaryAgents.find((a) => a.agent_id === agent.id) || {
-      agent_id: agent.id,
-      agent_name: agent.name || agent.id,
-      status: exec,
-      capabilities: [],
-      connection_id: "",
-    };
-    node.addEventListener("click", () => openAgentDetailModal(agentForModal));
+    node.addEventListener("click", () => openProjectAgentDetailModal(agent.id));
 
     nodesEl.appendChild(node);
   }
@@ -8559,12 +8797,13 @@ function openAgentDetailView(agent) {
   listView.classList.add("hidden");
   detailView.classList.remove("hidden");
 
-  const palette = colorForAgent(agent.agent_id || agent.id);
-  const agentId = String(agent.agent_id || agent.id || "").trim();
-  const agentName = String(agent.agent_name || agent.name || agentId || "Agent");
-  const statusStr = String(agent.status || "active").toLowerCase();
+  const detailAgent = projectAgentDetailModel(agent);
+  const palette = colorForAgent(detailAgent.agent_id || agent.agent_id || agent.id);
+  const agentId = String(detailAgent.agent_id || agent.agent_id || agent.id || "").trim();
+  const agentName = String(detailAgent.agent_name || agent.agent_name || agent.name || agentId || "Agent");
+  const statusStr = String(detailAgent.status || agent.status || "active").toLowerCase();
   const statusClass = statusStr === "active" ? "active" : statusStr === "offline" ? "offline" : "idle";
-  const connectionId = String(agent.connection_id || "").trim();
+  const connectionId = String(detailAgent.connection_id || "").trim();
 
   // Avatar
   const avatarWrap = $("agd_avatar_wrap");
@@ -8589,7 +8828,7 @@ function openAgentDetailView(agent) {
   if (metaEl) {
     const connRow = connectionsCache.find((r) => String(r?.id || "").trim() === connectionId);
     const connLabel = connRow ? (connRow.name || connectionId) : connectionId;
-    metaEl.textContent = [agentId && `ID: ${agentId}`, connLabel && `Hub: ${connLabel}`, agent.model && `Model: ${agent.model}`].filter(Boolean).join("  ·  ");
+    metaEl.textContent = [agentId && `ID: ${agentId}`, connLabel && `Hub: ${connLabel}`, detailAgent.model && `Model: ${detailAgent.model}`].filter(Boolean).join("  ·  ");
   }
 
   // Capabilities
@@ -8710,15 +8949,18 @@ function openAgentDetailModal(agent) {
   const modal = $("agent_detail_modal");
   if (!modal) return;
 
-  const palette = colorForAgent(agent.agent_id);
-  const statusStr = String(agent.status || "active").toLowerCase();
+  const detailAgent = projectAgentDetailModel(agent);
+  const agentId = String(detailAgent.agent_id || "").trim();
+  const agentName = String(detailAgent.agent_name || agentId || "Agent").trim();
+  const palette = colorForAgent(agentId);
+  const statusStr = String(detailAgent.status || "active").toLowerCase();
   const statusClass = statusStr === "active" ? "active" : statusStr === "offline" ? "offline" : "idle";
 
   // Avatar
   const avatarWrap = $("modal_agent_avatar_wrap");
   if (avatarWrap) {
     avatarWrap.innerHTML = "";
-    const img = createAgentAvatarImg(agent.agent_id, "Agent");
+    const img = createAgentAvatarImg(agentId, "Agent");
     img.style.width = "48px";
     img.style.height = "48px";
     img.style.borderRadius = "50%";
@@ -8728,7 +8970,7 @@ function openAgentDetailModal(agent) {
 
   // Header fields
   const nameEl = $("modal_agent_name");
-  if (nameEl) nameEl.textContent = String(agent.agent_name || agent.agent_id || "Agent");
+  if (nameEl) nameEl.textContent = agentName;
 
   const statusBadge = $("modal_agent_status_badge");
   if (statusBadge) {
@@ -8738,18 +8980,18 @@ function openAgentDetailModal(agent) {
 
   // Detail fields
   const setField = (id, val) => { const el = $(id); if (el) el.textContent = val || "—"; };
-  const connectionId = String(agent.connection_id || "").trim();
+  const connectionId = String(detailAgent.connection_id || "").trim();
   const connectionRow = connectionsCache.find((row) => String(row?.id || "").trim() === connectionId);
-  setField("modal_agent_id", agent.agent_id);
+  setField("modal_agent_id", agentId);
   setField("modal_agent_connection", connectionRow ? `${connectionRow.name || connectionId} (${connectionId})` : connectionId);
-  setField("modal_agent_model", agent.model || agent.adapter_type || "—");
+  setField("modal_agent_model", detailAgent.model || detailAgent.adapter_type || "—");
 
   // Current activity (live log)
   const activitySection = $("modal_agent_activity");
   if (activitySection) {
     const liveProject = projectsCache.find((p) => {
       const isActive = projectLooksActive(p.plan_status, p.execution_status);
-      return isActive && (p.primary_agent_id === agent.agent_id || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agent.agent_id)));
+      return isActive && (p.primary_agent_id === agentId || (Array.isArray(p.assigned_agent_ids) && p.assigned_agent_ids.includes(agentId)));
     });
     activitySection.innerHTML = liveProject
       ? `<div class="summary-agent-live agent-live-active"><span class="sal-dot"></span><span class="sal-text">Working on: ${esc(liveProject.title)}</span></div>`
@@ -8759,7 +9001,7 @@ function openAgentDetailModal(agent) {
   // Capabilities
   const capsEl = $("modal_agent_caps");
   if (capsEl) {
-    const capList = Array.isArray(agent.capabilities) ? agent.capabilities : [];
+    const capList = Array.isArray(detailAgent.capabilities) ? detailAgent.capabilities : [];
     capsEl.innerHTML = capList.length
       ? capList.map((c) => `<span class="chip summary-cap-chip">${esc(c)}</span>`).join("")
       : '<span class="helper">No capability data</span>';
@@ -8770,7 +9012,7 @@ function openAgentDetailModal(agent) {
   if (projEl) {
     const agentProjects = projectsCache.filter((p) => {
       const agents = Array.isArray(p.assigned_agent_ids) ? p.assigned_agent_ids : [];
-      return agents.includes(agent.agent_id) || p.primary_agent_id === agent.agent_id;
+      return agents.includes(agentId) || p.primary_agent_id === agentId;
     });
     projEl.innerHTML = agentProjects.length
       ? agentProjects.map((p) => `
@@ -8785,7 +9027,7 @@ function openAgentDetailModal(agent) {
   // Token usage
   const tokensEl = $("modal_agent_tokens");
   if (tokensEl) {
-    const agentTokens = Math.max(0, Number(agent.usage_tokens || agent.total_tokens || 0));
+    const agentTokens = Math.max(0, Number(detailAgent.usage_tokens || detailAgent.total_tokens || 0));
     const maxAgentTokens = Math.max(1, ...summaryAgents.map((a) => Number(a.usage_tokens || a.total_tokens || 0)));
     const tokenPct = agentTokens > 0 ? Math.max(4, Math.round((agentTokens / maxAgentTokens) * 100)) : 0;
     const tokenStr = agentTokens > 999999 ? `${(agentTokens / 1_000_000).toFixed(1)}M`
