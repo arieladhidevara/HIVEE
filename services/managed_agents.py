@@ -208,6 +208,57 @@ def _applied_actions_have_project_work(applied_actions: Any) -> bool:
     return False
 
 
+def _applied_actions_have_progress_signal(applied_actions: Any) -> bool:
+    for item in applied_actions or []:
+        if not isinstance(item, dict):
+            continue
+        kind = _normalize_agent_action_kind(
+            item.get("type")
+            or item.get("method")
+            or item.get("action")
+            or item.get("name")
+        )
+        if kind == "post_chat_message" and str(item.get("text") or "").strip():
+            return True
+        if kind == "update_task":
+            return True
+    return False
+
+
+def _created_task_progress_context(applied_actions: Any, *, limit: int = 8) -> str:
+    lines: List[str] = []
+    for item in applied_actions or []:
+        if not isinstance(item, dict):
+            continue
+        kind = _normalize_agent_action_kind(
+            item.get("type")
+            or item.get("method")
+            or item.get("action")
+            or item.get("name")
+        )
+        if kind != "create_task":
+            continue
+        task_id = str(item.get("task_id") or "").strip()
+        ref = str(item.get("ref") or "").strip()
+        title = str(item.get("title") or "Mini task").strip()
+        status = str(item.get("status") or "").strip()
+        weight = item.get("weight_pct")
+        label_bits = []
+        if ref:
+            label_bits.append(f"ref={ref}")
+        if task_id:
+            label_bits.append(f"id={task_id}")
+        if status:
+            label_bits.append(f"status={status}")
+        if weight is not None:
+            label_bits.append(f"weight={weight}%")
+        suffix = f" ({', '.join(label_bits)})" if label_bits else ""
+        lines.append(f"- {title[:160]}{suffix}")
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines)
+
+
 def _delegation_payload_has_structured_work(parsed: Any) -> bool:
     if not isinstance(parsed, dict):
         return False
@@ -4572,7 +4623,14 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             + "{\n"
             + "  \"chat_update\": \"Human-friendly update sentence to show in chat\",\n"
             + "  \"output_files\": [{\"path\":\"relative/path.ext\",\"content\":\"file content\",\"append\":false}],\n"
-            + "  \"actions\": [{\"type\":\"create_task\",\"title\":\"...\",\"description\":\"...\"},{\"type\":\"post_chat_message\",\"text\":\"handoff to @agent_id\"},{\"type\":\"update_execution\",\"progress_pct\":45}],\n"
+            + "  \"actions\": [\n"
+            + "    {\"type\":\"create_task\",\"ref\":\"step-1\",\"title\":\"...\",\"description\":\"...\",\"assignee_agent_id\":\""
+            + aid.replace("\"", "")
+            + "\",\"status\":\"todo\",\"weight_pct\":25},\n"
+            + "    {\"type\":\"post_chat_message\",\"text\":\"@owner Progress: starting step-1 - concrete work I am doing now.\",\"mentions\":[\"owner\"],\"metadata\":{\"phase\":\"mini_task.progress\",\"task_ref\":\"step-1\"}},\n"
+            + "    {\"type\":\"update_task\",\"task_ref\":\"step-1\",\"status\":\"in_progress\"},\n"
+            + "    {\"type\":\"update_execution\",\"progress_pct\":45,\"summary\":\"Working on step-1\"}\n"
+            + "  ],\n"
             + "  \"notes\": \"optional technical notes\",\n"
             + "  \"requires_user_input\": false,\n"
             + "  \"pause_reason\": \"\",\n"
@@ -4585,6 +4643,9 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             + "- Your response must include at least one real project mutation: output_files, create/update task actions, write_file actions, or update_execution.\n"
             + "- A plain chat_update without artifact/action/progress is a failed execution step and Hivee will pause the run.\n"
             + "- FIRST action: create sub-task cards for each step of your sub-plan.\n"
+            + "- Immediately after creating sub-task cards, include a `post_chat_message` progress update that names the mini-task you are doing now.\n"
+            + "- For every mini-task you start or finish in this response, pair it with `update_task` and a concrete `post_chat_message` update.\n"
+            + "- Progress chat must say exactly what you just did or are doing; avoid generic text like \"working on it\".\n"
             + "- Use exact IDs from roster when mentioning other agents.\n"
             + "- Mention handoff needs in chat_update with @agent_id.\n"
             + f"- Follow `{PROJECT_PROTOCOL_FILE}` for delegation, mention, and status update rules.\n\n"
@@ -4739,6 +4800,114 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
         )
         applied_actions = action_result.get("applied") or []
         skipped_actions = action_result.get("skipped") or []
+
+        async def _emit_agent_task_progress(note: str, *, phase: str = "mini_task.progress", extra: Optional[Dict[str, Any]] = None) -> None:
+            progress_note = str(note or "").strip()
+            if not progress_note:
+                return
+            progress_payload = {
+                "agent_id": aid,
+                "agent_name": agent_name,
+                "task_title": task_title,
+                "task_id": resolved_task_id or "",
+                "task_file": task_rel,
+                "note": progress_note[:1000],
+                "phase": phase,
+            }
+            if isinstance(extra, dict):
+                progress_payload.update(extra)
+            await emit(project_id, "agent.task.progress", progress_payload)
+            _append_project_activity(
+                project_id=project_id,
+                actor_type="project_agent",
+                actor_id=aid,
+                actor_label=agent_name,
+                event_type="agent.task.progress",
+                summary=f"{agent_name}: {progress_note[:900]}",
+                payload=progress_payload,
+            )
+
+        async def _merge_agent_followup_response(
+            response: Dict[str, Any],
+            *,
+            prompt_text: str,
+            label: str,
+            progress_phase: str = "mini_task.progress",
+        ) -> bool:
+            nonlocal chat_update, report_text, report_notes
+            nonlocal requires_user_input, pause_reason, resume_hint
+            if not isinstance(response, dict) or not response.get("ok"):
+                skipped_actions.append(
+                    f"{label.lower()} failed: "
+                    + detail_to_text((response or {}).get("error") or (response or {}).get("details") or "unknown")
+                )
+                return False
+
+            fp, fc, _ = _extract_usage_counts(response)
+            if fp <= 0:
+                fp = _estimate_tokens_from_text(prompt_text)
+            if fc <= 0:
+                fc = _estimate_tokens_from_text(response.get("text"))
+            _update_project_usage_metrics(project_id, prompt_tokens=fp, completion_tokens=fc)
+
+            followup_text = str(response.get("text") or "").strip()
+            parsed_followup = _extract_agent_report_payload(followup_text)
+            followup_chat = str(parsed_followup.get("chat_update") or "").strip()
+            followup_writes = parsed_followup.get("output_files") or []
+            followup_actions = parsed_followup.get("actions") or []
+            requires_user_input = requires_user_input or bool(parsed_followup.get("requires_user_input"))
+            if not pause_reason:
+                pause_reason = str(parsed_followup.get("pause_reason") or "").strip()
+            if not resume_hint:
+                resume_hint = str(parsed_followup.get("resume_hint") or "").strip()
+            if not report_notes:
+                report_notes = str(parsed_followup.get("notes") or "").strip()
+
+            followup_write_result = _apply_project_file_writes(
+                owner_user_id=str(row["user_id"]),
+                project_root=str(row["project_root"] or ""),
+                writes=followup_writes if isinstance(followup_writes, list) else [],
+                default_prefix=f"{USER_OUTPUTS_DIRNAME}/{_safe_agent_filename(aid)}",
+                allow_paths=agent_output_allow_paths,
+            )
+            followup_saved = followup_write_result.get("saved") or []
+            followup_skipped = followup_write_result.get("skipped") or []
+            followup_action_result = _apply_project_actions(
+                owner_user_id=str(row["user_id"]),
+                project_id=project_id,
+                project_root=str(row["project_root"] or ""),
+                actions=followup_actions if isinstance(followup_actions, list) else [],
+                allow_paths=agent_output_allow_paths,
+                actor_type="project_agent",
+                actor_id=aid,
+                actor_label=f"agent:{aid}",
+            )
+            followup_applied_actions = followup_action_result.get("applied") or []
+            followup_skipped_actions = followup_action_result.get("skipped") or []
+            if followup_saved:
+                saved_files.extend(followup_saved)
+            if followup_skipped:
+                skipped_files.extend(followup_skipped)
+            if followup_applied_actions:
+                applied_actions.extend(followup_applied_actions)
+            if followup_skipped_actions:
+                skipped_actions.extend(followup_skipped_actions)
+            if followup_chat:
+                chat_update = followup_chat
+                await _emit_agent_task_progress(
+                    followup_chat,
+                    phase=progress_phase,
+                    extra={
+                        "source": label.lower().replace(" ", "_"),
+                        "created_tasks": _created_task_progress_context(applied_actions),
+                    },
+                )
+            if followup_text:
+                report_text = (report_text + f"\n\n[{label}]\n" + followup_text).strip()
+            for note in _summarize_ws_frames(response.get("frames"), limit=6):
+                await emit(project_id, "agent.task.live", {"agent_id": aid, "agent_name": agent_name, "note": note})
+            return True
+
         artifact_followup_used = False
         artifact_rescue_used = False
         artifact_like_task = _looks_like_artifact_request(task_text)
@@ -4953,6 +5122,8 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 "Each task must include: `ref`, `title`, `description`, `assignee_agent_id`, `status`, `priority`, "
                 "`weight_pct`, `instructions`, `input`, `process`, `output`, `from_agent`, and `handover_to`.\n"
                 "Use `add_task_dependency` actions with `task_ref` and `depends_on_task_ref` when the steps are sequential.\n"
+                "After the `create_task` actions, include `post_chat_message`, `update_task`, and `update_execution` actions for the first mini-task you are doing now.\n"
+                "The chat message must start with `@owner Progress:` and name the exact mini-task and concrete work.\n"
                 "Base the breakdown on your approved sub-plan or the assigned task. Keep `chat_update` short and mention that the progress map was expanded.\n"
                 "Do not repeat the full deliverable unless needed; focus on task breakdown and dependency structure."
             )
@@ -5021,6 +5192,46 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                     + detail_to_text(subtask_res.get("error") or subtask_res.get("details") or "unknown")
                 )
 
+        if (
+            not requires_user_input
+            and _applied_actions_include_kind(applied_actions, "create_task")
+            and not _applied_actions_have_progress_signal(applied_actions)
+        ):
+            created_task_context = _created_task_progress_context(applied_actions)
+            await emit(
+                project_id,
+                "agent.task.live",
+                {
+                    "agent_id": aid,
+                    "agent_name": agent_name,
+                    "note": "Sub-task cards exist but no mini-task progress update was posted. Injecting a progress checkpoint prompt.",
+                },
+            )
+            progress_prompt = (
+                "Hivee received your sub-task cards, but there is no concrete progress update tied to a mini-task yet.\n"
+                "This is a progress checkpoint injection. Continue the same assignment and return JSON object only.\n\n"
+                "Known mini-task cards:\n"
+                f"{created_task_context or '- No task details available.'}\n\n"
+                "Required response:\n"
+                "- `chat_update`: one human sentence naming the exact mini-task you are working on now and the concrete work you just did or are doing.\n"
+                "- `actions`: include at least one `post_chat_message` with `@owner Progress:` and metadata.phase=`mini_task.progress`.\n"
+                "- `actions`: include `update_task` for the active mini-task using its `task_id` from the list above, status `in_progress`, `review`, or `done`.\n"
+                "- `actions`: include `update_execution` with a realistic progress_pct and summary.\n"
+                "- If a mini-task is already complete, include its output in `output_files` or `write_file`, then mark that mini-task `done`.\n"
+                "Do not restate the whole plan. Report the mini-task progress exactly."
+            )
+            progress_res = await _project_chat_with_wait_notes(
+                progress_prompt,
+                session_key=f"{project_id}:agent:{aid}",
+                context_type="task_progress",
+            )
+            await _merge_agent_followup_response(
+                progress_res,
+                prompt_text=progress_prompt,
+                label="MINI TASK PROGRESS",
+                progress_phase="mini_task.progress",
+            )
+
         if not saved_files and not _applied_actions_have_project_work(applied_actions) and not requires_user_input:
             await emit(
                 project_id,
@@ -5038,6 +5249,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 "- `output_files` with a concrete artifact under Outputs/;\n"
                 "- `actions` with create_task/update_task/write_file/update_execution;\n"
                 "- `requires_user_input=true` with a precise blocker and resume_hint.\n"
+                "If you created or touched mini-task cards, include `post_chat_message` progress and `update_task` for the exact mini-task you are working on.\n"
                 f"Agent: `{aid}` ({agent_name})\n"
                 f"Assigned task:\n{task_text[:3000]}\n"
             )

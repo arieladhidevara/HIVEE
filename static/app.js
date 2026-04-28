@@ -3733,12 +3733,16 @@ function eventSummary(kind, payload) {
   if (kind === "agent.task.actions_applied") return `${name} applied project actions.`;
   if (kind === "agent.chat.actions_applied") return `${name} applied structured project actions.`;
   if (kind === "agent.task.failed") return `${name} failed: ${shortText(data.error || "", 180)}`;
+  if (kind === "agent.task.progress") return `${name}: ${shortText(data.note || "", 180)}`;
   if (kind === "agent.task.live") return `${name}: ${shortText(data.note || "", 180)}`;
   if (kind === "project.chat.message") return `${data.author_label || data.author_id || data.author_type || "actor"} posted in project chat.`;
   if (kind === "project.chat.mention") return `${data.author_label || data.author_id || "actor"} mentioned @${data.target || "agent"}.`;
   if (kind === "project.file.written") return `${data.actor || "actor"} wrote ${data.path || "file"}.`;
   if (kind === "project.file.deleted") return `${data.actor || "actor"} deleted ${data.path || "file"}.`;
   if (kind === "project.file.moved") return `${data.actor || "actor"} moved ${data.path || "file"} to ${data.to_path || "new path"}.`;
+  if (kind === "project.task.created") return `Task created: ${data.title || data.task_id || "task"}.`;
+  if (kind === "project.task.updated") return `Task updated: ${data.task_id || data.title || "task"}.`;
+  if (kind === "project.task.dependency.added") return `Task dependency added: ${data.task_id || "task"}.`;
   if (kind === "project.task.deleted") return `Task deleted: ${data.task_id || "task"}.`;
   if (kind === "project.task.blueprint.applied") return `Task blueprint applied: ${Number(data.created_count || 0)} task(s).`;
   if (kind === "project.execution.auto_paused") return `Execution paused: ${shortText(data.reason || "Waiting for user input.", 180)}`;
@@ -3803,6 +3807,17 @@ function eventChatMessage(kind, payload) {
   }
   if (kind === "agent.task.actions_applied") return { role: "system", text: `${name} applied structured project actions.`, meta: "workflow" };
   if (kind === "agent.chat.actions_applied") return { role: "system", text: `${name} applied structured project actions.`, meta: "workflow" };
+  if (kind === "agent.task.progress") {
+    const note = String(data.note || "").trim();
+    if (!note) return null;
+    return {
+      role: "agent",
+      agentId: data.agent_id || name,
+      text: note,
+      meta: `${name} - progress`,
+      messageKey: `agent.task.progress:${data.agent_id || name}:${data.task_id || data.task_title || note}`,
+    };
+  }
   if (kind === "agent.chat.update") return null;
   if (kind === "project.chat.message") {
     const authorType = String(data.author_type || "").trim().toLowerCase();
@@ -3895,7 +3910,10 @@ function handleProjectEvent(kind, payload) {
     kind === "project.subplan.phase_complete"
     || kind === "agent.task.started"
     || kind === "agent.task.live"
+    || kind === "agent.task.progress"
     || kind === "agent.task.reported"
+    || kind === "project.task.created"
+    || kind === "project.task.updated"
     || kind === "project.execution.updated"
     || kind === "project.execution.resume"
     || kind === "project.execution.resumed_after_pause"
@@ -3917,6 +3935,12 @@ function handleProjectEvent(kind, payload) {
       renderAgentLiveCards();
     } else if (kind === "agent.task.live") {
       if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      agentLiveState[evtAgentId].note = String(data.note || "").trim();
+      agentLiveState[evtAgentId].status = "working";
+      renderAgentLiveCards();
+    } else if (kind === "agent.task.progress") {
+      if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      agentLiveState[evtAgentId].taskTitle = data.task_title || agentLiveState[evtAgentId].taskTitle || "Task";
       agentLiveState[evtAgentId].note = String(data.note || "").trim();
       agentLiveState[evtAgentId].status = "working";
       renderAgentLiveCards();
@@ -4628,6 +4652,7 @@ function activityEventMeta(eventType) {
   if (t === "agent.task.assigned")      return { color: "var(--yellow)", label: "Assigned" };
   if (t === "agent.task.started")       return { color: "var(--cyan)",   label: "Started" };
   if (t === "agent.task.live")          return { color: "var(--yellow)", label: "Waiting" };
+  if (t === "agent.task.progress")      return { color: "var(--green)",  label: "Progress" };
   if (t === "agent.task.reported")      return { color: "var(--green)",  label: "Agent update" };
   if (t === "agent.task.failed")        return { color: "var(--red)",    label: "Agent failed" };
   return { color: "var(--muted)", label: eventType || "Event" };

@@ -4911,8 +4911,20 @@ def _apply_project_actions(
                             "task_id": task_id,
                             "title": title[:TASK_TITLE_MAX_CHARS],
                             "ref": ref_key or None,
+                            "status": status_value,
+                            "priority": priority_value,
+                            "assignee_agent_id": assignee,
+                            "weight_pct": weight_pct_value,
                             "event": "project.task.created",
-                            "event_payload": {"task_id": task_id},
+                            "event_payload": {
+                                "task_id": task_id,
+                                "title": title[:TASK_TITLE_MAX_CHARS],
+                                "status": status_value,
+                                "priority": priority_value,
+                                "assignee_agent_id": assignee,
+                                "weight_pct": weight_pct_value,
+                                "ref": ref_key or None,
+                            },
                         }
                     )
                 elif kind == "update_task":
