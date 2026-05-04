@@ -3516,6 +3516,8 @@ async def _run_agent_subplan_phase_v2(
     Improved sub-plan loop:
     - emits live chat/task events for both submission and review
     - retries revisions when primary rejects the sub-plan
+    - treats per-agent approval as "cleared review"; final approval is emitted
+      once every delegated agent has cleared
     - falls back to explicit chat messages when an agent forgets the action
     """
     hivee_api_base = _get_hivee_api_base(project_id)
@@ -3660,6 +3662,31 @@ async def _run_agent_subplan_phase_v2(
         if not subplan_res.get("ok"):
             return True, actual_subplan
 
+        await emit(
+            project_id,
+            "agent.subplan.review_started",
+            {
+                "agent_id": agent_id,
+                "agent_name": agent_name,
+                "round": round_idx,
+            },
+        )
+        await _post_project_agent_status_message(
+            project_id=project_id,
+            agent_id=primary_agent_id,
+            agent_name=primary_agent_name,
+            text=(
+                f"@owner I am reviewing {agent_name}'s sub-plan "
+                f"(round {round_idx}). I will request a revision if it is not ready."
+            ),
+            mentions=["owner"],
+            metadata={
+                "phase": "delegate.subplan_agent_review",
+                "agent_id": agent_id,
+                "round": round_idx,
+            },
+        )
+
         review_instruction = (
             f"hivee_agent_id: {primary_agent_id}\n"
             f"hivee_project_token: {primary_token}\n"
@@ -3675,12 +3702,18 @@ async def _run_agent_subplan_phase_v2(
             f"Review this sub-plan against the overall project plan, goals, and constraints "
             f"(read plan.md if needed). Consider: scope alignment, realistic timeline, correct "
             f"dependencies, resource fit.\n\n"
-            f"Respond with your decision. Include `\"approved\": true` or `\"approved\": false`.\n"
-            f"Post your decision to chat @{agent_id}.\n\n"
+            f"Respond with your decision. Include `\"approved\": true` only if this sub-plan "
+            f"is ready to be included in the final batch approval. Include `\"approved\": false` "
+            f"if the agent must revise it.\n\n"
+            f"Important approval policy:\n"
+            f"- If approved=true, DO NOT tell @{agent_id} to proceed yet. Final approval is sent "
+            f"only after every delegated agent's sub-plan clears review.\n"
+            f"- If approved=false, post actionable revision feedback to chat @{agent_id}.\n\n"
             f"Return JSON: {{\"chat_update\": \"...\", \"approved\": true, \"feedback\": \"...\", "
-            f"\"actions\": [{{\"type\": \"post_chat_message\", "
-            f"\"text\": \"@{agent_id} Sub-plan approved. Proceed.\", "
-            f"\"mentions\": [\"{agent_id}\"]}}]}}"
+            f"\"actions\": []}}\n"
+            f"For revision, return JSON: {{\"chat_update\": \"...\", \"approved\": false, "
+            f"\"feedback\": \"specific required changes\", \"actions\": [{{\"type\": \"post_chat_message\", "
+            f"\"text\": \"@{agent_id} Changes needed: ...\", \"mentions\": [\"{agent_id}\"]}}]}}"
         )
         review_res = await _project_chat(
             row,
@@ -3708,49 +3741,67 @@ async def _run_agent_subplan_phase_v2(
         review_chat_update = str(parsed_review.get("chat_update") or "").strip()
         review_feedback = str(parsed_review.get("feedback") or "").strip()
 
-        review_action_result = _apply_project_actions(
-            owner_user_id=str(row["user_id"]),
-            project_id=project_id,
-            project_root=str(row["project_root"] or ""),
-            actions=parsed_review.get("actions") or [],
-            allow_paths=None,
-            actor_type="project_agent",
-            actor_id=primary_agent_id,
-            actor_label=f"agent:{primary_agent_id}",
-        )
-        await _emit_project_action_results(project_id, review_action_result.get("applied") or [])
-
         approved_flag = parsed_review.get("approved")
         if approved_flag is None:
             review_chat = review_chat_update.lower()
             approved_flag = any(kw in review_chat for kw in ("approved", "proceed", "looks good", "good to go", "approve"))
         approved = bool(approved_flag)
 
-        if not _applied_actions_include_kind(review_action_result.get("applied") or [], "post_chat_message"):
-            fallback_review_text = review_chat_update or (
-                f"@{agent_id} {'Sub-plan approved. Proceed.' if approved else 'Please revise your sub-plan and resubmit.'}"
+        review_action_result: Dict[str, Any] = {"applied": [], "skipped": []}
+        if not approved:
+            review_action_result = _apply_project_actions(
+                owner_user_id=str(row["user_id"]),
+                project_id=project_id,
+                project_root=str(row["project_root"] or ""),
+                actions=parsed_review.get("actions") or [],
+                allow_paths=None,
+                actor_type="project_agent",
+                actor_id=primary_agent_id,
+                actor_label=f"agent:{primary_agent_id}",
             )
-            review_conn = db()
-            try:
-                review_message = _create_project_chat_message(
-                    review_conn,
-                    project_id=project_id,
-                    author_type="project_agent",
-                    author_id=primary_agent_id,
-                    author_label=primary_agent_name,
-                    text=fallback_review_text,
-                    mentions=[agent_id],
-                    metadata={"source": "subplan.review"},
-                )
-                review_conn.commit()
-            finally:
-                review_conn.close()
-            await _emit_project_chat_message_payload(project_id, review_message)
+            await _emit_project_action_results(project_id, review_action_result.get("applied") or [])
+
+            if not _applied_actions_include_kind(review_action_result.get("applied") or [], "post_chat_message"):
+                fallback_review_text = review_chat_update or f"@{agent_id} Please revise your sub-plan and resubmit."
+                review_conn = db()
+                try:
+                    review_message = _create_project_chat_message(
+                        review_conn,
+                        project_id=project_id,
+                        author_type="project_agent",
+                        author_id=primary_agent_id,
+                        author_label=primary_agent_name,
+                        text=fallback_review_text,
+                        mentions=[agent_id],
+                        metadata={"source": "subplan.review", "approved": False},
+                    )
+                    review_conn.commit()
+                finally:
+                    review_conn.close()
+                await _emit_project_chat_message_payload(project_id, review_message)
+        else:
+            await _post_project_agent_status_message(
+                project_id=project_id,
+                agent_id=primary_agent_id,
+                agent_name=primary_agent_name,
+                text=(
+                    f"@owner {agent_name}'s sub-plan cleared review. "
+                    "I am holding final approval until every delegated agent clears review."
+                ),
+                mentions=["owner"],
+                metadata={
+                    "phase": "delegate.subplan_agent_cleared",
+                    "agent_id": agent_id,
+                    "round": round_idx,
+                },
+            )
 
         reviewed_payload = {
             "agent_id": agent_id,
             "agent_name": agent_name,
             "approved": approved,
+            "final_approval": False,
+            "holding_for_final_approval": approved,
             "feedback": review_feedback[:400],
             "round": round_idx,
         }
@@ -3761,7 +3812,7 @@ async def _run_agent_subplan_phase_v2(
             actor_id=primary_agent_id,
             actor_label=primary_agent_name,
             event_type="agent.subplan.reviewed",
-            summary=f"{agent_name} sub-plan {'approved' if approved else 'needs revision'}",
+            summary=f"{agent_name} sub-plan {'cleared review' if approved else 'needs revision'}",
             payload=reviewed_payload,
         )
         if approved:
@@ -4379,8 +4430,8 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
     primary_pause_resolved = False
 
     # ── SUB-PLAN PHASE ────────────────────────────────────────────────────────
-    # Each non-primary agent writes a detailed sub-plan; primary reviews it.
-    # Agents within the same parallel group submit sub-plans concurrently.
+    # Each non-primary agent writes a detailed sub-plan; primary reviews it one
+    # at a time. Final approval is granted only after all sub-plans clear review.
     _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=20)
     await emit(project_id, "project.subplan.phase_started", {
         "groups": [[a for a in g] for g in parallel_groups],
@@ -4390,13 +4441,15 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
         agent_id=primary_agent_id,
         agent_name=primary_agent_name,
         text=(
-            "@owner I am collecting and reviewing detailed sub-plans now. "
-            f"Execution groups queued: {json.dumps(parallel_groups, ensure_ascii=False)}"
+            "@owner I am starting detailed sub-plan review. "
+            "I will review each agent one at a time, request revisions until each clears, "
+            "then grant final approval to all cleared sub-plans together. "
+            f"Review queue: {json.dumps(parallel_groups, ensure_ascii=False)}"
         ),
         mentions=["owner"],
         metadata={"phase": "delegate.subplan_phase_started", "groups": parallel_groups},
     )
-    subplan_map: Dict[str, str] = {}  # agent_id -> approved sub-plan text
+    subplan_map: Dict[str, str] = {}  # agent_id -> cleared sub-plan text
 
     for grp in parallel_groups:
         non_primary_in_group = [a for a in grp if a != primary_agent_id]
@@ -4407,8 +4460,8 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             agent_id=primary_agent_id,
             agent_name=primary_agent_name,
             text=(
-                f"@owner I am reviewing sub-plans for this execution group: "
-                f"{', '.join(non_primary_in_group)}."
+                f"@owner I am starting the next sub-plan review queue: "
+                f"{', '.join(non_primary_in_group)}. I will finish each one before moving on."
             ),
             mentions=["owner"],
             metadata={"phase": "delegate.subplan_group_review", "group": list(non_primary_in_group)},
@@ -4417,8 +4470,23 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
         if state == EXEC_STATUS_STOPPED:
             break
 
-        async def _collect_subplan(aid: str) -> Tuple[str, bool, str]:
+        rejected_agents: List[str] = []
+        for aid in non_primary_in_group:
+            state, _ = _read_project_execution_state(project_id)
+            if state == EXEC_STATUS_STOPPED:
+                break
             a_name = str((by_id.get(aid) or {}).get("agent_name") or aid)
+            await _post_project_agent_status_message(
+                project_id=project_id,
+                agent_id=primary_agent_id,
+                agent_name=primary_agent_name,
+                text=(
+                    f"@owner Next sub-plan review: {a_name} (`{aid}`). "
+                    "I will finish this review and any required revision before moving on."
+                ),
+                mentions=["owner"],
+                metadata={"phase": "delegate.subplan_agent_next", "agent_id": aid},
+            )
             approved, sp_text = await _run_agent_subplan_phase_v2(
                 project_id, row, connection_api_key,
                 agent_id=aid,
@@ -4427,21 +4495,18 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 primary_agent_name=primary_agent_name,
                 task_text=assigned_task_map.get(aid) or "",
             )
-            return aid, approved, sp_text
-
-        results = await asyncio.gather(*[_collect_subplan(a) for a in non_primary_in_group])
-        rejected_agents: List[str] = []
-        for aid, approved, sp_text in results:
             subplan_map[aid] = sp_text
-            a_name = str((by_id.get(aid) or {}).get("agent_name") or aid)
             _append_project_daily_log(
                 owner_user_id=str(row["user_id"]),
                 project_root=str(row["project_root"] or ""),
                 kind="agent.subplan.reviewed",
-                text=f"{aid}: {'approved' if approved else 'needs revision'} — {sp_text[:400]}",
+                text=f"{aid}: {'cleared review' if approved else 'needs revision'} - {sp_text[:400]}",
             )
             if not approved:
                 rejected_agents.append(aid)
+        state, _ = _read_project_execution_state(project_id)
+        if state == EXEC_STATUS_STOPPED:
+            break
         if rejected_agents:
             rejected_names = [
                 str((by_id.get(aid) or {}).get("agent_name") or aid)
@@ -4496,27 +4561,81 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             agent_id=primary_agent_id,
             agent_name=primary_agent_name,
             text=(
-                f"@owner Sub-plans approved for group: {', '.join(non_primary_in_group)}. "
-                "I am moving to the next delegation checkpoint."
+                f"@owner Sub-plans cleared review for queue: {', '.join(non_primary_in_group)}. "
+                "They are waiting for final batch approval."
             ),
             mentions=["owner"],
             metadata={"phase": "delegate.subplan_group_approved", "group": list(non_primary_in_group)},
         )
 
+    state, _ = _read_project_execution_state(project_id)
+    if state == EXEC_STATUS_STOPPED:
+        _refresh_project_documents(project_id)
+        return
+
     _set_project_execution_state(project_id, status=EXEC_STATUS_RUNNING, progress_pct=40)
+    final_approval_agents = list(subplan_map.keys())
+    if final_approval_agents:
+        final_text = (
+            "@owner All delegated sub-plans have cleared review. "
+            "Final approval is granted to the full batch now: "
+            + ", ".join(final_approval_agents)
+            + ". I am handing execution over to the assigned agents."
+        )
+        final_conn = db()
+        try:
+            final_message = _create_project_chat_message(
+                final_conn,
+                project_id=project_id,
+                author_type="project_agent",
+                author_id=primary_agent_id,
+                author_label=primary_agent_name,
+                text=final_text,
+                mentions=["owner"],
+                metadata={
+                    "source": "subplan.final_approval",
+                    "phase": "delegate.subplan_final_approval",
+                    "agents": final_approval_agents,
+                },
+            )
+            final_conn.commit()
+        finally:
+            final_conn.close()
+        await _emit_project_chat_message_payload(project_id, final_message)
+
+        for aid in final_approval_agents:
+            a_name = str((by_id.get(aid) or {}).get("agent_name") or aid)
+            final_payload = {
+                "agent_id": aid,
+                "agent_name": a_name,
+                "approved": True,
+                "final_approval": True,
+                "batch_agents": final_approval_agents,
+            }
+            await emit(project_id, "agent.subplan.final_approved", final_payload)
+            _append_project_activity(
+                project_id=project_id,
+                actor_type="project_agent",
+                actor_id=primary_agent_id,
+                actor_label=primary_agent_name,
+                event_type="agent.subplan.final_approved",
+                summary=f"{a_name} sub-plan received final batch approval",
+                payload=final_payload,
+            )
     await emit(project_id, "project.subplan.phase_complete", {
-        "agents_with_subplans": list(subplan_map.keys()),
+        "agents_with_subplans": final_approval_agents,
+        "final_approval": True,
     })
     await _post_project_agent_status_message(
         project_id=project_id,
         agent_id=primary_agent_id,
         agent_name=primary_agent_name,
         text=(
-            "@owner All delegated sub-plans are approved. "
+            "@owner Final batch approval is complete. "
             "I am handing execution over to the assigned agents now."
         ),
         mentions=["owner"],
-        metadata={"phase": "delegate.complete", "agents_with_subplans": list(subplan_map.keys())},
+        metadata={"phase": "delegate.complete", "agents_with_subplans": final_approval_agents},
     )
 
     # ── EXECUTION PHASE (parallel groups) ────────────────────────────────────

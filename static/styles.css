@@ -2886,6 +2886,8 @@ textarea[readonly]:focus {
 .alc-subplan-badge.approved { color: var(--cyan); }
 .alc-subplan-badge.needs_revision { color: var(--orange); }
 .alc-subplan-badge.pending_review { color: var(--yellow); }
+.alc-subplan-badge.reviewing { color: var(--blue); }
+.alc-subplan-badge.ready_for_final { color: var(--green); }
 .alc-subplan-preview { font-size: 10px; color: var(--fg); opacity: 0.7; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
 .live-update-row { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.4; }
 .live-update-row:last-child { border-bottom: none; }

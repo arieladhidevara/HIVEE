@@ -3714,8 +3714,10 @@ function eventSummary(kind, payload) {
   if (kind === "project.delegation.started") return "Primary agent started delegation.";
   if (kind === "project.subplan.phase_started") return "Sub-plan phase started.";
   if (kind === "project.subplan.phase_complete") return "Sub-plan phase completed.";
+  if (kind === "agent.subplan.review_started") return `${name} sub-plan is being reviewed.`;
   if (kind === "agent.subplan.submitted") return `${name} submitted a sub-plan for review.`;
-  if (kind === "agent.subplan.reviewed") return `${name} sub-plan ${data.approved ? "approved" : "needs revision"}.`;
+  if (kind === "agent.subplan.reviewed") return `${name} sub-plan ${data.approved ? "cleared review" : "needs revision"}.`;
+  if (kind === "agent.subplan.final_approved") return `${name} sub-plan received final batch approval.`;
   if (kind === "project.delegation.ready") return `Delegation ready. Reports: ${Number(data.processed_agents || 0)} success, ${Number(data.failed_agents || 0)} failed.`;
   if (kind === "project.delegation.failed") return `Delegation failed: ${detailToText(data.error || payload)}`;
   if (kind === "project.delegation.stopped") return "Delegation stopped by user.";
@@ -3765,10 +3767,10 @@ function eventChatMessage(kind, payload) {
   const name = data.agent_name || data.agent_id || "agent";
   if (kind === "project.delegation.started") return { role: "agent", agentId: data.agent_id || "primary", text: "I am delegating tasks to invited agents now.", meta: "primary agent" };
   if (kind === "project.subplan.phase_started") {
-    return { role: "system", text: "Sub-plan phase started. Each delegated agent is drafting a detailed execution breakdown for review.", meta: "workflow" };
+    return { role: "system", text: "Sub-plan phase started. Each delegated agent will draft a detailed execution breakdown; primary review happens one agent at a time before final batch approval.", meta: "workflow" };
   }
   if (kind === "project.subplan.phase_complete") {
-    return { role: "system", text: "Sub-plan phase complete. Approved breakdowns are ready and execution is moving forward.", meta: "workflow" };
+    return { role: "system", text: "Sub-plan phase complete. Final batch approval is done and execution is moving forward.", meta: "workflow" };
   }
   if (kind === "agent.primary.update") {
     const raw = String(data.text || "").trim();
@@ -3961,15 +3963,31 @@ function handleProjectEvent(kind, payload) {
       agentLiveState[evtAgentId].subplanStatus = "pending_review";
       agentLiveState[evtAgentId].note = "Sub-plan submitted for primary review.";
       renderAgentLiveCards();
+    } else if (kind === "agent.subplan.review_started") {
+      if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      agentLiveState[evtAgentId].status = "subplan_reviewing";
+      agentLiveState[evtAgentId].subplanStatus = "reviewing";
+      const round = Number(data.round || 0);
+      agentLiveState[evtAgentId].note = round > 1 ? `Primary reviewing revised sub-plan, round ${round}.` : "Primary reviewing this sub-plan.";
+      renderAgentLiveCards();
     } else if (kind === "agent.subplan.reviewed") {
       if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
       const approved = Boolean(data.approved);
-      agentLiveState[evtAgentId].status = approved ? "subplan_approved" : "subplan_revising";
-      agentLiveState[evtAgentId].subplanStatus = approved ? "approved" : "needs_revision";
+      const finalApproval = Boolean(data.final_approval);
+      agentLiveState[evtAgentId].status = approved ? "subplan_cleared" : "subplan_revising";
+      agentLiveState[evtAgentId].subplanStatus = approved
+        ? (finalApproval ? "approved" : "ready_for_final")
+        : "needs_revision";
       const feedback = String(data.feedback || "").trim().slice(0, 180);
       agentLiveState[evtAgentId].note = approved
-        ? "Sub-plan approved by primary."
+        ? (finalApproval ? "Final approval granted." : "Sub-plan cleared review; waiting for final batch approval.")
         : (feedback ? `Revising sub-plan: ${feedback}` : "Revising sub-plan after feedback.");
+      renderAgentLiveCards();
+    } else if (kind === "agent.subplan.final_approved") {
+      if (!agentLiveState[evtAgentId]) agentLiveState[evtAgentId] = {};
+      agentLiveState[evtAgentId].status = "subplan_approved";
+      agentLiveState[evtAgentId].subplanStatus = "approved";
+      agentLiveState[evtAgentId].note = "Final batch approval granted; execution is starting.";
       renderAgentLiveCards();
     }
   }
@@ -6863,7 +6881,11 @@ function renderAgentLiveCards() {
         ? "Sub-plan approved"
         : live.subplanStatus === "needs_revision"
           ? "Sub-plan needs revision"
-          : "Sub-plan pending review";
+          : live.subplanStatus === "ready_for_final"
+            ? "Cleared - pending final approval"
+            : live.subplanStatus === "reviewing"
+              ? "Primary reviewing"
+              : "Sub-plan pending review";
       const badge = document.createElement("div");
       badge.className = `alc-subplan-badge ${live.subplanStatus || "pending_review"}`;
       badge.textContent = badgeText;
