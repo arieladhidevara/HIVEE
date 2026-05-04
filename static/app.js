@@ -3637,21 +3637,30 @@ function syncProjectHeadbar() {
     const createdAt = selectedProjectData.created_at ? formatTs(selectedProjectData.created_at) : "-";
     const stage = projectStageLabel(selectedProjectReadiness?.stage || "draft");
     subline.textContent = `${String(selectedProjectData.title || "").trim()} â€” Stage ${stage} â€” ${createdAt}`;
+    const planStatus = String(selectedProjectData.plan_status || "pending").trim().toLowerCase();
+    const waitingForPlanApproval = planStatus === "awaiting_approval";
     const readinessCanRun = Boolean(selectedProjectReadiness?.can_run);
     const exec = String(selectedProjectData.execution_status || "idle").trim().toLowerCase();
     const canRun = readinessCanRun;
-    runBtn.classList.remove("hidden");
-    runBtn.disabled = !canRun;
-    if (exec === "running") {
-      runBtn.textContent = "Running";
-      runBtn.title = "Project execution is already running.";
+    runBtn.classList.toggle("hidden", waitingForPlanApproval);
+    if (waitingForPlanApproval) {
+      runBtn.disabled = true;
+      runBtn.textContent = "Run";
+      runBtn.title = "Approve the plan before execution controls are available.";
+    } else if (exec === "running") {
+      runBtn.disabled = false;
+      runBtn.textContent = "Pause";
+      runBtn.title = "Pause project execution";
     } else if (exec === "paused") {
-      runBtn.textContent = "Run (Paused)";
-      runBtn.title = "Project is paused. Use Resume/Stop controls first.";
+      runBtn.disabled = false;
+      runBtn.textContent = "Resume";
+      runBtn.title = "Resume project execution";
     } else if (exec === "completed") {
+      runBtn.disabled = true;
       runBtn.textContent = "Run (Completed)";
       runBtn.title = "Project is already completed.";
     } else {
+      runBtn.disabled = !canRun;
       runBtn.textContent = canRun ? "Run" : "Run (Locked)";
       runBtn.title = canRun
         ? "Start project run"
@@ -3749,6 +3758,7 @@ function eventSummary(kind, payload) {
   if (kind === "project.task.blueprint.applied") return `Task blueprint applied: ${Number(data.created_count || 0)} task(s).`;
   if (kind === "project.execution.auto_paused") return `Execution paused: ${shortText(data.reason || "Waiting for user input.", 180)}`;
   if (kind === "project.execution.updated") return `Execution updated: ${data.status || "-"} at ${Number(data.progress_pct || 0)}%.`;
+  if (kind === "project.execution.resume.ack_pending") return "Resume accepted; waiting for primary agent ack.";
   if (kind === "project.execution.resumed_after_pause") return "Execution resumed after approval.";
   if (kind.startsWith("project.execution.")) return `Execution ${kind.split(".").pop()}: ${data.status || "-"}.`;
   if (kind === "run.started") return data.auto_started ? "Execution started automatically after plan approval." : "Run started.";
@@ -3850,6 +3860,9 @@ function eventChatMessage(kind, payload) {
   }
   if (kind === "project.execution.pause") return { role: "system", text: detailToText(data.summary || "Execution paused."), meta: "workflow" };
   if (kind === "project.execution.updated") return { role: "system", text: detailToText(data.summary || `Execution updated to ${data.status || "running"} (${Number(data.progress_pct || 0)}%).`), meta: "workflow" };
+  if (kind === "project.execution.resume.ack_pending") {
+    return { role: "system", text: detailToText(data.summary || "Resume accepted; waiting for primary agent ack."), meta: "workflow" };
+  }
   if (kind === "project.execution.resume" || kind === "project.execution.resumed_after_pause") {
     return { role: "system", text: detailToText(data.summary || "Execution resumed."), meta: "workflow" };
   }
@@ -5199,6 +5212,7 @@ function renderProjectExecutionInfo() {
     progressLabel.textContent = "0%";
     statusEl.textContent = "Status: idle";
     if (progressFill) progressFill.style.width = "0%";
+    pauseBtn.classList.add("hidden");
     pauseBtn.disabled = true;
     stopBtn.disabled = true;
     pauseBtn.textContent = "Pause";
@@ -5231,6 +5245,7 @@ function renderProjectExecutionInfo() {
     progressBar.style.background = barColor;
   }
 
+  pauseBtn.classList.add("hidden");
   pauseBtn.textContent = status === "paused" ? "Resume" : "Pause";
   pauseBtn.disabled = status === "stopped" || status === "completed" || status === "idle";
   stopBtn.disabled = status === "stopped" || status === "completed" || status === "idle";
@@ -5278,10 +5293,6 @@ function updateProjectPlanActionButtons({ status = "", text = "" } = {}) {
     approveBtn.disabled = false;
     approveBtn.dataset.planAction = "approve";
     approveBtn.textContent = "Approve Plan";
-    rejectBtn.classList.remove("hidden");
-    rejectBtn.disabled = false;
-    rejectBtn.dataset.planAction = "reject";
-    rejectBtn.textContent = "Request Changes";
   } else if (!hasPlanText || !validPlan || planStatus === "failed") {
     regenerateBtn.classList.remove("hidden");
     regenerateBtn.disabled = false;
@@ -5553,6 +5564,20 @@ async function controlProjectExecution(action) {
     progress_pct: res.progress_pct,
     summary: summary || fallbackMessage,
   });
+}
+
+async function handleRunControlButton() {
+  if (!selectedProjectId) throw new Error("Select project first");
+  const exec = String(selectedProjectData?.execution_status || "idle").trim().toLowerCase();
+  if (exec === "running") {
+    await controlProjectExecution("pause");
+    return;
+  }
+  if (exec === "paused") {
+    await controlProjectExecution("resume");
+    return;
+  }
+  await runProject();
 }
 
 async function refreshSelectedProjectData() {
@@ -8218,6 +8243,8 @@ function renderIssuesGlobal() {
         priority: "high",
         status: "open",
         project: p.title,
+        projectId: p.id,
+        action: "open_project_issues",
         time: p.updated_at,
       });
     }
@@ -8225,6 +8252,8 @@ function renderIssuesGlobal() {
       approvals.push({
         title: `Plan approval required: ${p.title}`,
         project: p.title,
+        projectId: p.id,
+        action: "open_project_overview",
         time: p.updated_at,
       });
     }
@@ -8236,7 +8265,7 @@ function renderIssuesGlobal() {
   } else {
     if (empty) empty.classList.add("hidden");
     list.innerHTML = issues.map((issue) => `
-      <div class="issue-card">
+      <div class="issue-card" role="button" tabindex="0" data-project-id="${esc(issue.projectId || "")}" data-action="${esc(issue.action || "")}">
         <div class="issue-card-header">
           <span class="issue-priority-dot ${issue.priority}"></span>
           <span class="issue-card-title">${esc(issue.title)}</span>
@@ -8248,6 +8277,15 @@ function renderIssuesGlobal() {
         </div>
       </div>
     `).join("");
+    list.querySelectorAll(".issue-card[data-project-id]").forEach((card) => {
+      card.addEventListener("click", () => openIssueProjectCard(card));
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openIssueProjectCard(card);
+        }
+      });
+    });
   }
 
   if (!approvals.length) {
@@ -8257,7 +8295,7 @@ function renderIssuesGlobal() {
     if (approvalsEmpty) approvalsEmpty?.classList.add("hidden");
     if (approvalsList) {
       approvalsList.innerHTML = approvals.map((a) => `
-        <div class="issue-card">
+        <div class="issue-card" role="button" tabindex="0" data-project-id="${esc(a.projectId || "")}" data-action="${esc(a.action || "")}">
           <div class="issue-card-header">
             <span class="issue-priority-dot urgent"></span>
             <span class="issue-card-title">${esc(a.title)}</span>
@@ -8269,8 +8307,26 @@ function renderIssuesGlobal() {
           </div>
         </div>
       `).join("");
+      approvalsList.querySelectorAll(".issue-card[data-project-id]").forEach((card) => {
+        card.addEventListener("click", () => openIssueProjectCard(card));
+        card.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openIssueProjectCard(card);
+          }
+        });
+      });
     }
   }
+}
+
+async function openIssueProjectCard(card) {
+  const projectId = String(card?.dataset?.projectId || "").trim();
+  if (!projectId) return;
+  const action = String(card?.dataset?.action || "").trim();
+  setNavTab("projects");
+  await selectProject(projectId);
+  setProjectPane(action === "open_project_overview" ? "overview" : "issues");
 }
 
 /* ===== PROJECT ISSUES PANEL ===== */
@@ -8285,7 +8341,7 @@ function renderProjectIssues() {
   const issues = [];
 
   if (exec === "failed") {
-    issues.push({ title: "Execution failed", desc: "This project run ended with an error. Check the Activity log for details or re-run.", priority: "high", status: "open", time: p.updated_at });
+    issues.push({ title: "Execution failed", desc: "This project run ended with an error. Check the Activity log for details or re-run.", priority: "high", status: "open", time: p.updated_at, action: "Open History", issueAction: "history" });
   }
   const tasksBlocked = projectTasks.filter((t) => normalizeTaskStatus(t?.status) === "blocked");
   for (const t of tasksBlocked) {
@@ -8293,17 +8349,17 @@ function renderProjectIssues() {
     const desc = depCount > 0
       ? `Waiting on ${depCount} unfinished ${depCount === 1 ? "dependency" : "dependencies"}.`
       : "This task is marked blocked. Check task dependencies or agent assignment.";
-    issues.push({ title: `Blocked: ${t.title}`, desc, priority: "medium", status: "open", time: t.updated_at, action: "Go to Tasks" });
+    issues.push({ title: `Blocked: ${t.title}`, desc, priority: "medium", status: "open", time: t.updated_at, action: "Open Task", issueAction: "task", taskId: t.id });
   }
   if (exec === "paused") {
-    issues.push({ title: "Awaiting approval", desc: "Project is paused and waiting for your review. Approve to continue.", priority: "urgent", status: "pending", time: p.updated_at, action: "Review & Approve" });
+    issues.push({ title: "Paused", desc: "Project execution is paused. Resume when the blocker is cleared.", priority: "urgent", status: "pending", time: p.updated_at, action: "Resume", issueAction: "resume" });
   }
 
   if (!issues.length) {
     list.innerHTML = '<p class="helper">No issues for this project.</p>';
   } else {
     list.innerHTML = issues.map((issue) => `
-      <div class="issue-card">
+      <div class="issue-card" role="button" tabindex="0" data-issue-action="${esc(issue.issueAction || "")}" data-task-id="${esc(issue.taskId || "")}">
         <div class="issue-card-header">
           <span class="issue-priority-dot ${issue.priority}"></span>
           <span class="issue-card-title">${esc(issue.title)}</span>
@@ -8316,6 +8372,15 @@ function renderProjectIssues() {
         </div>
       </div>
     `).join("");
+    list.querySelectorAll(".issue-card[data-issue-action]").forEach((card) => {
+      card.addEventListener("click", () => openProjectIssueCard(card));
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openProjectIssueCard(card);
+        }
+      });
+    });
   }
 
   // Approvals
@@ -8331,21 +8396,32 @@ function renderProjectIssues() {
         <div class="issue-card-desc">Plan is waiting for your approval before execution can continue.</div>
         <div class="action-row" style="margin-top:8px">
           <button id="btn_project_approval_approve" type="button" class="primary" style="min-height:28px;padding:4px 12px;font-size:12px">Approve Plan</button>
-          <button id="btn_project_approval_reject" type="button" class="secondary" style="min-height:28px;padding:4px 12px;font-size:12px">Request Revision</button>
         </div>
       </div>
     `;
     $("btn_project_approval_approve")?.addEventListener("click", () => {
       approveProjectPlan().catch((e) => setMessage("project_issues_msg", detailToText(e), "error"));
     });
-    $("btn_project_approval_reject")?.addEventListener("click", () => {
-      const feedback = window.prompt("What should change in the plan?");
-      if (feedback === null) return;
-      rejectProjectPlan(feedback).catch((e) => setMessage("project_issues_msg", detailToText(e), "error"));
-    });
   } else {
     if (approvalsEmpty) approvalsEmpty.classList.remove("hidden");
     if (approvalsList) approvalsList.innerHTML = `<p class="helper" id="project_approvals_empty">No pending approvals.</p>`;
+  }
+}
+
+function openProjectIssueCard(card) {
+  const action = String(card?.dataset?.issueAction || "").trim();
+  if (action === "task") {
+    const taskId = String(card?.dataset?.taskId || "").trim();
+    setProjectPane("tasks");
+    setTimeout(() => openTaskDetailModal(taskId), 80);
+    return;
+  }
+  if (action === "resume") {
+    controlProjectExecution("resume").catch((e) => setMessage("project_issues_msg", detailToText(e), "error"));
+    return;
+  }
+  if (action === "history") {
+    setProjectPane("history");
   }
 }
 
@@ -9410,6 +9486,8 @@ async function selectProject(projectId) {
 
       const roleText = a.role ? ` - ${a.role}` : "";
       const label = document.createElement("span");
+      label.className = "agent-chip-label";
+      label.title = a.is_primary ? `${a.name} (Primary)${roleText}` : `${a.name}${roleText}`;
       label.textContent = a.is_primary ? `${a.name} (Primary)${roleText}` : `${a.name}${roleText}`;
 
       chip.appendChild(avatar);
@@ -11482,7 +11560,7 @@ function bindActions() {
       .catch((err) => showUiError("wizard_external_msg", err));
   });
   $("btn_subscribe").onclick = () => subscribeEvents().catch((e) => addEvent("error", detailToText(e)));
-  $("btn_run").onclick = () => runProject().catch((e) => { setMessage("chat_hint", detailToText(e), "error"); addEvent("error", detailToText(e)); });
+  $("btn_run").onclick = () => handleRunControlButton().catch((e) => { setMessage("chat_hint", detailToText(e), "error"); addEvent("error", detailToText(e)); });
   $("btn_delete_project").onclick = () => deleteSelectedProject().catch((e) => setMessage("chat_hint", detailToText(e), "error"));
   $("btn_clear_events").onclick = () => {
     const evs = $("events");

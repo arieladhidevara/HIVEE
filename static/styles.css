@@ -1273,8 +1273,18 @@ label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.agent-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .agent-inline-avatar {
+  flex: 0 0 auto;
   width: 16px;
   height: 16px;
   border-radius: 5px;

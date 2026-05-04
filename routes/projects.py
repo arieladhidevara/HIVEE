@@ -190,7 +190,15 @@ async def _dispatch_project_execution_control_ack(
         _update_project_usage_metrics(project_id, prompt_tokens=ptk, completion_tokens=ctk)
         _refresh_project_documents(project_id)
     else:
-        summary = f"Agent ack for `{action}` failed: {detail_to_text(ctrl_res.get('error') or ctrl_res.get('details'))[:700]}"
+        err_text = detail_to_text(ctrl_res.get("error") or ctrl_res.get("details"))[:700]
+        if action == "resume":
+            event_kind = "execution.resume.ack_pending"
+            summary = (
+                "Resume was accepted and project docs were rehydrated, but the primary agent "
+                f"ack is still unavailable: {err_text}"
+            )
+        else:
+            summary = f"Agent ack for `{action}` failed: {err_text}"
 
     _append_project_daily_log(
         owner_user_id=owner_user_id,
