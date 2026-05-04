@@ -72,11 +72,65 @@ async def _dispatch_project_execution_control_ack(
 
     command_text = {
         "pause": "Owner pressed PAUSE. Pause current execution and wait for resume instruction.",
-        "resume": "Owner pressed RESUME. Continue execution from latest checkpoint.",
+        "resume": (
+            "Owner pressed RESUME. Hivee has rehydrated the canonical project folder and "
+            "system-managed project docs before sending this command. Continue execution from "
+            "the latest checkpoint. If your local mirror is missing the canonical project folder, "
+            "recreate that local mirror from the Hivee project file APIs instead of pausing. "
+            "Do not rename unrelated folders; use the canonical project root supplied by Hivee."
+        ),
         "stop": "Owner pressed STOP. Stop all ongoing execution immediately and report final status.",
     }.get(action)
     if not command_text:
         return
+
+    if action == "resume":
+        try:
+            _refresh_project_documents(project_id)
+            conn = db()
+            try:
+                refreshed_row = conn.execute(
+                    """
+                    SELECT p.id, p.user_id, p.title, p.brief, p.goal, p.setup_json, p.project_root, p.workspace_root,
+                           p.plan_status, p.execution_status, p.progress_pct, p.connection_id,
+                           p.backend_mode, p.connector_id,
+                           c.base_url, c.api_key, c.api_key_secret_id, cp.main_agent_id
+                    FROM projects p
+                    LEFT JOIN openclaw_connections c ON c.id = p.connection_id
+                    LEFT JOIN connection_policies cp ON cp.connection_id = p.connection_id AND cp.user_id = p.user_id
+                    WHERE p.id = ? AND p.user_id = ?
+                    """,
+                    (project_id, owner_user_id),
+                ).fetchone()
+                if refreshed_row:
+                    row = refreshed_row
+                    connection_api_key = _resolve_connection_api_key_from_row(conn, user_id=owner_user_id, row=row)
+                    role_rows = _project_agent_rows(conn, project_id)
+            finally:
+                conn.close()
+
+            primary_agent_id = None
+            for r in role_rows:
+                if bool(r.get("is_primary")):
+                    primary_agent_id = str(r.get("agent_id") or "").strip() or None
+                    break
+            if not primary_agent_id:
+                primary_agent_id = str(row["main_agent_id"] or "").strip() or None
+            if not primary_agent_id:
+                return
+            _append_project_daily_log(
+                owner_user_id=owner_user_id,
+                project_root=str(row["project_root"] or ""),
+                kind="execution.resume.rehydrated",
+                text="Hivee rehydrated the canonical project folder and system docs before dispatching resume.",
+            )
+        except Exception as exc:
+            _append_project_daily_log(
+                owner_user_id=owner_user_id,
+                project_root=str(row["project_root"] or ""),
+                kind="execution.resume.rehydrate_failed",
+                text=f"Resume preflight rehydrate failed: {detail_to_text(exc)[:700]}",
+            )
 
     instruction = _project_context_instruction(
         title=str(row["title"] or ""),

@@ -1240,7 +1240,9 @@ def _artifact_sync_rule_lines(*, project_root: Optional[str] = None) -> List[str
             [
                 f"- Hivee source-of-truth project root: `{project_root_hint}`.",
                 "- Treat that root as the storage scope for project-relative paths and as the canonical folder name for any mirrored local workspace copy.",
-                "- If your local runtime has the same project under a differently named folder and the canonical folder is missing, rename or recreate the local mirror under the canonical Hivee folder name before continuing.",
+                "- If the canonical local mirror is missing, create/recreate it under the canonical Hivee folder name and hydrate required system docs from the Hivee file APIs before continuing.",
+                "- Do not pause solely because the canonical local mirror is missing; pause only if existing local folders contain conflicting project contents that cannot be safely reconciled.",
+                "- Do not rename an unrelated local folder unless it clearly contains this same project or the owner confirms it.",
                 "- Only pause for owner approval if multiple candidate folders contain conflicting project contents and you cannot safely reconcile them into the canonical folder.",
             ]
         )
@@ -2511,6 +2513,64 @@ def _refresh_project_documents(project_id: str) -> None:
                     existing_plan_artifact = ""
                 if is_invalid_plan_text(existing_plan_artifact):
                     plan_target.write_text("No valid plan generated yet.\n", encoding="utf-8")
+
+        normalized_plan_status = _coerce_plan_status(row["plan_status"])
+        normalized_execution_status = _coerce_execution_status(row["execution_status"])
+        if normalized_execution_status == EXEC_STATUS_COMPLETED:
+            phase = "completed"
+        elif normalized_execution_status == EXEC_STATUS_PAUSED:
+            phase = "paused"
+        elif normalized_plan_status == PLAN_STATUS_APPROVED:
+            phase = "execution"
+        elif normalized_plan_status in {PLAN_STATUS_GENERATING, PLAN_STATUS_AWAITING_APPROVAL}:
+            phase = "planning"
+        else:
+            phase = "setup"
+
+        hivee_api_base = _get_hivee_api_base(str(row["id"] or project_id))
+        _write_project_fundamentals_file(
+            project_dir,
+            project_id=str(row["id"] or project_id),
+            title=title,
+            phase=phase,
+            plan_status=normalized_plan_status,
+            execution_status=normalized_execution_status,
+            hivee_api_base=hivee_api_base,
+            role_rows=role_rows,
+        )
+        _write_project_agents_file(
+            project_dir,
+            role_rows=role_rows,
+            project_id=str(row["id"] or project_id),
+            hivee_api_base=hivee_api_base,
+        )
+        _write_project_state_file(
+            project_dir,
+            phase=phase,
+            plan_status=normalized_plan_status,
+            execution_status=normalized_execution_status,
+            progress_pct=_clamp_progress(row["progress_pct"]),
+            agents=role_rows,
+            updated_at=row["execution_updated_at"],
+            hivee_api_base=hivee_api_base,
+        )
+        primary_row = next((r for r in role_rows if bool(r.get("is_primary"))), None)
+        scope_row = primary_row or (role_rows[0] if role_rows else None)
+        if scope_row:
+            _write_project_scope_file(
+                project_dir,
+                agent_id=str(scope_row.get("agent_id") or ""),
+                agent_name=str(scope_row.get("agent_name") or scope_row.get("agent_id") or "agent"),
+                is_primary=bool(scope_row.get("is_primary")),
+                write_paths=["*"] if bool(scope_row.get("is_primary")) else None,
+                hivee_api_base=hivee_api_base,
+                project_id=str(row["id"] or project_id),
+            )
+        _write_project_agent_roles_file(
+            owner_user_id=owner_user_id,
+            project_root=project_root,
+            agents=role_rows,
+        )
     except Exception:
         pass
 
@@ -5676,7 +5736,9 @@ def _workspace_policy_lines(workspace_root: str, project_root: Optional[str] = N
             [
                 f"- For this project, treat `{project_root_hint}` as the Hivee project scope for project-relative paths and synced artifacts.",
                 "- Keep the local mirrored project folder name aligned with that canonical Hivee path whenever you work in a local workspace copy.",
+                "- If the canonical local mirror is missing, create/recreate it under the canonical Hivee folder name and hydrate required system docs from the Hivee file APIs before continuing.",
                 "- If you discover the same project under a different local alias, normalize it back to the canonical folder name before continuing unless that would overwrite conflicting contents.",
+                "- Do not pause solely because the canonical local mirror is missing; pause only for actual conflicting contents or missing owner decisions.",
                 "- Ask project owner first before touching unrelated paths outside the project scope.",
             ]
         )
