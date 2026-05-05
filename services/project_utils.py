@@ -1651,7 +1651,7 @@ def _list_project_chat_messages(
         if mention_filter:
             sql += " AND LOWER(COALESCE(pcn.mention_target, '')) = ?"
             params.append(mention_filter)
-        sql += " ORDER BY pcm.created_at DESC LIMIT ?"
+        sql += " ORDER BY pcm.created_at DESC, pcm.rowid DESC LIMIT ?"
         params.append(cap)
         rows = conn.execute(sql, tuple(params)).fetchall()
         message_ids = [str(row["id"] or "").strip() for row in rows if str(row["id"] or "").strip()]
@@ -1663,7 +1663,7 @@ def _list_project_chat_messages(
                 SELECT message_id, mention_target
                 FROM project_chat_mentions
                 WHERE project_id = ? AND message_id IN ({placeholders})
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, rowid ASC
                 """,
                 (project_id, *message_ids),
             ).fetchall()
@@ -3101,6 +3101,9 @@ def _delegate_prompt_from_project(
         "                 \"weight_pct\": 20, \"depends_on\": [\"other_ref\"]}],\n"
         "     \"groups\": [[\"ref_a\", \"ref_b\"], [\"ref_c\"]]\n"
         "   }\n"
+        "   The progress map must be task-only: no agent cards, no primary-agent card, no delegation/stage card.\n"
+        "   Use task names as labels, set each node's `agent` to the responsible agent_id, and connect real timeline dependencies only.\n"
+        "   Example: research tasks must connect before backend/build tasks that depend on the research.\n"
         "5. Break the plan into HIGH-LEVEL task cards — ONE per agent (or per major phase per agent).\n"
         "   Each task card MUST include ALL of these structured fields:\n"
         "   - `instructions`: What this agent must accomplish (2-4 sentences)\n"

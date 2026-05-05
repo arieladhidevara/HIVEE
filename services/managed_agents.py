@@ -71,6 +71,123 @@ def _latest_project_task_id_for_agent(project_id: str, agent_id: str) -> str:
     return str(row["id"] or "").strip() if row else ""
 
 
+def _build_subplan_canonical_context(
+    *,
+    owner_user_id: str,
+    project_root: str,
+    agent_id: str,
+    task_text: str,
+    subplan_text: str = "",
+) -> str:
+    safe_agent_id = _safe_agent_filename(agent_id)
+    include_paths = [
+        f"agents/{safe_agent_id}.md",
+        "delegation.md",
+        "progress_map.json",
+        "plan.md",
+        PROJECT_PLAN_FILE,
+        PROJECT_INFO_FILE,
+        OVERVIEW_FILE,
+        "agents/ROLES.md",
+        SETUP_CHAT_HISTORY_FILE,
+        PROJECT_PROTOCOL_FILE,
+    ]
+    file_context = _build_project_file_context(
+        owner_user_id=owner_user_id,
+        project_root=project_root,
+        include_paths=include_paths,
+        request_text=f"{task_text}\n{subplan_text}",
+        max_total_chars=14_000,
+        max_file_chars=3_200,
+        max_files=10,
+        include_tree=False,
+    )
+    assigned_scope = str(task_text or "").strip()
+    parts = [
+        "Canonical review references:",
+        "- The per-agent assigned task is the narrowest source of truth for this review.",
+        "- `delegation.md` and `progress_map.json` define task ownership, order, dependencies, and weights.",
+        "- `plan.md` / `Project Info/project-plan.md` are the approved north star, not a license to rewrite every sub-plan into the primary agent's preferred strategy.",
+    ]
+    if assigned_scope:
+        parts.append(f"\nAssigned task for `{agent_id}`:\n---\n{assigned_scope[:4_000]}\n---")
+    if file_context:
+        parts.append(file_context)
+    return "\n\n".join(parts).strip()
+
+
+async def _update_parent_task_status_for_agent(
+    *,
+    project_id: str,
+    owner_user_id: str,
+    project_root: str,
+    task_id: str,
+    agent_id: str,
+    agent_name: str,
+    status: str,
+) -> None:
+    resolved_task_id = str(task_id or "").strip()
+    if not resolved_task_id:
+        return
+    if status == TASK_STATUS_REVIEW:
+        conn = db()
+        try:
+            current = conn.execute(
+                "SELECT status FROM project_tasks WHERE project_id = ? AND id = ? LIMIT 1",
+                (project_id, resolved_task_id),
+            ).fetchone()
+        finally:
+            conn.close()
+        if current and str(current["status"] or "").strip() == TASK_STATUS_DONE:
+            return
+    try:
+        now = int(time.time())
+        conn = db()
+        try:
+            row = conn.execute(
+                "SELECT id FROM project_tasks WHERE project_id = ? AND id = ? LIMIT 1",
+                (project_id, resolved_task_id),
+            ).fetchone()
+            if not row:
+                return
+            closed_at = now if status == TASK_STATUS_DONE else None
+            conn.execute(
+                """
+                UPDATE project_tasks
+                SET status = ?, updated_at = ?, closed_at = ?
+                WHERE project_id = ? AND id = ?
+                """,
+                (status, now, closed_at, project_id, resolved_task_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        await emit(
+            project_id,
+            "project.task.updated",
+            {"task_id": resolved_task_id, "changed_fields": ["status"], "status": status},
+        )
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="project_agent",
+            actor_id=agent_id,
+            actor_label=agent_name,
+            event_type="task.updated",
+            summary=f"{agent_name} task marked {status}",
+            payload={"task_id": resolved_task_id, "changed_fields": ["status"], "status": status},
+        )
+    except Exception as exc:
+        _append_project_activity(
+            project_id=project_id,
+            actor_type="system",
+            actor_id="hivee",
+            actor_label="Hivee",
+            event_type="task.status.sync.skipped",
+            summary=f"Could not mark {agent_name} task {status}",
+            payload={"task_id": resolved_task_id, "agent_id": agent_id, "status": status, "error": detail_to_text(exc)[:500]},
+        )
+
+
 async def _emit_project_chat_message_payload(
     project_id: str,
     message_payload: Dict[str, Any],
@@ -321,10 +438,19 @@ def _read_project_delegation_state(project_id: str) -> Dict[str, Any]:
     try:
         task_rows = conn.execute(
             """
-            SELECT id, title, assignee_agent_id, weight_pct
+            SELECT id, title, assignee_agent_id, weight_pct, status, created_at, updated_at
             FROM project_tasks
             WHERE project_id = ?
             ORDER BY created_at ASC, updated_at ASC
+            """,
+            (project_id,),
+        ).fetchall()
+        dependency_rows = conn.execute(
+            """
+            SELECT task_id, depends_on_task_id
+            FROM project_task_dependencies
+            WHERE project_id = ?
+            ORDER BY created_at ASC
             """,
             (project_id,),
         ).fetchall()
@@ -338,6 +464,13 @@ def _read_project_delegation_state(project_id: str) -> Dict[str, Any]:
         ).fetchall()
     finally:
         conn.close()
+
+    dependencies_by_task: Dict[str, List[str]] = {}
+    for dep_row in dependency_rows:
+        task_id = str(dep_row["task_id"] or "").strip()
+        depends_on = str(dep_row["depends_on_task_id"] or "").strip()
+        if task_id and depends_on:
+            dependencies_by_task.setdefault(task_id, []).append(depends_on)
 
     task_payload = []
     task_assignees: Set[str] = set()
@@ -354,6 +487,10 @@ def _read_project_delegation_state(project_id: str) -> Dict[str, Any]:
                 "title": str(row["title"] or "").strip(),
                 "assignee_agent_id": assignee,
                 "weight_pct": max(0, min(100, int(row["weight_pct"] or 0))),
+                "status": str(row["status"] or "").strip(),
+                "depends_on": dependencies_by_task.get(task_id, []),
+                "created_at": _to_int(row["created_at"]),
+                "updated_at": _to_int(row["updated_at"]),
             }
         )
 
@@ -385,12 +522,18 @@ def _build_minimal_progress_map(
                 continue
             agent_id = str(row.get("assignee_agent_id") or "").strip()
             title = str(row.get("title") or "").strip() or f"Task for {agent_id or 'agent'}"
+            explicit_depends = [
+                str(dep or "").strip()
+                for dep in (row.get("depends_on") or [])
+                if str(dep or "").strip()
+            ]
             node = {
                 "id": node_id,
                 "label": title[:160],
                 "agent": agent_id,
+                "agent_name": str((by_id.get(agent_id) or {}).get("agent_name") or agent_id).strip(),
                 "weight_pct": max(0, min(100, int(row.get("weight_pct") or 0))),
-                "depends_on": [],
+                "depends_on": explicit_depends,
             }
             nodes.append(node)
             if agent_id:
@@ -439,7 +582,8 @@ def _build_minimal_progress_map(
                 node = node_map.get(node_id)
                 if node is None:
                     continue
-                node["depends_on"] = list(prev_group_ids)
+                if not node.get("depends_on"):
+                    node["depends_on"] = list(prev_group_ids)
         prev_group_ids = list(group_ids)
 
     if not groups and nodes:
@@ -3528,11 +3672,19 @@ async def _run_agent_subplan_phase_v2(
     max_review_rounds = 3
 
     for round_idx in range(1, max_review_rounds + 1):
+        canonical_subplan_context = _build_subplan_canonical_context(
+            owner_user_id=str(row["user_id"] or ""),
+            project_root=str(row["project_root"] or ""),
+            agent_id=agent_id,
+            task_text=task_text,
+            subplan_text=actual_subplan,
+        )
         if round_idx == 1:
             subplan_task = (
                 f"You are agent `{agent_id}` ({agent_name}).\n"
                 f"You have been assigned this high-level task:\n\n"
                 f"{task_text}\n\n"
+                f"{canonical_subplan_context}\n\n"
                 f"Before executing, write a DETAILED SUB-PLAN. Save it to "
                 f"`agents/{agent_id}-subplan.md` in output_files. Include:\n"
                 f"- Approach and methodology\n"
@@ -3540,6 +3692,8 @@ async def _run_agent_subplan_phase_v2(
                 f"- Timeline estimate per sub-task\n"
                 f"- Deliverable files\n"
                 f"- Risks, assumptions, dependencies\n\n"
+                f"Keep this sub-plan scoped to your assigned task and canonical references above. "
+                f"Do not rewrite it into the full project/campaign plan unless your assigned task explicitly requires that.\n\n"
                 f"Then post to chat requesting approval:\n"
                 f"  @{primary_agent_id} here is my sub-plan for [task title]. "
                 f"Read `agents/{agent_id}-subplan.md`. Please approve or provide feedback.\n\n"
@@ -3551,8 +3705,10 @@ async def _run_agent_subplan_phase_v2(
                 f"Your latest sub-plan draft:\n\n---\n{actual_subplan[:2800]}\n---\n\n"
                 f"Primary feedback to address:\n\n"
                 f"{latest_feedback or 'Align the sub-plan more closely with scope, dependencies, and deliverables.'}\n\n"
+                f"{canonical_subplan_context}\n\n"
                 f"Rewrite the full sub-plan and replace `agents/{agent_id}-subplan.md` in output_files.\n"
                 f"Keep it executable, specific, and aligned to the approved project plan.\n"
+                f"Do not broaden it into a full project/campaign plan unless the canonical assigned task says so.\n"
                 f"Then post to chat asking @{primary_agent_id} to review this revised sub-plan.\n"
                 f"Do NOT start executing yet.\n\n"
             )
@@ -3699,9 +3855,15 @@ async def _run_agent_subplan_phase_v2(
             f"You are the primary agent `{primary_agent_id}` ({primary_agent_name}).\n"
             f"Agent `{agent_id}` ({agent_name}) submitted sub-plan round {round_idx} for review:\n\n"
             f"---\n{actual_subplan[:3000]}\n---\n\n"
-            f"Review this sub-plan against the overall project plan, goals, and constraints "
-            f"(read plan.md if needed). Consider: scope alignment, realistic timeline, correct "
-            f"dependencies, resource fit.\n\n"
+            f"{canonical_subplan_context}\n\n"
+            f"Review policy:\n"
+            f"- Compare the sub-plan to the canonical references above, in this priority order: "
+            f"assigned task file/text, `delegation.md`, `progress_map.json`, approved `plan.md`, then setup/goal context.\n"
+            f"- Approve if the sub-plan fulfills this agent's assigned scope, deliverables, dependencies, and handoff expectations.\n"
+            f"- Reject only for evidence-backed mismatches: wrong scope, missing required deliverable, wrong owner/dependency, unrealistic timeline, unsafe assumption, or conflict with the approved plan.\n"
+            f"- Do not reject because you prefer a different campaign/project strategy unless that preference is explicitly grounded in the canonical references.\n"
+            f"- Do not force this agent to produce the whole `plan.md`; each agent should own only its assigned part.\n"
+            f"- Feedback must cite the canonical source it is based on, such as `agents/{_safe_agent_filename(agent_id)}.md`, `delegation.md`, `progress_map.json`, or `plan.md`.\n\n"
             f"Respond with your decision. Include `\"approved\": true` only if this sub-plan "
             f"is ready to be included in the final batch approval. Include `\"approved\": false` "
             f"if the agent must revise it.\n\n"
@@ -3709,10 +3871,10 @@ async def _run_agent_subplan_phase_v2(
             f"- If approved=true, DO NOT tell @{agent_id} to proceed yet. Final approval is sent "
             f"only after every delegated agent's sub-plan clears review.\n"
             f"- If approved=false, post actionable revision feedback to chat @{agent_id}.\n\n"
-            f"Return JSON: {{\"chat_update\": \"...\", \"approved\": true, \"feedback\": \"...\", "
+            f"Return JSON: {{\"chat_update\": \"...\", \"approved\": true, \"feedback\": \"Canonical evidence: ...\", "
             f"\"actions\": []}}\n"
             f"For revision, return JSON: {{\"chat_update\": \"...\", \"approved\": false, "
-            f"\"feedback\": \"specific required changes\", \"actions\": [{{\"type\": \"post_chat_message\", "
+            f"\"feedback\": \"specific required changes with canonical evidence\", \"actions\": [{{\"type\": \"post_chat_message\", "
             f"\"text\": \"@{agent_id} Changes needed: ...\", \"mentions\": [\"{agent_id}\"]}}]}}"
         )
         review_res = await _project_chat(
@@ -3744,7 +3906,12 @@ async def _run_agent_subplan_phase_v2(
         approved_flag = parsed_review.get("approved")
         if approved_flag is None:
             review_chat = review_chat_update.lower()
-            approved_flag = any(kw in review_chat for kw in ("approved", "proceed", "looks good", "good to go", "approve"))
+            negative_markers = ("not approved", "not ready", "changes needed", "needs revision", "revise", "revision required")
+            approved_flag = (
+                False
+                if any(marker in review_chat for marker in negative_markers)
+                else any(kw in review_chat for kw in ("approved", "looks good", "good to go", "approve"))
+            )
         approved = bool(approved_flag)
 
         review_action_result: Dict[str, Any] = {"applied": [], "skipped": []}
@@ -4661,6 +4828,10 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
         task_text = assigned_task_map.get(aid) or f"# Task for {aid}\n\nRole: {role}\n"
         task_title = _task_title_from_text(task_text, role=role, agent_name=agent_name)
         resolved_task_id = _latest_project_task_id_for_agent(project_id, aid)
+        execution_session_key = (
+            f"{project_id}:agent:{aid}:task:"
+            f"{resolved_task_id or _safe_agent_filename(aid)}:{int(time.time())}"
+        )
         approved_subplan = subplan_map.get(aid, "")
         task_rel = f"agents/{_safe_agent_filename(aid)}.md"
         agent_file_context = _build_project_file_context(
@@ -4688,6 +4859,15 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             "task_id": resolved_task_id or "",
             "task_file": task_rel,
         }
+        await _update_parent_task_status_for_agent(
+            project_id=project_id,
+            owner_user_id=str(row["user_id"] or ""),
+            project_root=str(row["project_root"] or ""),
+            task_id=resolved_task_id,
+            agent_id=aid,
+            agent_name=agent_name,
+            status=TASK_STATUS_IN_PROGRESS,
+        )
         await emit(project_id, "agent.task.started", started_payload)
         _append_project_activity(
             project_id=project_id,
@@ -4703,8 +4883,8 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                 project_id=project_id,
                 agent_id=aid,
                 agent_name=agent_name,
-                text=f"I am starting `{task_title}` now. I will share another update when this step is done.",
-                mentions=[],
+                text=f"@owner Roger, I am starting `{task_title}` now. I will post concrete progress as each mini-task moves.",
+                mentions=["owner"],
                 metadata={"phase": "task.start", "task_title": task_title, "task_id": resolved_task_id or ""},
             )
         except Exception:
@@ -4784,6 +4964,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             timeout_sec: Optional[int] = None,
         ) -> Dict[str, Any]:
             started_at = time.time()
+            last_wait_chat_elapsed_min = 0
             chat_task = asyncio.create_task(
                 _project_chat(
                     row,
@@ -4828,6 +5009,28 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
                     summary=f"{agent_name}: {note}",
                     payload=live_payload,
                 )
+                if elapsed_min != last_wait_chat_elapsed_min:
+                    last_wait_chat_elapsed_min = elapsed_min
+                    try:
+                        await _post_project_agent_status_message(
+                            project_id=project_id,
+                            agent_id=aid,
+                            agent_name=agent_name,
+                            text=(
+                                f"@owner Still working on `{task_title}`. "
+                                f"The connector has not returned the structured progress payload yet after {elapsed_min} min."
+                            ),
+                            mentions=["owner"],
+                            metadata={
+                                "phase": "task.waiting",
+                                "task_title": task_title,
+                                "task_id": resolved_task_id or "",
+                                "elapsed_sec": elapsed,
+                                "context_type": context_type,
+                            },
+                        )
+                    except Exception:
+                        pass
             try:
                 return await chat_task
             except Exception as exc:
@@ -4840,7 +5043,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
 
         agent_res = await _project_chat_with_wait_notes(
             agent_instruction,
-            session_key=f"{project_id}:agent:{aid}",
+            session_key=execution_session_key,
             context_type="task_execution",
         )
         p_tokens, c_tokens, _ = _extract_usage_counts(agent_res)
@@ -5052,7 +5255,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             )
             followup_res = await _project_chat_with_wait_notes(
                 followup_prompt,
-                session_key=f"{project_id}:agent:{aid}",
+                session_key=execution_session_key,
                 context_type="task_execution",
             )
             if followup_res.get("ok"):
@@ -5134,7 +5337,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             )
             rescue_res = await _project_chat_with_wait_notes(
                 rescue_prompt,
-                session_key=f"{project_id}:agent:{aid}",
+                session_key=execution_session_key,
                 context_type="task_execution",
             )
             if rescue_res.get("ok"):
@@ -5248,7 +5451,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             )
             subtask_res = await _project_chat_with_wait_notes(
                 subtask_prompt,
-                session_key=f"{project_id}:agent:{aid}",
+                session_key=execution_session_key,
                 context_type="task_execution",
             )
             if subtask_res.get("ok"):
@@ -5341,7 +5544,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             )
             progress_res = await _project_chat_with_wait_notes(
                 progress_prompt,
-                session_key=f"{project_id}:agent:{aid}",
+                session_key=execution_session_key,
                 context_type="task_progress",
             )
             await _merge_agent_followup_response(
@@ -5374,7 +5577,7 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             )
             strict_res = await _project_chat_with_wait_notes(
                 strict_prompt,
-                session_key=f"{project_id}:agent:{aid}",
+                session_key=execution_session_key,
                 context_type="task_execution_contract",
                 timeout_sec=None,
             )
@@ -5511,6 +5714,16 @@ async def _delegate_project_tasks_impl(project_id: str) -> None:
             await _emit_project_action_results(project_id, issue_action_result.get("applied") or [])
         else:
             chat_update = _ensure_chat_handoff_mentions(chat_update, assigned_mentions_map.get(aid) or [])
+
+        await _update_parent_task_status_for_agent(
+            project_id=project_id,
+            owner_user_id=str(row["user_id"] or ""),
+            project_root=str(row["project_root"] or ""),
+            task_id=resolved_task_id,
+            agent_id=aid,
+            agent_name=agent_name,
+            status=TASK_STATUS_BLOCKED if pause_decision.get("pause") else TASK_STATUS_REVIEW,
+        )
 
         auto_chat_message = None
         has_explicit_chat_action = any(

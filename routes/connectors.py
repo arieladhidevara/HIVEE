@@ -179,28 +179,47 @@ def register_routes(app: FastAPI) -> None:
 
         conn = db()
         if cursor:
-            # cursor is now a created_at timestamp (integer as string)
+            # Cursor format is `created_at:id` so commands created in the same
+            # second are not skipped. Older connectors may still send only the
+            # created_at timestamp; keep that path compatible.
+            cursor_raw = str(cursor or "").strip()
+            cursor_parts = cursor_raw.split(":", 1)
             try:
-                cursor_ts = int(cursor)
+                cursor_ts = int(cursor_parts[0])
             except (ValueError, TypeError):
                 cursor_ts = 0
-            rows = conn.execute(
-                """
-                SELECT id, command_type, payload_json, created_at
-                FROM connector_commands
-                WHERE connector_id = ? AND status = 'queued' AND created_at > ?
-                ORDER BY created_at ASC
-                LIMIT ?
-                """,
-                (connector_id, cursor_ts, CONNECTOR_COMMANDS_BATCH_SIZE),
-            ).fetchall()
+            cursor_id = cursor_parts[1] if len(cursor_parts) > 1 else ""
+            if cursor_id:
+                rows = conn.execute(
+                    """
+                    SELECT id, command_type, payload_json, created_at
+                    FROM connector_commands
+                    WHERE connector_id = ?
+                      AND status = 'queued'
+                      AND (created_at > ? OR (created_at = ? AND id > ?))
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (connector_id, cursor_ts, cursor_ts, cursor_id, CONNECTOR_COMMANDS_BATCH_SIZE),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, command_type, payload_json, created_at
+                    FROM connector_commands
+                    WHERE connector_id = ? AND status = 'queued' AND created_at > ?
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (connector_id, cursor_ts, CONNECTOR_COMMANDS_BATCH_SIZE),
+                ).fetchall()
         else:
             rows = conn.execute(
                 """
                 SELECT id, command_type, payload_json, created_at
                 FROM connector_commands
                 WHERE connector_id = ? AND status = 'queued'
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, id ASC
                 LIMIT ?
                 """,
                 (connector_id, CONNECTOR_COMMANDS_BATCH_SIZE),
@@ -223,8 +242,7 @@ def register_routes(app: FastAPI) -> None:
                 payload=payload_data,
                 createdAt=int(row["created_at"] or 0),
             ))
-            # Use created_at as cursor (guaranteed chronological)
-            new_cursor = str(int(row["created_at"] or 0))
+            new_cursor = f"{int(row['created_at'] or 0)}:{str(row['id'])}"
 
         return ConnectorCommandsPollOut(cursor=new_cursor if commands else cursor, commands=commands)
 

@@ -445,6 +445,8 @@ class ProjectTaskOut(BaseModel):
     due_at: Optional[int] = None
     weight_pct: int = 0
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    dependencies: List[str] = Field(default_factory=list)
+    depends_on: List[str] = Field(default_factory=list)
     created_at: int
     updated_at: int
     closed_at: Optional[int] = None

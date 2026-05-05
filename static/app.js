@@ -7185,13 +7185,6 @@ function renderProgressMap() {
   const proj    = selectedProjectData;
   if (!proj) { nodesEl.innerHTML = '<p class="helper" style="padding:20px">No project selected.</p>'; return; }
 
-  const rawPrimaryId = String(
-    selectedPrimaryAgentId
-    || agents.find((agent) => Boolean(agent?.is_primary))?.id
-    || agents[0]?.id
-    || ""
-  ).trim();
-  const primaryId = _isDefaultPlaceholderAgent(rawPrimaryId) ? "" : rawPrimaryId;
   const taskById = new Map(tasks.map((task) => [String(task.id), task]));
   const assignedIds = agents
     .map((agent) => String(agent?.id || agent?.agent_id || "").trim())
@@ -7199,46 +7192,12 @@ function renderProgressMap() {
   const taskAgentIds = tasks
     .map((task) => String(task?.assignee_agent_id || "").trim())
     .filter((agentId) => Boolean(agentId) && !_isDefaultPlaceholderAgent(agentId));
-  const relevantAgentIds = [...new Set([primaryId, ...assignedIds, ...taskAgentIds].filter(Boolean))];
-  const delegatedAgentIds = relevantAgentIds.filter((agentId) => agentId !== primaryId);
-  const delegationNodeId = "stage:delegate";
+  const agentOrder = [...new Set([...assignedIds, ...taskAgentIds].filter(Boolean))];
+  const agentLane = new Map(agentOrder.map((agentId, idx) => [agentId, idx]));
+  const unassignedLane = agentOrder.length;
 
-  // ── Node list (type: agent | task) ────────────────────────────────────────
+  // ── Node list (task-only) ─────────────────────────────────────────────────
   const nodes = [];
-  if (primaryId) {
-    nodes.push({
-      id: `agent:${primaryId}`,
-      type: "agent",
-      label: projectAgentDisplayName(primaryId, primaryId).slice(0, 18),
-      sub: "Primary",
-      agentId: primaryId,
-      w: 156,
-      h: 52,
-      fixedLevel: 0,
-    });
-  }
-  nodes.push({
-    id: delegationNodeId,
-    type: "stage",
-    label: "Delegate",
-    sub: delegatedAgentIds.length ? `${delegatedAgentIds.length} agent${delegatedAgentIds.length === 1 ? "" : "s"}` : "Route",
-    w: 132,
-    h: 48,
-    fixedLevel: primaryId ? 1 : 0,
-  });
-  for (const aid of delegatedAgentIds) {
-    const assigned = findProjectAssignedAgent(aid);
-    nodes.push({
-      id: `agent:${aid}`,
-      type: "agent",
-      label: projectAgentDisplayName(aid, aid).slice(0, 18),
-      sub: String(assigned?.role || "Agent").slice(0, 24),
-      agentId: aid,
-      w: 156,
-      h: 52,
-      fixedLevel: primaryId ? 2 : 1,
-    });
-  }
 
   const taskDepthMemo = new Map();
   function taskDepth(taskId, stack = new Set()) {
@@ -7261,34 +7220,28 @@ function renderProgressMap() {
   for (const task of tasks) {
     const tid = String(task.id);
     const depth = taskDepth(tid);
+    const agentId = String(task.assignee_agent_id || "").trim();
+    const lane = agentLane.has(agentId) ? agentLane.get(agentId) : unassignedLane;
+    const owner = agentId ? projectAgentDisplayName(agentId, agentShortName(agentId) || agentId) : "Unassigned";
     nodes.push({
       id: `task:${tid}`,
       type: "task",
-      label: taskMapLabel(task),
+      label: String(task.title || task.name || "Untitled task").trim().slice(0, 64),
       fullLabel: String(task.title || "Untitled task"),
-      sub: taskStatusLabel(normalizeTaskStatus(task.status)),
+      sub: `${owner} - ${taskStatusLabel(normalizeTaskStatus(task.status))}`,
       status: normalizeTaskStatus(task.status),
-      agentId: String(task.assignee_agent_id || ""),
+      agentId,
       taskId: tid,
-      w: 148,
-      h: 54,
-      fixedLevel: (primaryId ? 3 : 2) + depth,
+      lane,
+      w: 190,
+      h: 58,
+      fixedLevel: depth,
+      createdAt: Number(task.created_at || 0),
     });
   }
 
   // ── Edge list ─────────────────────────────────────────────────────────────
   const edges = [];
-  if (primaryId) edges.push({ from: `agent:${primaryId}`, to: delegationNodeId, kind: "stage" });
-  for (const aid of delegatedAgentIds) {
-    edges.push({ from: delegationNodeId, to: `agent:${aid}`, kind: "delegate" });
-  }
-  for (const task of tasks) {
-    const tid = String(task.id);
-    const aid = String(task.assignee_agent_id || "").trim();
-    const agentNodeId = aid && delegatedAgentIds.includes(aid) ? `agent:${aid}` : "";
-    const fromNode = agentNodeId || delegationNodeId || (primaryId ? `agent:${primaryId}` : "");
-    if (fromNode) edges.push({ from: fromNode, to: `task:${tid}`, kind: "assign" });
-  }
   for (const task of tasks) {
     const deps = Array.isArray(task.dependencies) ? task.dependencies : Array.isArray(task.depends_on) ? task.depends_on : [];
     for (const depId of deps) {
@@ -7309,26 +7262,35 @@ function renderProgressMap() {
   }
   for (const arr of byLevel.values()) {
     arr.sort((a, b) => {
-      if (a.type !== b.type) return a.type === "agent" ? -1 : 1;
-      return (statusOrd[a.status] ?? 2) - (statusOrd[b.status] ?? 2);
+      if (a.lane !== b.lane) return a.lane - b.lane;
+      const statusDelta = (statusOrd[a.status] ?? 2) - (statusOrd[b.status] ?? 2);
+      if (statusDelta) return statusDelta;
+      return (a.createdAt || 0) - (b.createdAt || 0);
     });
   }
 
   // ── Auto-layout positions ─────────────────────────────────────────────────
-  const COL_GAP = 80, ROW_GAP = 12, PAD = 20;
+  const COL_GAP = 86, ROW_GAP = 20, PAD = 22;
   const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b);
   const autoPos = new Map();
-  let colX = PAD, totalH = 0;
+  const laneSlots = new Map();
+  let maxX = PAD, maxY = PAD;
   for (const lvl of sortedLevels) {
-    const group = byLevel.get(lvl);
-    const colW = Math.max(...group.map((n) => n.w));
-    let rowY = PAD;
-    for (const n of group) { autoPos.set(n.id, { x: colX, y: rowY }); rowY += n.h + ROW_GAP; }
-    totalH = Math.max(totalH, rowY);
-    colX += colW + COL_GAP;
+    const group = byLevel.get(lvl) || [];
+    for (const n of group) {
+      const lane = Number.isFinite(Number(n.lane)) ? Number(n.lane) : unassignedLane;
+      const slotKey = `${lane}:${lvl}`;
+      const slot = laneSlots.get(slotKey) || 0;
+      laneSlots.set(slotKey, slot + 1);
+      const x = PAD + lvl * (n.w + COL_GAP);
+      const y = PAD + lane * (n.h + ROW_GAP + 12) + slot * (n.h + 8);
+      autoPos.set(n.id, { x, y });
+      maxX = Math.max(maxX, x + n.w + PAD);
+      maxY = Math.max(maxY, y + n.h + PAD);
+    }
   }
-  const canvasW = Math.max(colX + PAD, 400);
-  const canvasH = Math.max(totalH + PAD, 200);
+  const canvasW = Math.max(maxX, 420);
+  const canvasH = Math.max(maxY, 220);
   canvas.style.width = canvasW + "px"; canvas.style.height = canvasH + "px";
   svgEl.setAttribute("width", canvasW); svgEl.setAttribute("height", canvasH);
 
@@ -7336,7 +7298,7 @@ function renderProgressMap() {
   const pos = new Map();
   for (const n of nodes) {
     const saved = pmapNodePositions[n.id];
-    const savedPos = saved && saved.v === "chrono-v1" ? { x: Number(saved.x || 0), y: Number(saved.y || 0) } : null;
+    const savedPos = saved && saved.v === "task-only-v2" ? { x: Number(saved.x || 0), y: Number(saved.y || 0) } : null;
     pos.set(n.id, savedPos || (autoPos.get(n.id) || { x: PAD, y: PAD }));
   }
 
@@ -7391,7 +7353,13 @@ function renderProgressMap() {
       el.style.setProperty("--pmap-accent", sc);
       el.innerHTML = `<div class="pmap-mnode-bar" style="background:${sc}"></div><div class="pmap-mnode-body"><div class="pmap-mnode-label">${esc(n.label)}</div><div class="pmap-mnode-sub" style="color:${agColor}">@${esc(agentShortName(n.agentId) || n.agentId.slice(0,8) || "—")} · ${esc(n.sub)}</div></div>`;
     }
-    if (n.type === "task") el.title = n.fullLabel || n.label;
+    if (n.type === "task") {
+      const sc = STATUS_COLOR[n.status] || "var(--muted)";
+      const agColor = n.agentId ? (colorHexForAgent(n.agentId) || "var(--muted)") : "var(--muted)";
+      el.style.setProperty("--pmap-accent", agColor);
+      el.innerHTML = `<div class="pmap-mnode-bar" style="background:${agColor}"></div><div class="pmap-mnode-body"><div class="pmap-mnode-label">${esc(n.label)}</div><div class="pmap-mnode-sub" style="color:${agColor}">${esc(n.sub)}</div><div class="pmap-mnode-status" style="color:${sc}">${esc(taskStatusLabel(n.status))}</div></div>`;
+      el.title = n.fullLabel || n.label;
+    }
     nodesEl.appendChild(el);
     nodeEls.set(n.id, el);
   }
@@ -7467,7 +7435,7 @@ function renderProgressMap() {
   }
   function onMUp() {
     if (nodeDrag) {
-      pmapNodePositions[nodeDrag.nodeId] = { ...pos.get(nodeDrag.nodeId), v: "chrono-v1" };
+      pmapNodePositions[nodeDrag.nodeId] = { ...pos.get(nodeDrag.nodeId), v: "task-only-v2" };
       const el = nodeEls.get(nodeDrag.nodeId);
       if (el) { el.style.zIndex = ""; el.style.cursor = "grab"; }
       nodeDrag = null;

@@ -213,6 +213,12 @@ async def connector_chat_sync(
         command_type="openclaw.chat",
         payload=payload,
     )
+    print(
+        "[connector_chat_sync] queued "
+        f"command={command_id} connector={connector_id} agent={str(agent_id or '').strip() or '-'} "
+        f"session={str(session_key or '').strip() or '-'} context={str(context_type or 'message').strip() or 'message'}",
+        flush=True,
+    )
 
     liveness_only = timeout_sec is None
     deadline = None if liveness_only else (time.time() + timeout_sec)

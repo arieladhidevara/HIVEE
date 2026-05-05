@@ -257,6 +257,30 @@ def _dependency_stats_by_task(conn: sqlite3.Connection, *, project_id: str, task
     return out
 
 
+def _dependency_ids_by_task(conn: sqlite3.Connection, *, project_id: str, task_ids: List[str]) -> Dict[str, List[str]]:
+    ids = [str(tid).strip() for tid in (task_ids or []) if str(tid).strip()]
+    if not ids:
+        return {}
+    placeholders = ",".join(["?"] * len(ids))
+    rows = conn.execute(
+        f"""
+        SELECT task_id, depends_on_task_id
+        FROM project_task_dependencies
+        WHERE project_id = ?
+          AND task_id IN ({placeholders})
+        ORDER BY created_at ASC
+        """,
+        (project_id, *ids),
+    ).fetchall()
+    out: Dict[str, List[str]] = {}
+    for row in rows:
+        tid = str(row["task_id"] or "").strip()
+        dep_id = str(row["depends_on_task_id"] or "").strip()
+        if tid and dep_id:
+            out.setdefault(tid, []).append(dep_id)
+    return out
+
+
 def _decorate_task_with_dependency_stats(task: ProjectTaskOut, stats: Optional[Dict[str, int]]) -> ProjectTaskOut:
     src_meta = task.metadata if isinstance(task.metadata, dict) else {}
     meta = dict(src_meta)
@@ -265,6 +289,13 @@ def _decorate_task_with_dependency_stats(task: ProjectTaskOut, stats: Optional[D
     meta["_system_dependency_total"] = total_count
     meta["_system_dependency_open"] = open_count
     task.metadata = meta
+    return task
+
+
+def _decorate_task_with_dependency_ids(task: ProjectTaskOut, dep_ids: Optional[List[str]]) -> ProjectTaskOut:
+    ids = [str(dep or "").strip() for dep in (dep_ids or []) if str(dep or "").strip()]
+    task.dependencies = ids
+    task.depends_on = list(ids)
     return task
 
 
@@ -380,6 +411,7 @@ def register_routes(app: FastAPI) -> None:
         rows = conn.execute(sql, tuple(params)).fetchall()
         task_ids = [str(r["id"]) for r in rows]
         dep_stats = _dependency_stats_by_task(conn, project_id=project_id, task_ids=task_ids)
+        dep_ids = _dependency_ids_by_task(conn, project_id=project_id, task_ids=task_ids)
         conn.commit()
         conn.close()
 
@@ -388,7 +420,9 @@ def register_routes(app: FastAPI) -> None:
             checkout_row = row if row["owner_type"] is not None else None
             task = _task_from_row(row, checkout_row=checkout_row, now=now)
             stats = dep_stats.get(str(task.id), {"total": 0, "open": 0})
-            out.append(_decorate_task_with_dependency_stats(task, stats))
+            task = _decorate_task_with_dependency_stats(task, stats)
+            task = _decorate_task_with_dependency_ids(task, dep_ids.get(str(task.id), []))
+            out.append(task)
         return out
 
     @app.post("/api/projects/{project_id}/tasks", response_model=ProjectTaskOut)
@@ -467,12 +501,14 @@ def register_routes(app: FastAPI) -> None:
             (task_id,),
         ).fetchone()
         dep_stats = _dependency_stats_by_task(conn, project_id=project_id, task_ids=[task_id])
+        dep_ids = _dependency_ids_by_task(conn, project_id=project_id, task_ids=[task_id])
         conn.commit()
         conn.close()
         if not row:
             raise HTTPException(404, "Task not found")
         task = _task_from_row(row, checkout_row=checkout_row, now=now)
-        return _decorate_task_with_dependency_stats(task, dep_stats.get(task_id, {"total": 0, "open": 0}))
+        task = _decorate_task_with_dependency_stats(task, dep_stats.get(task_id, {"total": 0, "open": 0}))
+        return _decorate_task_with_dependency_ids(task, dep_ids.get(task_id, []))
 
     @app.patch("/api/tasks/{task_id}", response_model=ProjectTaskOut)
     async def update_task_detail(request: Request, task_id: str, payload: ProjectTaskUpdateIn):
