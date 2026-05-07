@@ -8,6 +8,7 @@ from services.managed_agents import (
     _generate_project_plan,
     _ensure_project_info_document,
     _is_default_placeholder_agent,
+    upsert_managed_agent_skill_profile,
 )
 from services.project_activity import append_project_activity_log_entry
 from services.project_utils import (
@@ -218,7 +219,7 @@ async def _start_project_execution_run(*, project_id: str, owner_user_id: str, t
     conn = db()
     proj = conn.execute(
         """
-        SELECT id, user_id, title, brief, goal, plan_text, plan_status, project_root, workspace_root, execution_status, progress_pct
+        SELECT id, user_id, title, brief, goal, plan_text, plan_status, project_root, workspace_root, execution_status, progress_pct, backend_mode
         FROM projects WHERE id = ? AND user_id = ?
         """,
         (project_id, owner_user_id),
@@ -315,7 +316,11 @@ async def _start_project_execution_run(*, project_id: str, owner_user_id: str, t
             "trigger": trigger,
         },
     )
-    asyncio.create_task(_delegate_project_tasks(project_id))
+    if DEMO_MODE and str(proj["backend_mode"] or "").strip().lower() == "demo":
+        from services.demo_runtime import run_demo_execution
+        asyncio.create_task(run_demo_execution(project_id))
+    else:
+        asyncio.create_task(_delegate_project_tasks(project_id))
     return {"ok": True}
 
 
@@ -904,6 +909,10 @@ def register_routes(app: FastAPI) -> None:
     async def project_setup_chat(request: Request, payload: ProjectSetupChatIn):
         from services.connector_dispatch import connector_chat_sync as _connector_chat_sync
         user_id = get_session_user(request)
+        if DEMO_MODE:
+            from services.demo_runtime import demo_setup_chat_response, ensure_demo_connection
+            ensure_demo_connection(user_id)
+            return demo_setup_chat_response(payload.message, start=bool(payload.start))
         conn = db()
         selection = _resolve_connector_selection(conn, user_id=user_id, connection_id=payload.connection_id)
         if not selection.get("ok"):
@@ -950,6 +959,10 @@ def register_routes(app: FastAPI) -> None:
     async def project_setup_draft(request: Request, payload: ProjectSetupDraftIn):
         from services.connector_dispatch import connector_chat_sync as _connector_chat_sync
         user_id = get_session_user(request)
+        if DEMO_MODE:
+            from services.demo_runtime import demo_setup_draft, ensure_demo_connection
+            ensure_demo_connection(user_id)
+            return demo_setup_draft(payload.transcript or [])
         conn = db()
         selection = _resolve_connector_selection(conn, user_id=user_id, connection_id=payload.connection_id)
         if not selection.get("ok"):
@@ -1048,6 +1061,14 @@ def register_routes(app: FastAPI) -> None:
         user_id = get_session_user(request)
         primary_env = _ensure_primary_environment_for_user(user_id)
         env_id = str(primary_env.get("id") or "").strip() or None
+        if DEMO_MODE:
+            from services.demo_runtime import create_demo_project_record, seed_demo_project_created_chat
+            created = create_demo_project_record(user_id, payload, env_id=env_id)
+            await emit(created.id, "project.created", {"title": created.title, "demo": True})
+            await emit(created.id, "project.agents_set", {"count": 4, "primary_agent_id": "demo/main", "auto_seeded": True, "demo": True})
+            await emit(created.id, "project.scope_initialized", {"project_root": created.project_root, "demo": True})
+            await seed_demo_project_created_chat(created.id)
+            return created
     
         conn = db()
         selection = _resolve_connector_selection(conn, user_id=user_id, connection_id=payload.connection_id)
@@ -1473,7 +1494,14 @@ def register_routes(app: FastAPI) -> None:
         )
         conn.commit()
         conn.close()
-        asyncio.create_task(_generate_project_plan(project_id, force=True))
+        if DEMO_MODE:
+            from services.demo_runtime import generate_demo_plan, is_demo_project
+            if is_demo_project(project_id):
+                asyncio.create_task(generate_demo_plan(project_id, force=True))
+            else:
+                asyncio.create_task(_generate_project_plan(project_id, force=True))
+        else:
+            asyncio.create_task(_generate_project_plan(project_id, force=True))
         await emit(project_id, "project.plan.regenerate_requested", {"project_id": project_id})
         previous_plan_text = str(row["plan_text"] or "")
         return ProjectPlanOut(
@@ -1652,12 +1680,30 @@ def register_routes(app: FastAPI) -> None:
 
         await emit(project_id, "project.plan.approved", {"project_id": project_id, "status": new_status})
         try:
-            asyncio.create_task(
-                _continue_project_after_plan_approval(
-                    project_id=project_id,
-                    owner_user_id=user_id,
+            if DEMO_MODE:
+                from services.demo_runtime import is_demo_project
+                if is_demo_project(project_id):
+                    asyncio.create_task(
+                        _start_project_execution_run(
+                            project_id=project_id,
+                            owner_user_id=user_id,
+                            trigger="plan_approved",
+                        )
+                    )
+                else:
+                    asyncio.create_task(
+                        _continue_project_after_plan_approval(
+                            project_id=project_id,
+                            owner_user_id=user_id,
+                        )
+                    )
+            else:
+                asyncio.create_task(
+                    _continue_project_after_plan_approval(
+                        project_id=project_id,
+                        owner_user_id=user_id,
+                    )
                 )
-            )
         except Exception:
             pass
     
@@ -2291,7 +2337,8 @@ def register_routes(app: FastAPI) -> None:
 
         control_summary = f"Execution action `{action}` accepted."
         event_kind = f"execution.{action}"
-        if primary_agent_id:
+        is_demo_control = DEMO_MODE and str(row["backend_mode"] or "").strip().lower() == "demo"
+        if primary_agent_id and not is_demo_control:
             asyncio.create_task(
                 _dispatch_project_execution_control_ack(
                     project_id=project_id,
@@ -2303,6 +2350,8 @@ def register_routes(app: FastAPI) -> None:
                 f"Execution action `{action}` accepted. "
                 "Agent ack is continuing in the background."
             )
+        elif primary_agent_id and is_demo_control:
+            control_summary = f"Demo execution action `{action}` accepted."
 
         _append_project_daily_log(
             owner_user_id=user_id,
@@ -2526,7 +2575,14 @@ def register_routes(app: FastAPI) -> None:
             _conn.commit()
             _conn.close()
             if was_generating:
-                asyncio.create_task(_generate_project_plan(project_id, force=True))
+                if DEMO_MODE:
+                    from services.demo_runtime import generate_demo_plan, is_demo_project
+                    if is_demo_project(project_id):
+                        asyncio.create_task(generate_demo_plan(project_id, force=True))
+                    else:
+                        asyncio.create_task(_generate_project_plan(project_id, force=True))
+                else:
+                    asyncio.create_task(_generate_project_plan(project_id, force=True))
                 await emit(project_id, "project.plan.generating", {"project_id": project_id, "reason": "roster_changed"})
 
         _refresh_project_documents(project_id)
@@ -3654,15 +3710,20 @@ def register_routes(app: FastAPI) -> None:
 
         requested_entries: List[Dict[str, str]] = []
 
-        def _push_candidate(raw_agent_id: Any, raw_agent_name: Any, raw_role: Any, *, source: str) -> None:
+        def _push_candidate(raw_agent_id: Any, raw_agent_name: Any, raw_role: Any, *, source: str, raw_skill_summary: Any = "", raw_skills: Any = None) -> None:
             aid = str(raw_agent_id or "").strip()[:180]
             if not aid:
                 return
+            skill_items: List[str] = []
+            if isinstance(raw_skills, list):
+                skill_items = [str(item or "").strip()[:80] for item in raw_skills if str(item or "").strip()]
             requested_entries.append(
                 {
                     "agent_id": aid,
                     "agent_name": str(raw_agent_name or "").strip()[:220],
                     "role": str(raw_role or "").strip()[:500],
+                    "skill_summary": str(raw_skill_summary or "").strip()[:600],
+                    "skills": skill_items,
                     "source": source,
                 }
             )
@@ -3683,6 +3744,8 @@ def register_routes(app: FastAPI) -> None:
             payload.agent_name or locked_requested_agent_name or managed_name_by_id.get(primary_requested_id) or default_main_agent_name,
             invite_role,
             source="primary",
+            raw_skill_summary=getattr(payload, "skill_summary", ""),
+            raw_skills=getattr(payload, "skills", None),
         )
 
         if len(selected_agents_payload) > 30:
@@ -3694,6 +3757,8 @@ def register_routes(app: FastAPI) -> None:
                 getattr(item, "agent_name", ""),
                 getattr(item, "role", ""),
                 source="selected",
+                raw_skill_summary=getattr(item, "skill_summary", ""),
+                raw_skills=getattr(item, "skills", None),
             )
 
         if locked_requested_agent_id and not any(str(x.get("agent_id") or "") == locked_requested_agent_id for x in requested_entries):
@@ -3731,11 +3796,15 @@ def register_routes(app: FastAPI) -> None:
             if not resolved_name:
                 resolved_name = str(managed_name_by_id.get(aid) or (default_main_agent_name if aid == default_main_agent_id else "") or aid).strip()[:220] or aid
             resolved_role = str(item.get("role") or invite_role or "").strip()[:500]
+            skill_summary = str(item.get("skill_summary") or "").strip()[:600]
+            skill_items = item.get("skills") if isinstance(item.get("skills"), list) else []
             normalized_agents.append(
                 {
                     "agent_id": aid,
                     "agent_name": resolved_name,
                     "role": resolved_role,
+                    "skill_summary": skill_summary,
+                    "skills": skill_items,
                 }
             )
 
@@ -3745,6 +3814,17 @@ def register_routes(app: FastAPI) -> None:
             agent_id = str(item.get("agent_id") or "").strip()
             agent_name = str(item.get("agent_name") or agent_id).strip()[:220] or agent_id
             role = str(item.get("role") or "").strip()[:500]
+            skill_summary = str(item.get("skill_summary") or "").strip()[:600]
+            skill_items = item.get("skills") if isinstance(item.get("skills"), list) else []
+            upsert_managed_agent_skill_profile(
+                conn,
+                user_id=member_user_id,
+                connection_id=policy_conn_id,
+                agent_id=agent_id,
+                skill_summary=skill_summary,
+                skills=skill_items,
+                now=now,
+            )
 
             existing_agent_row = conn.execute(
                 """
@@ -3878,6 +3958,7 @@ def register_routes(app: FastAPI) -> None:
                     "agent_id": agent_id,
                     "agent_name": agent_name,
                     "role": role,
+                    "skill_summary": skill_summary,
                     "membership_id": membership_id,
                     "project_agent_access_token": raw_project_agent_token,
                     "created_membership": created_membership,

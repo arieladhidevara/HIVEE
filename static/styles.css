@@ -1897,8 +1897,16 @@ label {
   background: rgba(255, 255, 255, 0.015);
 }
 .agent-pick .small { display: block; color: var(--muted); font-size: 12px; }
-.agent-pick [data-agent-role] { min-height: 34px; }
+.agent-pick-fields { display: grid; gap: 6px; }
+.agent-pick [data-agent-role],
+.agent-pick [data-agent-skills] { min-height: 34px; }
 .agent-pick input[type="checkbox"] { width: 16px; height: 16px; }
+.agent-skill-input {
+  width: 100%;
+  min-height: 54px;
+  resize: vertical;
+  font-size: 12px;
+}
 
 /* ===== LEGACY WIZARD AGENT ROW (kept for backward compat) ===== */
 .wizard-agent-row {
@@ -2983,6 +2991,7 @@ textarea[readonly]:focus {
 .issue-cards-list { display: flex; flex-direction: column; gap: 8px; }
 .issue-card { background: var(--surface); border: 1px solid var(--line-1); border-radius: 8px; padding: 12px 14px; cursor: pointer; transition: border-color 180ms; }
 .issue-card:hover { border-color: var(--line-2); }
+.issue-card.expanded { border-color: rgba(34,211,238,0.35); cursor: default; }
 .issue-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .issue-priority-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; }
 .issue-priority-dot.urgent { background: var(--red); }
@@ -2998,6 +3007,12 @@ textarea[readonly]:focus {
 .issue-card-meta { display: flex; gap: 10px; font-size: 11px; color: var(--muted); align-items: center; }
 .issue-card-action { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--cyan); opacity: 0.8; }
 .issue-card-status.pending { color: var(--orange); border-color: rgba(251,146,60,0.3); background: rgba(251,146,60,0.06); }
+.issue-answer-form { display: grid; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-1); }
+.issue-answer-form label { font-size: 12px; font-weight: 700; color: var(--text); }
+.issue-answer-input,
+.issue-answer-form textarea { width: 100%; min-height: 68px; resize: vertical; font-size: 12px; }
+.issue-answer-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.issue-answer-actions button { min-height: 28px; padding: 4px 12px; font-size: 12px; }
 
 /* ===== ORG TREE (Team) ===== */
 .org-tree-wrapper { position: relative; overflow: hidden; width: 100%; height: 420px; border-radius: 8px; border: 1px solid var(--line-1); background: var(--bg); cursor: grab; user-select: none; }
@@ -3193,6 +3208,27 @@ textarea[readonly]:focus {
 .pmap-canvas { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
 .pmap-svg { position: absolute; top: 0; left: 0; pointer-events: none; }
 .pmap-nodes { position: relative; }
+.pmap-level-header {
+  position: absolute;
+  height: 26px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  pointer-events: none;
+}
+.pmap-level-header small {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.72;
+}
 .pmap-edge { fill: none; stroke: var(--line-2); stroke-width: 1.5; }
 
 /* Root project node */
@@ -3414,11 +3450,24 @@ textarea[readonly]:focus {
 .pmap-mnode:hover { border-color: var(--pmap-accent, var(--cyan)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--pmap-accent, var(--cyan)) 25%, transparent); }
 .pmap-mnode-agent { border-style: dashed; }
 .pmap-mnode-task { background: #030303; border-color: rgba(255,255,255,.16); }
+.pmap-mnode-task::after {
+  content: "";
+  position: absolute;
+  right: -5px;
+  top: 24px;
+  width: 4px;
+  height: 22px;
+  border-radius: 0 4px 4px 0;
+  background: var(--pmap-accent, var(--cyan));
+  opacity: 0.75;
+}
 .pmap-mnode-stage { background: #080603; border-style: solid; }
 .pmap-mnode-bar { height: 3px; flex: 0 0 3px; background: var(--pmap-accent, var(--border)); }
 .pmap-mnode-body { padding: 5px 8px 6px; display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .pmap-mnode-label { font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pmap-mnode-sub { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pmap-mnode-flow { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 9px; color: var(--muted); }
+.pmap-mnode-flow span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pmap-mnode-status { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pmap-edge { fill: none; stroke: rgba(148,163,184,0.3); stroke-width: 1.5; }
 .pmap-edge-dep { stroke: rgba(99,202,255,0.45); stroke-width: 1.5; }

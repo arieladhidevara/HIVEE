@@ -50,6 +50,7 @@ let wizardExternalMemberships = [];
 let inboxInvitesCache = [];
 let inboxNotificationsCache = [];
 let inboxAcceptContext = null; // { invite, selectedAgents: Map<agentId, { agent_id, agent_name, connection_id }> }
+let expandedProjectIssueKey = "";
 let wizardAgentPermissions = [];
 let wizardProjectAgents = [];
 let wizardLatestExternalInvite = null;
@@ -1256,6 +1257,7 @@ function renderProjectInviteAgentPicker() {
     const selected = projectInviteAgentSelections.get(agentId) || null;
     const isChecked = Boolean(selected || isLocked);
     const roleValue = String(selected?.role || inviteRole || "").trim();
+    const skillValue = String(selected?.skill_summary || "").trim();
 
     const item = document.createElement("article");
     item.className = "agent-pick";
@@ -1289,11 +1291,24 @@ function renderProjectInviteAgentPicker() {
     roleInput.value = roleValue;
     roleInput.disabled = !isChecked;
 
+    const skillInput = document.createElement("input");
+    skillInput.type = "text";
+    skillInput.dataset.agentSkills = "1";
+    skillInput.placeholder = "Best at...";
+    skillInput.value = skillValue;
+    skillInput.disabled = !isChecked;
+
+    const fieldStack = document.createElement("div");
+    fieldStack.className = "agent-pick-fields";
+    fieldStack.appendChild(roleInput);
+    fieldStack.appendChild(skillInput);
+
     if (isChecked) {
       projectInviteAgentSelections.set(agentId, {
         agent_id: agentId,
         agent_name: String(row?.name || selected?.agent_name || agentId).trim() || agentId,
         role: roleValue,
+        skill_summary: skillValue,
         locked: isLocked,
       });
     } else if (!isLocked) {
@@ -1306,12 +1321,15 @@ function renderProjectInviteAgentPicker() {
           agent_id: agentId,
           agent_name: String(row?.name || agentId).trim() || agentId,
           role: String(roleInput.value || "").trim(),
+          skill_summary: String(skillInput.value || "").trim(),
           locked: isLocked,
         });
         roleInput.disabled = false;
+        skillInput.disabled = false;
       } else if (!isLocked) {
         projectInviteAgentSelections.delete(agentId);
         roleInput.disabled = true;
+        skillInput.disabled = true;
       }
       setMessage("project_invite_agent_modal_msg", "");
     });
@@ -1324,11 +1342,19 @@ function renderProjectInviteAgentPicker() {
         role: String(roleInput.value || "").trim(),
       });
     });
+    skillInput.addEventListener("input", () => {
+      if (!projectInviteAgentSelections.has(agentId)) return;
+      const prev = projectInviteAgentSelections.get(agentId) || {};
+      projectInviteAgentSelections.set(agentId, {
+        ...prev,
+        skill_summary: String(skillInput.value || "").trim(),
+      });
+    });
 
     item.appendChild(check);
     item.appendChild(labelWrap);
     item.appendChild(source);
-    item.appendChild(roleInput);
+    item.appendChild(fieldStack);
     picker.appendChild(item);
   }
 }
@@ -1339,6 +1365,7 @@ function collectProjectInviteSelectedAgents({ fallbackToManual = true } = {}) {
       agent_id: String(item?.agent_id || "").trim(),
       agent_name: String(item?.agent_name || "").trim(),
       role: String(item?.role || "").trim(),
+      skill_summary: String(item?.skill_summary || "").trim(),
     }))
     .filter((item) => Boolean(item.agent_id));
 
@@ -1352,6 +1379,7 @@ function collectProjectInviteSelectedAgents({ fallbackToManual = true } = {}) {
       agent_id: fallbackId,
       agent_name: String($("invite_agent_name")?.value || info?.requested_agent_name || fallbackId).trim() || fallbackId,
       role: String(info?.role || "").trim(),
+      skill_summary: "",
     },
   ];
 }
@@ -1390,6 +1418,7 @@ async function openProjectInviteAgentModal() {
       agent_id: lockId,
       agent_name: String(lockedManaged?.name || lockName || lockId).trim() || lockId,
       role: inviteRole,
+      skill_summary: "",
       locked: true,
     });
   } else if (typedId) {
@@ -1398,6 +1427,7 @@ async function openProjectInviteAgentModal() {
       agent_id: typedId,
       agent_name: String(typedManaged?.name || typedName || typedId).trim() || typedId,
       role: inviteRole,
+      skill_summary: "",
       locked: false,
     });
   } else if (projectInviteManagedAgents.length) {
@@ -1406,6 +1436,7 @@ async function openProjectInviteAgentModal() {
       agent_id: String(first.id),
       agent_name: String(first.name || first.id).trim() || String(first.id),
       role: inviteRole,
+      skill_summary: "",
       locked: false,
     });
   }
@@ -1455,10 +1486,15 @@ async function acceptProjectInviteFromUI({ connectionId: overrideConnectionId = 
         agent_id: agentId,
         agent_name: String(item?.agent_name || item?.agentName || "").trim() || undefined,
         role: String(item?.role || "").trim() || undefined,
+        skill_summary: String(item?.skill_summary || item?.skillSummary || "").trim() || undefined,
       });
     }
     if (!normalized.length) {
       throw new Error("Pick at least one agent to join this project.");
+    }
+    const missingSkill = normalized.find((item) => !String(item.skill_summary || "").trim());
+    if (missingSkill) {
+      throw new Error(`Add skills for ${missingSkill.agent_name || missingSkill.agent_id}.`);
     }
     payload.selected_agents = normalized;
     const lockedAgentId = String(info?.requested_agent_id || "").trim();
@@ -1816,6 +1852,36 @@ function taskMapLabel(task) {
     .find((part) => part.length > 2 && !stop.has(part.toLowerCase()));
   if (!word) return "Task";
   return word.charAt(0).toUpperCase() + word.slice(1, 14).toLowerCase();
+}
+
+function taskDependencyIds(task) {
+  const deps = Array.isArray(task?.dependencies)
+    ? task.dependencies
+    : (Array.isArray(task?.depends_on) ? task.depends_on : []);
+  return deps.map((id) => String(id || "").trim()).filter(Boolean);
+}
+
+function taskDependents(taskId, tasks = projectTasks) {
+  const tid = String(taskId || "").trim();
+  if (!tid) return [];
+  return (Array.isArray(tasks) ? tasks : []).filter((task) => taskDependencyIds(task).includes(tid));
+}
+
+function taskShortTitle(taskOrId, fallback = "Task") {
+  const task = taskOrId && typeof taskOrId === "object"
+    ? taskOrId
+    : (Array.isArray(projectTasks) ? projectTasks : []).find((item) => String(item?.id || "") === String(taskOrId || ""));
+  const text = String(task?.title || taskOrId || fallback || "").replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, 48) : fallback;
+}
+
+function latestProjectPauseSignal(projectId = selectedProjectId) {
+  const pid = String(projectId || "").trim();
+  const events = Array.isArray(projectActivityEvents) ? projectActivityEvents : [];
+  return events.find((event) => {
+    const kind = String(event?.event_type || event?.type || "").trim();
+    return String(event?.project_id || pid) === pid && kind === "project.execution.auto_paused";
+  }) || null;
 }
 
 function hydrateTaskCreateAssigneeSelect() {
@@ -2474,7 +2540,7 @@ function openTaskDetailModal(taskId) {
       const ag = agentById.get(handoverTo);
       handoverEl.textContent = handoverTo === "owner" ? "Owner" : ag ? String(ag.name || handoverTo) : handoverTo;
     } else {
-      handoverEl.textContent = "—";
+      handoverEl.textContent = "-";
     }
   }
   const priEl = $("tdm_priority");
@@ -2484,7 +2550,7 @@ function openTaskDetailModal(taskId) {
   const weightEl = $("tdm_weight");
   if (weightEl) {
     const w = task.weight_pct != null ? Number(task.weight_pct) : 0;
-    weightEl.textContent = w > 0 ? `${w}%` : "—";
+    weightEl.textContent = w > 0 ? `${w}%` : "-";
     weightEl.className = "tdm-weight-badge" + (w > 0 ? " has-weight" : "");
   }
 
@@ -2492,9 +2558,9 @@ function openTaskDetailModal(taskId) {
   const inputsEl = $("tdm_inputs");
   if (inputsEl) {
     inputsEl.innerHTML = "";
-    const deps = Array.isArray(task.dependencies) ? task.dependencies : Array.isArray(task.depends_on) ? task.depends_on : [];
+    const deps = taskDependencyIds(task);
     if (!deps.length) {
-      inputsEl.innerHTML = '<span class="tdm-io-empty">No dependencies</span>';
+      inputsEl.innerHTML = '<span class="tdm-io-empty">Can start now</span>';
     } else {
       for (const depId of deps) {
         const dep = taskById.get(String(depId));
@@ -2512,12 +2578,9 @@ function openTaskDetailModal(taskId) {
   const outputsEl = $("tdm_outputs");
   if (outputsEl) {
     outputsEl.innerHTML = "";
-    const dependents = allTasks.filter((t) => {
-      const d = Array.isArray(t.dependencies) ? t.dependencies : Array.isArray(t.depends_on) ? t.depends_on : [];
-      return d.map(String).includes(tid);
-    });
+    const dependents = taskDependents(tid, allTasks);
     if (!dependents.length) {
-      outputsEl.innerHTML = '<span class="tdm-io-empty">No dependents</span>';
+      outputsEl.innerHTML = '<span class="tdm-io-empty">Final output</span>';
     } else {
       for (const dep of dependents) {
         const chip = document.createElement("div");
@@ -2553,7 +2616,7 @@ function openTaskDetailModal(taskId) {
     for (const { id, key } of cardDefs) {
       const val = String(meta[key] || "").trim();
       const el = $(id);
-      if (el) el.textContent = val || "—";
+      if (el) el.textContent = val || "-";
       if (val) hasAny = true;
     }
     cardFieldsEl.style.display = hasAny ? "" : "none";
@@ -2584,7 +2647,7 @@ function openTaskDetailModal(taskId) {
         const commentInput = document.createElement("input");
         commentInput.type = "text";
         commentInput.className = "tdm-issue-comment";
-        commentInput.placeholder = "Add comment or skip…";
+        commentInput.placeholder = "Optional note";
         commentInput.maxLength = 400;
         row.appendChild(label);
         row.appendChild(commentInput);
@@ -2884,7 +2947,7 @@ async function deleteTaskComment(taskId, commentId) {
   setMessage("tasks_msg", "Comment deleted.", "ok");
 }
 
-async function loadProjectTasks(projectId = selectedProjectId, { silent = false } = {}) {
+async function loadProjectTasks(projectId = selectedProjectId, { silent = false, includeClosed = null } = {}) {
   const pid = String(projectId || "").trim();
   if (!pid) {
     taskBlueprints = [];
@@ -2899,7 +2962,10 @@ async function loadProjectTasks(projectId = selectedProjectId, { silent = false 
   if (!silent) setMessage("tasks_msg", "Loading tasks...");
   const filters = taskFilterValues();
   const qs = new URLSearchParams();
-  qs.set("include_closed", Boolean($("task_include_closed")?.checked) ? "true" : "false");
+  const includeClosedFlag = includeClosed === null
+    ? (Boolean($("task_include_closed")?.checked) || activeProjectPane === "live")
+    : Boolean(includeClosed);
+  qs.set("include_closed", includeClosedFlag ? "true" : "false");
   qs.set("limit", "240");
   if (filters.status) qs.set("status", filters.status);
   if (filters.priority) qs.set("priority", filters.priority);
@@ -5436,6 +5502,8 @@ async function approveProjectPlan() {
     : execStatus === "paused"
       ? "Plan approved. Execution is paused and waiting for your input."
       : "Plan approved.";
+  if (activeProjectPane === "issues") renderProjectIssues();
+  renderInbox();
   setMessage("chat_hint", hint, "ok");
   addEvent("project.plan.approved", { project_id: selectedProjectId });
 }
@@ -5447,6 +5515,8 @@ async function rejectProjectPlan(feedback = "") {
   if (cleanFeedback) payload.feedback = cleanFeedback;
   await api(`/api/projects/${selectedProjectId}/plan/reject`, "POST", payload);
   await refreshProjectStateAfterPlanAction(selectedProjectId);
+  if (activeProjectPane === "issues") renderProjectIssues();
+  renderInbox();
   setMessage("chat_hint", "Plan revision requested.", "ok");
   addEvent("project.plan.rejected", { project_id: selectedProjectId, feedback: cleanFeedback });
 }
@@ -5557,6 +5627,8 @@ async function controlProjectExecution(action) {
     fallbackMessage = "Project masih paused; primary agent masih butuh input.";
     tone = "error";
   }
+  if (activeProjectPane === "issues") renderProjectIssues();
+  renderInbox();
   setMessage("chat_hint", summary || fallbackMessage, tone);
   addEvent(eventKind, {
     project_id: selectedProjectId,
@@ -6613,13 +6685,15 @@ function _extractAgentModelLabel(card, rawAgent = null) {
 }
 
 function _extractAgentDescription(card, rawAgent = null) {
+  const metadata = card && typeof card.metadata === "object" ? card.metadata : {};
   const candidates = [
+    metadata?.userProvidedSkillSummary,
+    card?.description,
     rawAgent?.description,
     rawAgent?.summary,
     rawAgent?.specialization,
     rawAgent?.specialty,
     rawAgent?.role,
-    card?.description,
   ];
   for (const candidate of candidates) {
     const text = String(candidate || "").replace(/\s+/g, " ").trim();
@@ -7207,7 +7281,7 @@ function renderProgressMap() {
     if (stack.has(tid)) return 0;
     stack.add(tid);
     const task = taskById.get(tid);
-    const deps = Array.isArray(task?.dependencies) ? task.dependencies : Array.isArray(task?.depends_on) ? task.depends_on : [];
+    const deps = taskDependencyIds(task);
     let depth = 0;
     for (const depId of deps) {
       const did = String(depId || "").trim();
@@ -7223,6 +7297,10 @@ function renderProgressMap() {
     const agentId = String(task.assignee_agent_id || "").trim();
     const lane = agentLane.has(agentId) ? agentLane.get(agentId) : unassignedLane;
     const owner = agentId ? projectAgentDisplayName(agentId, agentShortName(agentId) || agentId) : "Unassigned";
+    const deps = taskDependencyIds(task);
+    const dependentCount = taskDependents(tid, tasks).length;
+    const needsLabel = deps.length ? `Needs ${deps.length}` : "Start";
+    const outputLabel = dependentCount ? `Unlocks ${dependentCount}` : "Final";
     nodes.push({
       id: `task:${tid}`,
       type: "task",
@@ -7234,16 +7312,18 @@ function renderProgressMap() {
       taskId: tid,
       lane,
       w: 190,
-      h: 58,
+      h: 74,
       fixedLevel: depth,
       createdAt: Number(task.created_at || 0),
+      needsLabel,
+      outputLabel,
     });
   }
 
   // ── Edge list ─────────────────────────────────────────────────────────────
   const edges = [];
   for (const task of tasks) {
-    const deps = Array.isArray(task.dependencies) ? task.dependencies : Array.isArray(task.depends_on) ? task.depends_on : [];
+    const deps = taskDependencyIds(task);
     for (const depId of deps) {
       if (taskById.has(String(depId))) edges.push({ from: `task:${String(depId)}`, to: `task:${String(task.id)}`, kind: "dep" });
     }
@@ -7270,11 +7350,11 @@ function renderProgressMap() {
   }
 
   // ── Auto-layout positions ─────────────────────────────────────────────────
-  const COL_GAP = 86, ROW_GAP = 20, PAD = 22;
+  const COL_GAP = 92, ROW_GAP = 22, PAD_X = 28, PAD_Y = 58;
   const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b);
   const autoPos = new Map();
   const laneSlots = new Map();
-  let maxX = PAD, maxY = PAD;
+  let maxX = PAD_X, maxY = PAD_Y;
   for (const lvl of sortedLevels) {
     const group = byLevel.get(lvl) || [];
     for (const n of group) {
@@ -7282,11 +7362,11 @@ function renderProgressMap() {
       const slotKey = `${lane}:${lvl}`;
       const slot = laneSlots.get(slotKey) || 0;
       laneSlots.set(slotKey, slot + 1);
-      const x = PAD + lvl * (n.w + COL_GAP);
-      const y = PAD + lane * (n.h + ROW_GAP + 12) + slot * (n.h + 8);
+      const x = PAD_X + lvl * (n.w + COL_GAP);
+      const y = PAD_Y + lane * (n.h + ROW_GAP + 12) + slot * (n.h + 8);
       autoPos.set(n.id, { x, y });
-      maxX = Math.max(maxX, x + n.w + PAD);
-      maxY = Math.max(maxY, y + n.h + PAD);
+      maxX = Math.max(maxX, x + n.w + PAD_X);
+      maxY = Math.max(maxY, y + n.h + PAD_Y);
     }
   }
   const canvasW = Math.max(maxX, 420);
@@ -7294,12 +7374,10 @@ function renderProgressMap() {
   canvas.style.width = canvasW + "px"; canvas.style.height = canvasH + "px";
   svgEl.setAttribute("width", canvasW); svgEl.setAttribute("height", canvasH);
 
-  // Merge user-dragged positions
+  // Timeline positions are derived from dependencies; keep x-order stable.
   const pos = new Map();
   for (const n of nodes) {
-    const saved = pmapNodePositions[n.id];
-    const savedPos = saved && saved.v === "task-only-v2" ? { x: Number(saved.x || 0), y: Number(saved.y || 0) } : null;
-    pos.set(n.id, savedPos || (autoPos.get(n.id) || { x: PAD, y: PAD }));
+    pos.set(n.id, autoPos.get(n.id) || { x: PAD_X, y: PAD_Y });
   }
 
   // ── SVG defs ──────────────────────────────────────────────────────────────
@@ -7309,6 +7387,18 @@ function renderProgressMap() {
     <marker id="pm-arr-dep" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
       <path d="M0,0 L7,3.5 L0,7 Z" fill="rgba(99,202,255,0.55)"/></marker>
   </defs>`;
+
+  for (const lvl of sortedLevels) {
+    const group = byLevel.get(lvl) || [];
+    const first = group[0];
+    if (!first) continue;
+    const p = autoPos.get(first.id) || { x: PAD_X, y: PAD_Y };
+    const header = document.createElement("div");
+    header.className = "pmap-level-header";
+    header.style.cssText = `left:${p.x}px;top:18px;width:${first.w}px;`;
+    header.innerHTML = `<span>${lvl === 0 ? "Start" : `Step ${lvl + 1}`}</span><small>${group.length > 1 ? `${group.length} parallel` : "1 task"}</small>`;
+    nodesEl.appendChild(header);
+  }
 
   // ── Draw edges ────────────────────────────────────────────────────────────
   const edgeEls = new Map(); // "from|to" → SVGPathElement
@@ -7334,7 +7424,7 @@ function renderProgressMap() {
   const nodeEls = new Map();
   const STATUS_COLOR = { todo: "var(--muted)", in_progress: "var(--cyan)", blocked: "var(--red)", review: "var(--purple)", done: "var(--green)" };
   for (const n of nodes) {
-    const p = pos.get(n.id) || { x: PAD, y: PAD };
+    const p = pos.get(n.id) || { x: PAD_X, y: PAD_Y };
     const el = document.createElement("div");
     el.className = `pmap-mnode pmap-mnode-${n.type}`;
     el.dataset.nodeId = n.id;
@@ -7357,8 +7447,15 @@ function renderProgressMap() {
       const sc = STATUS_COLOR[n.status] || "var(--muted)";
       const agColor = n.agentId ? (colorHexForAgent(n.agentId) || "var(--muted)") : "var(--muted)";
       el.style.setProperty("--pmap-accent", agColor);
-      el.innerHTML = `<div class="pmap-mnode-bar" style="background:${agColor}"></div><div class="pmap-mnode-body"><div class="pmap-mnode-label">${esc(n.label)}</div><div class="pmap-mnode-sub" style="color:${agColor}">${esc(n.sub)}</div><div class="pmap-mnode-status" style="color:${sc}">${esc(taskStatusLabel(n.status))}</div></div>`;
-      el.title = n.fullLabel || n.label;
+      el.innerHTML = `
+        <div class="pmap-mnode-bar" style="background:${agColor}"></div>
+        <div class="pmap-mnode-body">
+          <div class="pmap-mnode-label">${esc(n.label)}</div>
+          <div class="pmap-mnode-sub" style="color:${agColor}">${esc(agentShortName(n.agentId) || "Unassigned")}</div>
+          <div class="pmap-mnode-flow"><span>${esc(n.needsLabel)}</span><span>${esc(n.outputLabel)}</span></div>
+          <div class="pmap-mnode-status" style="color:${sc}">${esc(taskStatusLabel(n.status))}</div>
+        </div>`;
+      el.title = `${n.fullLabel || n.label} - click to see needs and outputs`;
     }
     nodesEl.appendChild(el);
     nodeEls.set(n.id, el);
@@ -7376,7 +7473,6 @@ function renderProgressMap() {
   // ── Interaction: pan / zoom / node-drag ───────────────────────────────────
   let pmapPan = { x: 0, y: 0 }, pmapZoom = 1;
   let panActive = false, panLast = { x: 0, y: 0 };
-  let nodeDrag = null; // { nodeId, sx, sy, ox, oy }
 
   function applyTransform() {
     canvas.style.transform = `translate(${pmapPan.x}px,${pmapPan.y}px) scale(${pmapZoom})`;
@@ -7385,14 +7481,11 @@ function renderProgressMap() {
   applyTransform();
 
   for (const [nid, el] of nodeEls) {
-    el.style.cursor = "grab";
+    el.style.cursor = "pointer";
     let clickStart = { x: 0, y: 0 };
     el.addEventListener("mousedown", (e) => {
       e.stopPropagation();
-      const p = pos.get(nid) || { x: 0, y: 0 };
       clickStart = { x: e.clientX, y: e.clientY };
-      nodeDrag = { nodeId: nid, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y };
-      el.style.zIndex = 20; el.style.cursor = "grabbing";
     });
     el.addEventListener("click", (e) => {
       if (Math.abs(e.clientX - clickStart.x) > 5 || Math.abs(e.clientY - clickStart.y) > 5) return;
@@ -7423,23 +7516,8 @@ function renderProgressMap() {
       pmapPan.x += e.clientX - panLast.x; pmapPan.y += e.clientY - panLast.y;
       panLast = { x: e.clientX, y: e.clientY }; applyTransform();
     }
-    if (nodeDrag) {
-      const dx = (e.clientX - nodeDrag.sx) / pmapZoom;
-      const dy = (e.clientY - nodeDrag.sy) / pmapZoom;
-      const nx = nodeDrag.ox + dx, ny = nodeDrag.oy + dy;
-      pos.set(nodeDrag.nodeId, { x: nx, y: ny });
-      const el = nodeEls.get(nodeDrag.nodeId);
-      if (el) { el.style.left = nx + "px"; el.style.top = ny + "px"; }
-      refreshEdges(nodeDrag.nodeId);
-    }
   }
   function onMUp() {
-    if (nodeDrag) {
-      pmapNodePositions[nodeDrag.nodeId] = { ...pos.get(nodeDrag.nodeId), v: "task-only-v2" };
-      const el = nodeEls.get(nodeDrag.nodeId);
-      if (el) { el.style.zIndex = ""; el.style.cursor = "grab"; }
-      nodeDrag = null;
-    }
     panActive = false;
     if (vp) vp.style.cursor = "";
   }
@@ -7826,6 +7904,90 @@ function renderTeamTree() {
 }
 
 /* ===== INBOX ===== */
+function buildInboxIssueSignals() {
+  const signals = [];
+  const seen = new Set();
+  const push = (item) => {
+    const id = String(item?.id || "").trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    signals.push(item);
+  };
+
+  for (const p of Array.isArray(projectsCache) ? projectsCache : []) {
+    const pid = String(p?.id || "").trim();
+    if (!pid) continue;
+    const title = String(p?.title || pid).trim();
+    const exec = String(p?.execution_status || "idle").toLowerCase();
+    if (projectNeedsApproval(p)) {
+      push({
+        id: `issue:${pid}:approval`,
+        synthetic: true,
+        kind: "project_issue",
+        project_id: pid,
+        is_read: false,
+        created_at: Number(p?.updated_at || p?.created_at || 0),
+        data: {
+          subject: `Approval needed: ${title}`,
+          preview: "Approve the plan or request a change.",
+          action: "approval",
+        },
+      });
+    }
+    if (exec === "paused") {
+      push({
+        id: `issue:${pid}:paused`,
+        synthetic: true,
+        kind: "project_issue",
+        project_id: pid,
+        is_read: false,
+        created_at: Number(p?.updated_at || p?.created_at || 0),
+        data: {
+          subject: `Needs your answer: ${title}`,
+          preview: "Open the issue card and answer the question to continue.",
+          action: "issues",
+        },
+      });
+    }
+    if (exec === "failed") {
+      push({
+        id: `issue:${pid}:failed`,
+        synthetic: true,
+        kind: "project_issue",
+        project_id: pid,
+        is_read: false,
+        created_at: Number(p?.updated_at || p?.created_at || 0),
+        data: {
+          subject: `Run failed: ${title}`,
+          preview: "Open the issue card to retry, redirect, or inspect activity.",
+          action: "issues",
+        },
+      });
+    }
+  }
+
+  if (selectedProjectData?.id) {
+    for (const issue of buildSelectedProjectIssueItems()) {
+      push({
+        id: `issue:${selectedProjectData.id}:${issue.key}`,
+        synthetic: true,
+        kind: "project_issue",
+        project_id: selectedProjectData.id,
+        is_read: false,
+        created_at: Number(issue.time || selectedProjectData.updated_at || 0),
+        data: {
+          subject: issue.title,
+          preview: issue.question || issue.desc || "Open issue card.",
+          action: "issues",
+          issue_key: issue.key,
+        },
+      });
+    }
+  }
+
+  return signals.sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0));
+}
+
 function renderInbox() {
   const generalList = $("inbox_general_list");
   const generalEmpty = $("inbox_general_empty");
@@ -7833,21 +7995,18 @@ function renderInbox() {
   const byprojectEmpty = $("inbox_byproject_empty");
   if (!generalList) return;
 
-  // Aggregate project activity events from all projects as "inbox items"
-  const allEvents = [];
-  for (const p of projectsCache) {
-    // We don't have activity loaded globally, so use project status changes as inbox signals
-    if (projectNeedsApproval(p)) {
-      allEvents.push({
-        project: p,
-        subject: `Plan approval needed: ${p.title}`,
-        from: "Hivee",
-        time: p.updated_at || p.created_at,
-        type: "approval",
-        unread: true,
-      });
-    }
-  }
+  const projectById = new Map((Array.isArray(projectsCache) ? projectsCache : []).map((p) => [String(p?.id || ""), p]));
+  const allEvents = buildInboxIssueSignals().map((signal) => {
+    const project = projectById.get(String(signal.project_id || "")) || (String(selectedProjectData?.id || "") === String(signal.project_id || "") ? selectedProjectData : null);
+    return {
+      project: project || { id: signal.project_id, title: signal.project_id || "Project" },
+      subject: signal.data?.subject || "Project issue",
+      from: "Hivee",
+      time: signal.created_at,
+      type: signal.data?.action || "issue",
+      unread: !signal.is_read,
+    };
+  });
 
   // General tab
   if (!allEvents.length) {
@@ -7856,7 +8015,7 @@ function renderInbox() {
   } else {
     if (generalEmpty) generalEmpty.classList.add("hidden");
     generalList.innerHTML = allEvents.map((item) => `
-      <div class="inbox-item ${item.unread ? "unread" : ""}">
+      <div class="inbox-item ${item.unread ? "unread" : ""}" data-project-id="${esc(item.project.id || "")}" data-inbox-action="${esc(item.type || "issues")}">
         <div class="inbox-item-header">
           <span class="inbox-item-from">${esc(item.from)}</span>
           <span class="inbox-item-time">${item.time ? relativeTs(item.time) : ""}</span>
@@ -7884,7 +8043,7 @@ function renderInbox() {
         <div style="margin-bottom:16px">
           <p style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:6px">${esc(project.title)}</p>
           ${items.map((item) => `
-            <div class="inbox-item ${item.unread ? "unread" : ""}">
+            <div class="inbox-item ${item.unread ? "unread" : ""}" data-project-id="${esc(project.id || "")}" data-inbox-action="${esc(item.type || "issues")}">
               <div class="inbox-item-header">
                 <span class="inbox-item-from">${esc(item.from)}</span>
                 <span class="inbox-item-time">${item.time ? relativeTs(item.time) : ""}</span>
@@ -7900,11 +8059,17 @@ function renderInbox() {
   // Invitations + notifications tabs
   renderInboxInvitations();
   renderInboxNotifications();
+  generalList.querySelectorAll(".inbox-item[data-project-id]").forEach((item) => {
+    item.addEventListener("click", () => openInboxProjectSignal(item));
+  });
+  byprojectList?.querySelectorAll(".inbox-item[data-project-id]").forEach((item) => {
+    item.addEventListener("click", () => openInboxProjectSignal(item));
+  });
 
   // Tab switching
   const tabs = document.querySelectorAll("[data-inbox-tab]");
   for (const tab of tabs) {
-    tab.addEventListener("click", () => {
+    tab.onclick = () => {
       for (const t of tabs) t.classList.toggle("active", t === tab);
       const key = tab.dataset.inboxTab;
       const invitationsPane = $("inbox_invitations_pane");
@@ -7917,7 +8082,7 @@ function renderInbox() {
       if (byprojectPane) byprojectPane.classList.toggle("hidden", key !== "byproject");
       // Load notifications when tab is opened
       if (key === "notifications") loadInboxNotifications().catch(() => {});
-    }, { once: true });
+    };
   }
 }
 
@@ -7994,7 +8159,10 @@ function renderInboxNotifications() {
   const list = $("inbox_notifications_list");
   const empty = $("inbox_notifications_empty");
   if (!list) return;
-  const items = Array.isArray(inboxNotificationsCache) ? inboxNotificationsCache : [];
+  const items = [
+    ...buildInboxIssueSignals(),
+    ...(Array.isArray(inboxNotificationsCache) ? inboxNotificationsCache : []),
+  ].sort((a, b) => Number(b?.created_at || 0) - Number(a?.created_at || 0));
   if (!items.length) {
     if (empty) empty.classList.remove("hidden");
     list.innerHTML = "";
@@ -8012,25 +8180,32 @@ function renderInboxNotifications() {
       const proj = d.project_title || notif.project_id || "your project";
       subject = `${who} accepted your invite to: ${proj}`;
       preview = agents.length ? `Agents joined: ${agentNames}` : "";
+    } else if (notif.kind === "project_issue") {
+      subject = d.subject || "Project needs attention";
+      preview = d.preview || "Open the issue card.";
     } else {
       subject = notif.kind;
     }
     const ts = notif.created_at ? relativeTs(notif.created_at) : "";
     const unreadCls = notif.is_read ? "" : " unread";
     return `
-      <div class="inbox-item${unreadCls}" data-notif-id="${esc(notif.id)}" data-project-id="${esc(notif.project_id || "")}">
+      <div class="inbox-item${unreadCls}" data-notif-id="${esc(notif.id)}" data-project-id="${esc(notif.project_id || "")}" data-inbox-action="${esc(d.action || "issues")}" data-synthetic="${notif.synthetic ? "1" : ""}">
         <div class="inbox-item-header">
           <span class="inbox-item-from">Hivee</span>
           <span class="inbox-item-time">${esc(ts)}</span>
         </div>
         <div class="inbox-item-subject">${esc(subject)}</div>
         ${preview ? `<div class="inbox-item-preview">${esc(preview)}</div>` : ""}
-        ${!notif.is_read ? `<div style="margin-top:6px"><button class="secondary notif-mark-read-btn" type="button" data-notif-id="${esc(notif.id)}" style="font-size:11px;padding:3px 10px">Mark read</button></div>` : ""}
+        ${!notif.is_read && !notif.synthetic ? `<div style="margin-top:6px"><button class="secondary notif-mark-read-btn" type="button" data-notif-id="${esc(notif.id)}" style="font-size:11px;padding:3px 10px">Mark read</button></div>` : ""}
       </div>
     `;
   }).join("");
+  list.querySelectorAll(".inbox-item[data-project-id]").forEach((item) => {
+    item.addEventListener("click", () => openInboxProjectSignal(item));
+  });
   for (const btn of list.querySelectorAll(".notif-mark-read-btn")) {
-    btn.addEventListener("click", async () => {
+    btn.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
       const nid = btn.dataset.notifId;
       try {
         await api(`/api/me/inbox/notifications/${encodeURIComponent(nid)}/read`, "POST");
@@ -8111,30 +8286,53 @@ async function openInboxAcceptModal(invite) {
     titleRow.appendChild(title);
     const metaEl = document.createElement("p");
     metaEl.className = "wizard-agent-meta";
-    metaEl.textContent = `${agentId}${connName ? ` · ${connName}` : ""}`;
+    metaEl.textContent = `${agentId}${connName ? ` - ${connName}` : ""}`;
     headBody.appendChild(titleRow);
     headBody.appendChild(metaEl);
+
+    const skillInput = document.createElement("textarea");
+    skillInput.className = "agent-skill-input";
+    skillInput.rows = 2;
+    skillInput.maxLength = 600;
+    skillInput.placeholder = "What is this agent best at?";
+    skillInput.disabled = true;
 
     headWrap.appendChild(check);
     headWrap.appendChild(avatarWrap);
     headWrap.appendChild(headBody);
     item.appendChild(headWrap);
+    item.appendChild(skillInput);
     listEl.appendChild(item);
 
     const _updateSelection = () => {
       if (check.checked) {
-        inboxAcceptContext.selectedAgents.set(agentId, { agent_id: agentId, agent_name: agentName, connection_id: connId });
+        inboxAcceptContext.selectedAgents.set(agentId, {
+          agent_id: agentId,
+          agent_name: agentName,
+          connection_id: connId,
+          skill_summary: String(skillInput.value || "").trim(),
+        });
+        skillInput.disabled = false;
       } else {
         inboxAcceptContext.selectedAgents.delete(agentId);
+        skillInput.disabled = true;
       }
       const btn = $("btn_confirm_inbox_accept");
       if (btn) btn.disabled = inboxAcceptContext.selectedAgents.size === 0;
     };
 
     check.addEventListener("change", _updateSelection);
+    skillInput.addEventListener("input", () => {
+      if (!inboxAcceptContext.selectedAgents.has(agentId)) return;
+      const prev = inboxAcceptContext.selectedAgents.get(agentId) || {};
+      inboxAcceptContext.selectedAgents.set(agentId, {
+        ...prev,
+        skill_summary: String(skillInput.value || "").trim(),
+      });
+    });
     // Clicking the card row also toggles the checkbox
     item.addEventListener("click", (e) => {
-      if (e.target === check) return;
+      if (e.target === check || e.target === skillInput) return;
       check.checked = !check.checked;
       _updateSelection();
     });
@@ -8169,6 +8367,14 @@ async function confirmInboxAccept() {
     return;
   }
   const entries = Array.from(selectedAgents.values());
+  const missingSkill = entries.find((entry) => !String(entry?.skill_summary || "").trim());
+  if (missingSkill) {
+    setMessage("inbox_accept_invite_msg", `Add skills for ${missingSkill.agent_name || missingSkill.agent_id}.`, "error");
+    const field = Array.from(document.querySelectorAll("#inbox_accept_agent_list .agent-skill-input"))
+      .find((input) => !String(input.value || "").trim() && !input.disabled);
+    field?.focus?.();
+    return;
+  }
   const firstEntry = entries[0];
   const btn = $("btn_confirm_inbox_accept");
   if (btn) btn.disabled = true;
@@ -8178,7 +8384,12 @@ async function confirmInboxAccept() {
       connection_id: firstEntry.connection_id,
       agent_id: firstEntry.agent_id,
       agent_name: firstEntry.agent_name || firstEntry.agent_id,
-      selected_agents: entries.map((e) => ({ agent_id: e.agent_id, agent_name: e.agent_name || e.agent_id })),
+      skill_summary: firstEntry.skill_summary || "",
+      selected_agents: entries.map((e) => ({
+        agent_id: e.agent_id,
+        agent_name: e.agent_name || e.agent_id,
+        skill_summary: e.skill_summary || "",
+      })),
     });
     setMessage("inbox_accept_invite_msg", "Joined! Project will appear in your dashboard.", "ok");
     inboxInvitesCache = inboxInvitesCache.filter((i) => i.id !== invite.id);
@@ -8207,7 +8418,7 @@ function renderIssuesGlobal() {
     const exec = String(p.execution_status || "idle").toLowerCase();
     if (exec === "failed") {
       issues.push({
-        title: `Execution failed: ${p.title}`,
+        title: `Run failed: ${p.title}`,
         priority: "high",
         status: "open",
         project: p.title,
@@ -8218,7 +8429,7 @@ function renderIssuesGlobal() {
     }
     if (projectNeedsApproval(p)) {
       approvals.push({
-        title: `Plan approval required: ${p.title}`,
+        title: `Approve plan: ${p.title}`,
         project: p.title,
         projectId: p.id,
         action: "open_project_overview",
@@ -8288,6 +8499,15 @@ function renderIssuesGlobal() {
   }
 }
 
+async function openInboxProjectSignal(item) {
+  const projectId = String(item?.dataset?.projectId || "").trim();
+  if (!projectId) return;
+  const action = String(item?.dataset?.inboxAction || "issues").trim();
+  setNavTab("projects");
+  await selectProject(projectId);
+  setProjectPane(action === "approval" ? "overview" : "issues");
+}
+
 async function openIssueProjectCard(card) {
   const projectId = String(card?.dataset?.projectId || "").trim();
   if (!projectId) return;
@@ -8298,6 +8518,85 @@ async function openIssueProjectCard(card) {
 }
 
 /* ===== PROJECT ISSUES PANEL ===== */
+function buildSelectedProjectIssueItems() {
+  if (!selectedProjectData) return [];
+  const p = selectedProjectData;
+  const exec = String(p.execution_status || "idle").toLowerCase();
+  const issues = [];
+  const pauseEvent = latestProjectPauseSignal(p.id);
+  const pausePayload = pauseEvent?.payload && typeof pauseEvent.payload === "object" ? pauseEvent.payload : {};
+  const pauseReason = detailToText(pausePayload.reason || pauseEvent?.summary || "").trim();
+  const pauseHint = detailToText(pausePayload.resume_hint || "").trim();
+
+  if (exec === "failed") {
+    issues.push({
+      key: `project:${p.id}:failed`,
+      title: "Run failed",
+      desc: "Hivee stopped because something broke during execution.",
+      priority: "high",
+      status: "open",
+      time: p.updated_at,
+      action: "Open Activity",
+      issueAction: "history",
+      question: "What should Hivee try next?",
+      placeholder: "Example: retry the last step, skip the failed task, or route it to another agent.",
+    });
+  }
+
+  const tasksBlocked = (Array.isArray(projectTasks) ? projectTasks : []).filter((t) => normalizeTaskStatus(t?.status) === "blocked");
+  for (const t of tasksBlocked) {
+    const depIds = taskDependencyIds(t);
+    const openDeps = Number(t?.metadata?._system_dependency_open || 0);
+    const depPreview = depIds.slice(0, 2).map((id) => taskShortTitle(id)).join(", ");
+    const desc = openDeps > 0
+      ? `Waiting on ${openDeps} earlier ${openDeps === 1 ? "task" : "tasks"}${depPreview ? `: ${depPreview}` : ""}.`
+      : "This task is blocked and needs direction.";
+    issues.push({
+      key: `task:${String(t.id || "")}:blocked`,
+      title: "Task blocked",
+      desc,
+      priority: "medium",
+      status: "open",
+      time: t.updated_at,
+      action: "Open Task",
+      issueAction: "task",
+      taskId: t.id,
+      question: `What should happen next for "${taskShortTitle(t)}"?`,
+      placeholder: "Tell the agent what input to use, what to change, or whether to skip this task.",
+    });
+  }
+
+  if (exec === "paused") {
+    issues.push({
+      key: `project:${p.id}:paused`,
+      title: "Needs your answer",
+      desc: pauseReason || "Hivee is paused until you answer the agent.",
+      priority: "urgent",
+      status: "pending",
+      time: p.updated_at,
+      action: "Answer",
+      issueAction: "answer",
+      question: pauseHint || "What should Hivee do next?",
+      placeholder: "Write the missing info, approval, or redirect. Hivee will send it to the primary agent and continue.",
+    });
+  }
+
+  return issues;
+}
+
+function issueActionButtonsHtml(issue) {
+  const action = String(issue?.issueAction || "").trim();
+  const taskId = String(issue?.taskId || "").trim();
+  const buttons = [];
+  if (action === "task" && taskId) {
+    buttons.push(`<button type="button" class="secondary issue-open-task-btn" data-task-id="${esc(taskId)}">Open task</button>`);
+  }
+  if (action === "history") {
+    buttons.push('<button type="button" class="secondary issue-open-history-btn">Open activity</button>');
+  }
+  return buttons.join("");
+}
+
 function renderProjectIssues() {
   const list = $("project_issues_list");
   const approvalsList = $("project_approvals_list");
@@ -8305,29 +8604,13 @@ function renderProjectIssues() {
   if (!list || !selectedProjectData) return;
 
   const p = selectedProjectData;
-  const exec = String(p.execution_status || "idle").toLowerCase();
-  const issues = [];
-
-  if (exec === "failed") {
-    issues.push({ title: "Execution failed", desc: "This project run ended with an error. Check the Activity log for details or re-run.", priority: "high", status: "open", time: p.updated_at, action: "Open History", issueAction: "history" });
-  }
-  const tasksBlocked = projectTasks.filter((t) => normalizeTaskStatus(t?.status) === "blocked");
-  for (const t of tasksBlocked) {
-    const depCount = Number(t?.metadata?._system_dependency_open || 0);
-    const desc = depCount > 0
-      ? `Waiting on ${depCount} unfinished ${depCount === 1 ? "dependency" : "dependencies"}.`
-      : "This task is marked blocked. Check task dependencies or agent assignment.";
-    issues.push({ title: `Blocked: ${t.title}`, desc, priority: "medium", status: "open", time: t.updated_at, action: "Open Task", issueAction: "task", taskId: t.id });
-  }
-  if (exec === "paused") {
-    issues.push({ title: "Paused", desc: "Project execution is paused. Resume when the blocker is cleared.", priority: "urgent", status: "pending", time: p.updated_at, action: "Resume", issueAction: "resume" });
-  }
+  const issues = buildSelectedProjectIssueItems();
 
   if (!issues.length) {
     list.innerHTML = '<p class="helper">No issues for this project.</p>';
   } else {
     list.innerHTML = issues.map((issue) => `
-      <div class="issue-card" role="button" tabindex="0" data-issue-action="${esc(issue.issueAction || "")}" data-task-id="${esc(issue.taskId || "")}">
+      <div class="issue-card ${expandedProjectIssueKey === issue.key ? "expanded" : ""}" role="button" tabindex="0" data-issue-key="${esc(issue.key)}" data-issue-action="${esc(issue.issueAction || "")}" data-task-id="${esc(issue.taskId || "")}">
         <div class="issue-card-header">
           <span class="issue-priority-dot ${issue.priority}"></span>
           <span class="issue-card-title">${esc(issue.title)}</span>
@@ -8338,15 +8621,44 @@ function renderProjectIssues() {
           ${issue.time ? `<span>${relativeTs(issue.time)}</span>` : ""}
           ${issue.action ? `<span class="issue-card-action">${esc(issue.action)}</span>` : ""}
         </div>
+        ${expandedProjectIssueKey === issue.key ? `
+          <form class="issue-answer-form" data-issue-key="${esc(issue.key)}">
+            <label>${esc(issue.question || "What should Hivee do next?")}</label>
+            <textarea class="issue-answer-input" rows="3" maxlength="1200" placeholder="${esc(issue.placeholder || "Type your answer...")}"></textarea>
+            <div class="issue-answer-actions">
+              <button type="submit" class="primary">Send answer</button>
+              ${issueActionButtonsHtml(issue)}
+            </div>
+          </form>
+        ` : ""}
       </div>
     `).join("");
-    list.querySelectorAll(".issue-card[data-issue-action]").forEach((card) => {
+    list.querySelectorAll(".issue-card[data-issue-key]").forEach((card) => {
       card.addEventListener("click", () => openProjectIssueCard(card));
       card.addEventListener("keydown", (e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           openProjectIssueCard(card);
         }
+      });
+    });
+    list.querySelectorAll(".issue-answer-form").forEach((form) => {
+      form.addEventListener("click", (e) => e.stopPropagation());
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        submitProjectIssueAnswer(form).catch((er) => setMessage("project_issues_msg", detailToText(er?.message || er), "error"));
+      });
+    });
+    list.querySelectorAll(".issue-open-task-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openTaskDetailModal(String(btn.dataset.taskId || ""));
+      });
+    });
+    list.querySelectorAll(".issue-open-history-btn").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setProjectPane("history");
       });
     });
   }
@@ -8358,17 +8670,32 @@ function renderProjectIssues() {
       <div class="issue-card">
         <div class="issue-card-header">
           <span class="issue-priority-dot urgent"></span>
-          <span class="issue-card-title">Plan approval required</span>
+          <span class="issue-card-title">Approve plan?</span>
           <span class="issue-card-status open">pending</span>
         </div>
-        <div class="issue-card-desc">Plan is waiting for your approval before execution can continue.</div>
-        <div class="action-row" style="margin-top:8px">
-          <button id="btn_project_approval_approve" type="button" class="primary" style="min-height:28px;padding:4px 12px;font-size:12px">Approve Plan</button>
-        </div>
+        <div class="issue-card-desc">Agents are waiting for your yes, or a short redirect.</div>
+        <form id="project_approval_form" class="issue-answer-form">
+          <label>Is this plan good to run?</label>
+          <textarea id="project_approval_feedback" rows="2" maxlength="1200" placeholder="Optional redirect: what should change?"></textarea>
+          <div class="issue-answer-actions">
+            <button id="btn_project_approval_approve" type="button" class="primary">Approve</button>
+            <button id="btn_project_approval_redirect" type="submit" class="secondary">Send redirect</button>
+          </div>
+        </form>
       </div>
     `;
     $("btn_project_approval_approve")?.addEventListener("click", () => {
       approveProjectPlan().catch((e) => setMessage("project_issues_msg", detailToText(e), "error"));
+    });
+    $("project_approval_form")?.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const feedback = String($("project_approval_feedback")?.value || "").trim();
+      if (!feedback) {
+        setMessage("project_issues_msg", "Write the redirect first.", "error");
+        $("project_approval_feedback")?.focus?.();
+        return;
+      }
+      rejectProjectPlan(feedback).catch((e) => setMessage("project_issues_msg", detailToText(e), "error"));
     });
   } else {
     if (approvalsEmpty) approvalsEmpty.classList.remove("hidden");
@@ -8377,20 +8704,65 @@ function renderProjectIssues() {
 }
 
 function openProjectIssueCard(card) {
-  const action = String(card?.dataset?.issueAction || "").trim();
-  if (action === "task") {
-    const taskId = String(card?.dataset?.taskId || "").trim();
-    setProjectPane("tasks");
-    setTimeout(() => openTaskDetailModal(taskId), 80);
-    return;
+  const key = String(card?.dataset?.issueKey || "").trim();
+  if (!key) return;
+  expandedProjectIssueKey = expandedProjectIssueKey === key ? "" : key;
+  renderProjectIssues();
+  const input = Array.from(document.querySelectorAll(".issue-answer-form"))
+    .find((form) => String(form.dataset.issueKey || "") === key)
+    ?.querySelector(".issue-answer-input");
+  input?.focus?.();
+}
+
+async function submitProjectIssueAnswer(form) {
+  if (!selectedProjectId) throw new Error("Select project first");
+  const runtimeConnectionId = String(selectedProjectData?.connector_id || selectedProjectData?.connection_id || activeConnectionId || "").trim();
+  if (!runtimeConnectionId) throw new Error("Connect a hub first");
+  const issueKey = String(form?.dataset?.issueKey || "").trim();
+  const issue = buildSelectedProjectIssueItems().find((item) => item.key === issueKey);
+  if (!issue) throw new Error("Issue is no longer active");
+  const input = form.querySelector(".issue-answer-input");
+  const answer = String(input?.value || "").trim();
+  if (!answer) {
+    input?.focus?.();
+    throw new Error("Write an answer first.");
   }
-  if (action === "resume") {
-    controlProjectExecution("resume").catch((e) => setMessage("project_issues_msg", detailToText(e), "error"));
-    return;
-  }
-  if (action === "history") {
-    setProjectPane("history");
-  }
+  const submitBtn = form.querySelector("button[type='submit']");
+  if (submitBtn) submitBtn.disabled = true;
+  setMessage("project_issues_msg", "Sending answer to agent...", "");
+  const message = [
+    `Issue: ${issue.title}`,
+    issue.taskId ? `Task: ${taskShortTitle(issue.taskId)}` : "",
+    `Question: ${issue.question || "What should Hivee do next?"}`,
+    `Answer: ${answer}`,
+    "Continue with this input now. If it is enough, resume execution.",
+  ].filter(Boolean).join("\n");
+
+  const posted = await api(`/api/projects/${encodeURIComponent(selectedProjectId)}/chat/messages`, "POST", {
+    text: message,
+    metadata: { source: "owner.issue_answer", issue_key: issueKey, task_id: issue.taskId || null },
+  });
+  appendProjectChatMessage(posted);
+  const res = await api(`/api/openclaw/${encodeURIComponent(runtimeConnectionId)}/chat-runtime`, "POST", {
+    message,
+    agent_id: selectedPrimaryAgentId || null,
+    context_mode: "project",
+    session_key: selectedProjectId,
+    timeout_sec: 120,
+  });
+  await Promise.all([
+    refreshSelectedProjectData().catch(() => null),
+    loadProjectTasks(selectedProjectId, { silent: true, includeClosed: true }).catch(() => null),
+    loadProjectActivity(selectedProjectId, { silent: true }).catch(() => null),
+    loadProjectChatMessages(selectedProjectId, { silent: true }).catch(() => null),
+    loadInboxNotifications().catch(() => null),
+  ]);
+  expandedProjectIssueKey = "";
+  renderProjectIssues();
+  renderInbox();
+  const status = String(selectedProjectData?.execution_status || "").toLowerCase();
+  const summary = detailToText(res?.text || res?.summary || "").trim();
+  setMessage("project_issues_msg", status === "paused" ? (summary || "Agent still needs more input.") : "Answer sent. Hivee is continuing.", status === "paused" ? "error" : "ok");
 }
 
 /* ===== CONNECTOR PAIRING & MANAGEMENT ===== */
@@ -9283,7 +9655,9 @@ function setProjectPane(pane) {
     loadProjectFiles(projectFilesCurrentPath || "").catch(() => {});
   }
   if (pane === "live" && selectedProjectId) {
-    renderProgressMap();
+    loadProjectTasks(selectedProjectId, { silent: true, includeClosed: true })
+      .then(() => renderProgressMap())
+      .catch((e) => setMessage("chat_hint", detailToText(e), "error"));
     if (livePreviewPath) {
       renderLivePreview(livePreviewPath, { force: true }).catch((e) => setMessage("chat_hint", detailToText(e), "error"));
     } else {
@@ -9303,7 +9677,10 @@ function setProjectPane(pane) {
     renderTeamTree();
   }
   if (pane === "issues" && selectedProjectId) {
-    renderProjectIssues();
+    Promise.all([
+      loadProjectTasks(selectedProjectId, { silent: true, includeClosed: true }).catch(() => null),
+      loadProjectActivity(selectedProjectId, { silent: true }).catch(() => null),
+    ]).finally(() => renderProjectIssues());
   }
   syncProjectHeadbar();
 }
@@ -11432,6 +11809,19 @@ function bindActions() {
   $("task_filter_status")?.addEventListener("change", onTaskFilterChanged);
   $("task_filter_priority")?.addEventListener("change", onTaskFilterChanged);
   $("task_filter_assignee")?.addEventListener("change", onTaskFilterChanged);
+  $("btn_proj_issues_refresh")?.addEventListener("click", () => {
+    if (!selectedProjectId) return;
+    Promise.all([
+      refreshSelectedProjectData().catch(() => null),
+      loadProjectTasks(selectedProjectId, { silent: true, includeClosed: true }).catch(() => null),
+      loadProjectActivity(selectedProjectId, { silent: true }).catch(() => null),
+      loadInboxNotifications().catch(() => null),
+    ]).then(() => {
+      renderProjectIssues();
+      renderInbox();
+      setMessage("project_issues_msg", "Issues refreshed.", "ok");
+    }).catch((e) => setMessage("project_issues_msg", detailToText(e?.message || e), "error"));
+  });
   $("btn_activity_refresh")?.addEventListener("click", () => {
     if (!selectedProjectId) return;
     loadProjectActivity(selectedProjectId, { silent: false }).catch((e) => setMessage("activity_msg", detailToText(e?.message || e), "error"));

@@ -1,4 +1,5 @@
 from hivee_shared import *
+from services.managed_agents import upsert_managed_agent_skill_profile
 
 def register_routes(app: FastAPI) -> None:
     @app.get("/", response_class=HTMLResponse)
@@ -11,6 +12,9 @@ def register_routes(app: FastAPI) -> None:
 
     @app.post("/api/signup", response_model=SessionOut)
     async def signup(payload: SignupIn, response: Response):
+        if DEMO_MODE:
+            from services.demo_runtime import issue_demo_session
+            return issue_demo_session(payload.email, payload.password, response)
         email = _normalize_email(payload.email)
         _validate_password_strength(payload.password)
         conn = db()
@@ -34,6 +38,9 @@ def register_routes(app: FastAPI) -> None:
 
     @app.post("/api/login", response_model=SessionOut)
     async def login(payload: LoginIn, response: Response):
+        if DEMO_MODE:
+            from services.demo_runtime import issue_demo_session
+            return issue_demo_session(payload.email, payload.password, response)
         email = _normalize_email(payload.email)
         conn = db()
         row = conn.execute(
@@ -526,6 +533,20 @@ def register_routes(app: FastAPI) -> None:
 
         # Build the full list of agents to add: primary + any additional from selected_agents
         selected_agents_payload = list(payload.selected_agents or [])
+        skill_summary_by_agent: Dict[str, str] = {}
+        skills_by_agent: Dict[str, List[str]] = {}
+        for sel in selected_agents_payload:
+            sel_id = str(getattr(sel, "agent_id", "") or "").strip()
+            if not sel_id:
+                continue
+            skill_summary_by_agent[sel_id] = str(getattr(sel, "skill_summary", "") or "").strip()[:600]
+            raw_skills = getattr(sel, "skills", None) or []
+            if isinstance(raw_skills, list):
+                skills_by_agent[sel_id] = [str(item or "").strip()[:80] for item in raw_skills if str(item or "").strip()]
+        if str(payload.skill_summary or "").strip():
+            skill_summary_by_agent.setdefault(agent_id, str(payload.skill_summary or "").strip()[:600])
+        if isinstance(payload.skills, list):
+            skills_by_agent.setdefault(agent_id, [str(item or "").strip()[:80] for item in payload.skills if str(item or "").strip()])
         agents_to_add = [(agent_id, agent_name)]
         for sel in selected_agents_payload:
             sel_id = str(getattr(sel, "agent_id", "") or "").strip()
@@ -539,6 +560,15 @@ def register_routes(app: FastAPI) -> None:
                 (user_id, legacy_conn_id, aid),
             ).fetchone()
             resolved = str((a_row["agent_name"] if a_row else None) or aname or aid).strip()
+            upsert_managed_agent_skill_profile(
+                conn,
+                user_id=user_id,
+                connection_id=legacy_conn_id,
+                agent_id=aid,
+                skill_summary=skill_summary_by_agent.get(aid, ""),
+                skills=skills_by_agent.get(aid, []),
+                now=now,
+            )
 
             existing = conn.execute(
                 "SELECT agent_id, source_type, source_user_id, source_connection_id FROM project_agents WHERE project_id = ? AND agent_id = ?",
@@ -622,7 +652,14 @@ def register_routes(app: FastAPI) -> None:
         project_title = str(project_title_row["title"] or project_id).strip() if project_title_row else project_id
 
         # Store inbox notification for project owner
-        notif_agents = [{"agent_id": aid, "agent_name": aname} for aid, aname in agents_to_add]
+        notif_agents = [
+            {
+                "agent_id": aid,
+                "agent_name": aname,
+                "skill_summary": skill_summary_by_agent.get(aid, ""),
+            }
+            for aid, aname in agents_to_add
+        ]
         conn.execute(
             """
             INSERT INTO user_inbox_notifications (id, user_id, kind, project_id, data_json, is_read, created_at)

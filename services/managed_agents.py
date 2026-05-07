@@ -1096,6 +1096,107 @@ def _select_managed_agent_description(
             return text[:600]
     return f"Hivee managed profile for agent `{agent_id}`."
 
+def _split_user_skill_names(skill_summary: Any, skills: Any = None) -> List[str]:
+    names: List[str] = []
+    if isinstance(skills, (list, tuple, set)):
+        for item in skills:
+            name = str(item.get("name") if isinstance(item, dict) else item or "").strip()
+            if name:
+                names.append(name[:80])
+    summary = str(skill_summary or "").strip()
+    if summary:
+        for part in re.split(r"[,;\n]+", summary):
+            name = re.sub(r"\s+", " ", str(part or "").strip())
+            if 2 <= len(name) <= 80:
+                names.append(name)
+    seen: set[str] = set()
+    out: List[str] = []
+    for name in names:
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+        if len(out) >= 8:
+            break
+    return out
+
+def upsert_managed_agent_skill_profile(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    connection_id: str,
+    agent_id: str,
+    skill_summary: Any = "",
+    skills: Any = None,
+    now: Optional[int] = None,
+) -> bool:
+    aid = str(agent_id or "").strip()
+    cid = str(connection_id or "").strip()
+    uid = str(user_id or "").strip()
+    summary = re.sub(r"\s+", " ", str(skill_summary or "").strip())[:600]
+    skill_names = _split_user_skill_names(summary, skills)
+    if not (uid and cid and aid and (summary or skill_names)):
+        return False
+
+    row = conn.execute(
+        "SELECT card_json FROM managed_agents WHERE user_id = ? AND connection_id = ? AND agent_id = ? LIMIT 1",
+        (uid, cid, aid),
+    ).fetchone()
+    if not row:
+        return False
+
+    try:
+        card = json.loads(str(row["card_json"] or "{}"))
+    except Exception:
+        card = {}
+    if not isinstance(card, dict):
+        card = {}
+
+    if summary:
+        card["description"] = summary
+    metadata = dict(card.get("metadata") or {}) if isinstance(card.get("metadata"), dict) else {}
+    metadata["userProvidedSkillSummary"] = summary
+    metadata["userProvidedSkillsUpdatedAt"] = int(time.time()) if now is None else int(now)
+    card["metadata"] = metadata
+
+    user_skills: List[Dict[str, Any]] = []
+    for name in skill_names:
+        key = _managed_agent_capability_key(name) or "skill"
+        user_skills.append({
+            "id": f"user.{key}"[:120],
+            "name": name[:220],
+            "description": summary[:320] if summary else "",
+            "tags": ["user-provided"],
+        })
+    if summary and not user_skills:
+        user_skills.append({
+            "id": "user.skill_summary",
+            "name": "User-provided skills",
+            "description": summary[:320],
+            "tags": ["user-provided"],
+        })
+
+    card["skills"] = _normalize_managed_agent_skills(user_skills, card.get("skills"))
+    capabilities = dict(card.get("capabilities") or {}) if isinstance(card.get("capabilities"), dict) else {}
+    for name in skill_names:
+        key = _managed_agent_capability_key(name)
+        if key:
+            capabilities[key] = True
+    if summary:
+        capabilities["user_skill_profile"] = True
+    card["capabilities"] = capabilities
+
+    conn.execute(
+        """
+        UPDATE managed_agents
+        SET card_json = ?, updated_at = ?
+        WHERE user_id = ? AND connection_id = ? AND agent_id = ?
+        """,
+        (json.dumps(card, ensure_ascii=False), int(time.time()) if now is None else int(now), uid, cid, aid),
+    )
+    return True
+
 def _build_managed_agent_card(
     *,
     agent_id: str,

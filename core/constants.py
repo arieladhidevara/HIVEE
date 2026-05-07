@@ -20,7 +20,12 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-DB_PATH = os.environ.get("HIVEE_DB_PATH", "app.db")
+DEMO_MODE = str(os.environ.get("HIVEE_DEMO_MODE") or "").strip().lower() in {"1", "true", "yes", "on"}
+DB_PATH = (
+    os.environ.get("HIVEE_DEMO_DB_PATH", "demo.db")
+    if DEMO_MODE
+    else os.environ.get("HIVEE_DB_PATH", "app.db")
+)
 HIVEE_ROOT = "HIVEE"
 HIVEE_TEMPLATES_ROOT = f"{HIVEE_ROOT}/TEMPLATES"
 AGENTS_ROOT_DIRNAME = "AGENTS"

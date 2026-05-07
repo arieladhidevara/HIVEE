@@ -300,6 +300,9 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/connectors", response_model=List[ConnectorOut])
     async def list_connectors(request: Request):
         user_id = get_session_user(request)
+        if DEMO_MODE:
+            from services.demo_runtime import ensure_demo_connection
+            ensure_demo_connection(user_id)
         conn = db()
         rows = conn.execute(
             """
@@ -332,6 +335,9 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/connectors/{connector_id}", response_model=ConnectorDetailOut)
     async def get_connector_detail(request: Request, connector_id: str):
         user_id = get_session_user(request)
+        if DEMO_MODE:
+            from services.demo_runtime import ensure_demo_connection
+            ensure_demo_connection(user_id)
         conn = db()
         row = conn.execute(
             """

@@ -206,6 +206,25 @@ def register_routes(app: FastAPI) -> None:
     @app.post("/api/openclaw/{connection_id}/bootstrap")
     async def bootstrap_openclaw_connection(request: Request, connection_id: str):
         user_id = get_session_user(request)
+        if DEMO_MODE:
+            from services.demo_runtime import ensure_demo_connection
+            demo_connection_id = ensure_demo_connection(user_id)
+            if str(connection_id or "").strip() == demo_connection_id:
+                workspace = _ensure_user_workspace(user_id)
+                return {
+                    "ok": True,
+                    "agents": [
+                        {"id": "demo/main", "name": "Demo Primary Agent"},
+                        {"id": "demo/researchbot", "name": "Demo Research Agent"},
+                        {"id": "demo/plannerbot", "name": "Demo Planner Agent"},
+                        {"id": "demo/codebot", "name": "Demo Code Agent"},
+                    ],
+                    "main_agent_id": "demo/main",
+                    "main_agent_name": "Demo Primary Agent",
+                    "workspace_root": workspace["workspace_root"],
+                    "transport": "scripted-demo",
+                    "mode": "connector",
+                }
         conn = db()
         connector_row = _get_connector_row(connection_id, user_id, conn)
         if connector_row:
@@ -320,6 +339,9 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/openclaw/connections", response_model=List[ConnectionOut])
     async def list_connections(request: Request):
         user_id = get_session_user(request)
+        if DEMO_MODE:
+            from services.demo_runtime import ensure_demo_connection
+            ensure_demo_connection(user_id)
         conn = db()
         connector_rows = conn.execute(
             """
@@ -407,6 +429,9 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/openclaw/{connection_id}/agents")
     async def list_agents(request: Request, connection_id: str):
         user_id = get_session_user(request)
+        if DEMO_MODE:
+            from services.demo_runtime import ensure_demo_connection
+            ensure_demo_connection(user_id)
         conn = db()
         connector_row = _get_connector_row(connection_id, user_id, conn)
         if connector_row:
@@ -528,6 +553,21 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/api/openclaw/{connection_id}/policy", response_model=ConnectionPolicyOut)
     async def get_connection_policy(request: Request, connection_id: str):
         user_id = get_session_user(request)
+        if DEMO_MODE:
+            from services.demo_runtime import ensure_demo_connection
+            demo_connection_id = ensure_demo_connection(user_id)
+            if str(connection_id or "").strip() == demo_connection_id:
+                workspace = _ensure_user_workspace(user_id)
+                return ConnectionPolicyOut(
+                    connection_id=demo_connection_id,
+                    workspace_root=str(workspace.get("workspace_root") or HIVEE_ROOT),
+                    templates_root=str(workspace.get("templates_root") or HIVEE_TEMPLATES_ROOT),
+                    main_agent_id="demo/main",
+                    main_agent_name="Demo Primary Agent",
+                    bootstrap_status="ok",
+                    bootstrap_error=None,
+                    workspace_tree="HIVEE/\n  PROJECTS/\n  TEMPLATES/\n  DEMO/\n",
+                )
         conn = db()
         connector_exists = conn.execute(
             "SELECT id FROM connectors WHERE id = ? AND user_id = ?",
@@ -569,6 +609,11 @@ def register_routes(app: FastAPI) -> None:
     @app.post("/api/openclaw/{connection_id}/chat")
     async def chat_openclaw(request: Request, connection_id: str, payload: OpenClawChatIn):
         user_id = get_session_user(request)
+        if DEMO_MODE:
+            from services.demo_runtime import demo_workspace_chat_response, ensure_demo_connection
+            demo_connection_id = ensure_demo_connection(user_id)
+            if str(connection_id or "").strip() == demo_connection_id:
+                return demo_workspace_chat_response(payload.message)
         conn = db()
         connector_row = _get_connector_row(connection_id, user_id, conn)
         if connector_row:
@@ -667,6 +712,11 @@ def register_routes(app: FastAPI) -> None:
         user_id = str(session_user or (a2a_access.get("user_id") if a2a_access else "") or "").strip()
         if not user_id:
             raise HTTPException(401, "Missing authorization. Login first or use A2A agent session headers.")
+        if DEMO_MODE:
+            from services.demo_runtime import demo_workspace_chat_response, ensure_demo_connection
+            demo_connection_id = ensure_demo_connection(user_id)
+            if str(connection_id or "").strip() == demo_connection_id:
+                return demo_workspace_chat_response(payload.message)
 
         conn = db()
         row = conn.execute(

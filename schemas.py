@@ -2,7 +2,7 @@ from services.managed_agents import *
 
 class SignupIn(BaseModel):
     email: str = Field(..., examples=["you@example.com"])
-    password: str = Field(..., min_length=PASSWORD_MIN_LENGTH)
+    password: str = Field(..., min_length=1 if DEMO_MODE else PASSWORD_MIN_LENGTH)
 
 class LoginIn(BaseModel):
     email: str
@@ -117,22 +117,30 @@ class ProjectExternalAgentInviteSelectedAgentIn(BaseModel):
     agent_id: str
     agent_name: Optional[str] = None
     role: Optional[str] = None
+    skill_summary: Optional[str] = None
+    skills: Optional[List[str]] = None
 
 class ProjectExternalAgentInviteAcceptIn(BaseModel):
     connection_id: str
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
     invite_code: Optional[str] = None
+    skill_summary: Optional[str] = None
+    skills: Optional[List[str]] = None
     selected_agents: Optional[List[ProjectExternalAgentInviteSelectedAgentIn]] = None
 
 class InboxInviteSelectedAgentIn(BaseModel):
     agent_id: str
     agent_name: Optional[str] = None
+    skill_summary: Optional[str] = None
+    skills: Optional[List[str]] = None
 
 class InboxInviteAcceptIn(BaseModel):
     connection_id: str
     agent_id: str
     agent_name: Optional[str] = None
+    skill_summary: Optional[str] = None
+    skills: Optional[List[str]] = None
     selected_agents: Optional[List["InboxInviteSelectedAgentIn"]] = None
 
 class ProjectAgentPermissionsUpdateIn(BaseModel):
